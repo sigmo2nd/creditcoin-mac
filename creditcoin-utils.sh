@@ -1050,3 +1050,4 @@ restorekeys() {
   else
     echo -e "${YELLOW}노드는 중지된 상태로 유지됩니다.${NC}"
   fi
+}
