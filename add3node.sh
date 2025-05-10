@@ -1,5 +1,5 @@
 #!/bin/bash
-# add3node.sh - macOS용 Creditcoin 3.0 노드 추가 스크립트
+# add3node.sh - macOS용 Creditcoin 3.0 노드 추가 스크립트 (OrbStack 호환)
 
 # 색상 정의
 GREEN='\033[0;32m'
@@ -40,10 +40,10 @@ if [ $# -lt 1 ]; then
   exit 1
 fi
 
-# Docker 실행 상태 확인
+# Docker 실행 상태 확인 (OrbStack 호환)
 if ! docker info &> /dev/null; then
-  echo -e "${RED}오류: Docker Desktop이 실행 중이 아닙니다.${NC}"
-  echo -e "${YELLOW}Docker Desktop을 실행한 후 다시 시도하세요.${NC}"
+  echo -e "${RED}오류: Docker 엔진(OrbStack)이 실행 중이 아닙니다.${NC}"
+  echo -e "${YELLOW}OrbStack을 실행한 후 다시 시도하세요.${NC}"
   exit 1
 fi
 
@@ -97,7 +97,7 @@ echo -e "${GREEN}- 프루닝: $PRUNING $([ "$PRUNING" == "0" ] && echo "(비활�
 
 # 현재 작업 디렉토리 저장
 CURRENT_DIR=$(pwd)
-SERVER_ID=$(grep SERVER_ID .env 2>/dev/null | cut -d= -f2 || echo "dock")
+SERVER_ID=$(grep SERVER_ID .env 2>/dev/null | cut -d= -f2 || echo "orb")
 
 # 노드 데이터 디렉토리 생성
 mkdir -p ./3node${NODE_NUM}/data
@@ -109,7 +109,6 @@ mkdir -p ./3node${NODE_NUM}/data/chains/creditcoin3/network
 mkdir -p ./data/${GIT_TAG}/chainspecs
 
 # 유효한 Ed25519 네트워크 키 생성 (32바이트 랜덤 데이터)
-# macOS 호환 버전으로 수정: urandom -> random
 dd if=/dev/random of=./3node${NODE_NUM}/data/chains/creditcoin3/network/secret_ed25519 bs=32 count=1 2>/dev/null
 
 # 체인스펙 파일 다운로드 (없는 경우에만)
@@ -358,7 +357,7 @@ else
       - "\${P2P_PORT_3NODE${NODE_NUM}:-${P2P_PORT}}:\${P2P_PORT_3NODE${NODE_NUM}:-${P2P_PORT}}"
       - "\${RPC_PORT_3NODE${NODE_NUM}:-${RPC_PORT}}:\${RPC_PORT_3NODE${NODE_NUM}:-${RPC_PORT}}"
     environment:
-      - SERVER_ID=\${SERVER_ID:-dock}
+      - SERVER_ID=\${SERVER_ID:-orb}
       - NODE_ID=${NODE_NUM}
       - NODE_NAME=\${NODE_NAME_3NODE${NODE_NUM}:-${NODE_NAME}}
       - P2P_PORT=\${P2P_PORT_3NODE${NODE_NUM}:-${P2P_PORT}}
