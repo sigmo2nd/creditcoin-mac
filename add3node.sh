@@ -112,35 +112,73 @@ mkdir -p ./data/${GIT_TAG}/chainspecs
 # macOS 호환 버전으로 수정: urandom -> random
 dd if=/dev/random of=./3node${NODE_NUM}/data/chains/creditcoin3/network/secret_ed25519 bs=32 count=1 2>/dev/null
 
-# chainspec 파일 다운로드 (없는 경우에만)
+# 체인스펙 파일 다운로드 (없는 경우에만)
 if [ ! -f "./data/${GIT_TAG}/chainspecs/mainnetSpecRaw.json" ]; then
   echo -e "${BLUE}${GIT_TAG} 버전의 체인스펙 파일 다운로드 중...${NC}"
   
-  # 임시 디렉토리 생성 (macOS 호환)
+  # 디렉토리 생성
+  mkdir -p "./data/${GIT_TAG}/chainspecs/"
+  
+  # 임시 디렉토리 생성
   TEMP_DIR=$(mktemp -d -t creditcoin3-chainspec-XXXXXX)
   cd "$TEMP_DIR"
   
-  # Git 저장소 클론 및 체인스펙 파일 복사
+  # 저장소 클론
   echo -e "${YELLOW}Git 저장소 클론 중...${NC}"
   git clone https://github.com/gluwa/creditcoin3.git
   cd creditcoin3
+  
+  # 브랜치 체크아웃
   git checkout ${GIT_TAG}
   
-  # git-lfs가 설치되어 있는지 확인
-  if command -v git-lfs &> /dev/null; then
-    git lfs pull
-  else
-    echo -e "${RED}경고: git-lfs가 설치되어 있지 않습니다. setup.sh를 먼저 실행하세요.${NC}"
-  fi
+  # git-lfs 명시적 설정
+  export GIT_LFS_SKIP_SMUDGE=0
   
-  if [ -f "chainspecs/mainnetSpecRaw.json" ]; then
-    mkdir -p "${CURRENT_DIR}/data/${GIT_TAG}/chainspecs/"
-    cp "chainspecs/mainnetSpecRaw.json" "${CURRENT_DIR}/data/${GIT_TAG}/chainspecs/"
-    echo -e "${GREEN}체인스펙 파일 다운로드 완료${NC}"
+  # git-lfs 확인 및 실행
+  if command -v git-lfs &> /dev/null; then
+    git lfs install --force
+    git lfs fetch
+    git lfs pull
+    
+    # 파일이 제대로 다운로드되었는지 확인
+    if [ -f "chainspecs/mainnetSpecRaw.json" ]; then
+      file_size=$(stat -f%z "chainspecs/mainnetSpecRaw.json" 2>/dev/null || stat -c%s "chainspecs/mainnetSpecRaw.json")
+      echo -e "${GREEN}체인스펙 파일 크기: ${file_size} 바이트${NC}"
+      
+      # 파일 크기 검증 (최소 크기를 확인)
+      if [ "$file_size" -lt 1000 ]; then  # 예상보다 작으면 경고
+        echo -e "${YELLOW}경고: 체인스펙 파일이 예상보다 작습니다. 직접 다운로드를 시도합니다.${NC}"
+        # 백업 방법으로 직접 다운로드 시도
+        curl -L -o "chainspecs/mainnetSpecRaw.json.new" "https://raw.githubusercontent.com/gluwa/creditcoin3/${GIT_TAG}/chainspecs/mainnetSpecRaw.json"
+        new_size=$(stat -f%z "chainspecs/mainnetSpecRaw.json.new" 2>/dev/null || stat -c%s "chainspecs/mainnetSpecRaw.json.new")
+        
+        if [ "$new_size" -gt "$file_size" ]; then
+          mv "chainspecs/mainnetSpecRaw.json.new" "chainspecs/mainnetSpecRaw.json"
+          echo -e "${GREEN}직접 다운로드로 더 큰 파일을 받았습니다: ${new_size} 바이트${NC}"
+        else
+          rm "chainspecs/mainnetSpecRaw.json.new"
+        fi
+      fi
+      
+      # 파일 복사
+      cp "chainspecs/mainnetSpecRaw.json" "${CURRENT_DIR}/data/${GIT_TAG}/chainspecs/"
+      echo -e "${GREEN}체인스펙 파일 다운로드 완료${NC}"
+    else
+      echo -e "${RED}오류: 체인스펙 파일을 찾을 수 없습니다. 직접 다운로드를 시도합니다.${NC}"
+      # 대체 방법으로 직접 다운로드
+      curl -L -o "${CURRENT_DIR}/data/${GIT_TAG}/chainspecs/mainnetSpecRaw.json" "https://raw.githubusercontent.com/gluwa/creditcoin3/${GIT_TAG}/chainspecs/mainnetSpecRaw.json"
+      
+      if [ -f "${CURRENT_DIR}/data/${GIT_TAG}/chainspecs/mainnetSpecRaw.json" ]; then
+        echo -e "${GREEN}체인스펙 파일 직접 다운로드 완료${NC}"
+      else
+        echo -e "${RED}오류: 체인스펙 파일 다운로드에 실패했습니다.${NC}"
+        cd "$CURRENT_DIR"
+        rm -rf "$TEMP_DIR"
+        exit 1
+      fi
+    fi
   else
-    echo -e "${RED}오류: 체인스펙 파일을 찾을 수 없습니다${NC}"
-    cd "$CURRENT_DIR"
-    rm -rf "$TEMP_DIR"
+    echo -e "${RED}오류: git-lfs가 설치되어 있지 않습니다. setup.sh를 먼저 실행하세요.${NC}"
     exit 1
   fi
   
