@@ -8,6 +8,52 @@ BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# Docker 명령어 및 환경 확인 (SSH 및 OrbStack 호환성)
+check_docker_env() {
+  # Docker 명령어 경로 확인 및 추가
+  if ! command -v docker &>/dev/null; then
+    echo -e "${YELLOW}Docker 명령어를 찾을 수 없습니다. OrbStack에서 제공하는 Docker CLI를 PATH에 추가합니다.${NC}"
+    
+    if [ -f "/Applications/OrbStack.app/Contents/MacOS/xbin/docker" ]; then
+      export PATH="/Applications/OrbStack.app/Contents/MacOS/xbin:$PATH"
+    fi
+    
+    # 다시 확인
+    if ! command -v docker &>/dev/null; then
+      echo -e "${RED}Docker CLI를 찾을 수 없습니다. OrbStack이 설치되어 있는지 확인하세요.${NC}"
+      exit 1
+    fi
+  fi
+
+  # SSH 세션 호환성 설정
+  export DOCKER_HOST="unix://$HOME/.orbstack/run/docker.sock"
+  export DOCKER_CLI_NO_CREDENTIAL_STORE=1
+  
+  # Docker 실행 상태 확인 및 시작 시도
+  if ! docker info &> /dev/null; then
+    echo -e "${YELLOW}Docker 엔진(OrbStack)이 실행 중이 아닙니다. 시작을 시도합니다...${NC}"
+    # OrbStack 시작 시도
+    if command -v orb &> /dev/null; then
+      orb start
+      sleep 10 # 초기화 시간 부여
+      
+      # 다시 확인
+      if ! docker info &> /dev/null; then
+        echo -e "${RED}오류: Docker 엔진(OrbStack)을 시작할 수 없습니다.${NC}"
+        echo -e "${YELLOW}OrbStack을 수동으로 실행한 후 다시 시도하세요.${NC}"
+        exit 1
+      fi
+    else
+      echo -e "${RED}오류: Docker 엔진(OrbStack)이 실행 중이 아닙니다.${NC}"
+      echo -e "${YELLOW}OrbStack을 실행한 후 다시 시도하세요.${NC}"
+      exit 1
+    fi
+  fi
+}
+
+# Docker 환경 확인
+check_docker_env
+
 # 도움말 표시 함수
 show_help() {
   echo "사용법: $0 <노드번호> [옵션]"
@@ -40,12 +86,7 @@ if [ $# -lt 1 ]; then
   exit 1
 fi
 
-# Docker 실행 상태 확인 (OrbStack 호환)
-if ! docker info &> /dev/null; then
-  echo -e "${RED}오류: Docker 엔진(OrbStack)이 실행 중이 아닙니다.${NC}"
-  echo -e "${YELLOW}OrbStack을 실행한 후 다시 시도하세요.${NC}"
-  exit 1
-fi
+
 
 # 첫 번째 매개변수는 노드 번호
 NODE_NUM=$1

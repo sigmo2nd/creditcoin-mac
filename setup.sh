@@ -1,5 +1,5 @@
 #!/bin/bash
-# setup.sh - Creditcoin Docker 유틸리티 설정 스크립트 (macOS 환경용)
+# setup.sh - Creditcoin Docker 유틸리티 설정 스크립트 (macOS + OrbStack 환경용)
 
 # 색상 정의
 GREEN='\033[0;32m'
@@ -10,9 +10,6 @@ NC='\033[0m' # No Color
 
 # 현재 디렉토리 저장
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
-
-# VS Code 편집기 확인 변수
-HAS_VSCODE=false
 
 # 진행 상황 표시 함수
 show_step() {
@@ -75,26 +72,11 @@ check_environment() {
   
   # Xcode 명령줄 도구 확인
   if ! xcode-select -p &> /dev/null; then
-    show_warning "Xcode 명령줄 도구가 설치되어 있지 않습니다. 설치를 시작합니다..."
-    xcode-select --install
-    
-    show_warning "Xcode 명령줄 도구 설치 창이 나타납니다."
-    show_warning "설치를 완료하면 엔터를 눌러 계속하세요..."
-    read -p ""
+    show_warning "Xcode 명령줄 도구가 설치되어 있지 않습니다."
+    show_warning "macOS에 직접 로그인한 후 'xcode-select --install' 명령을 실행하고 다시 시도하세요."
+    exit 1
   else
     show_success "Xcode 명령줄 도구가 설치되어 있습니다."
-  fi
-  
-  # VS Code 확인
-  if command -v code &> /dev/null; then
-    show_success "VS Code가 설치되어 있고 PATH에 추가되어 있습니다."
-    HAS_VSCODE=true
-  elif [ -d "/Applications/Visual Studio Code.app" ]; then
-    show_warning "VS Code가 설치되어 있지만 PATH에 추가되어 있지 않습니다."
-    show_warning "VS Code에서 'Shell Command: Install code command in PATH'를 실행하여 PATH에 추가하세요."
-    HAS_VSCODE=true
-  else
-    show_warning "VS Code가 설치되어 있지 않은 것 같습니다. TextEdit을 기본 에디터로 사용합니다."
   fi
   
   show_success "환경 확인이 완료되었습니다."
@@ -112,11 +94,11 @@ install_homebrew() {
     if [[ "$ARCH" == "arm64" ]]; then
       # Apple Silicon
       show_warning "Apple Silicon용 Homebrew 경로를 설정합니다..."
-      echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+      echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> "$SHELL_PROFILE"
       eval "$(/opt/homebrew/bin/brew shellenv)"
     else
       # Intel Mac
-      echo 'eval "$(/usr/local/bin/brew shellenv)"' >> ~/.bash_profile
+      echo 'eval "$(/usr/local/bin/brew shellenv)"' >> "$SHELL_PROFILE"
       eval "$(/usr/local/bin/brew shellenv)"
     fi
     
@@ -128,77 +110,97 @@ install_homebrew() {
   # Homebrew 업데이트
   show_warning "Homebrew 업데이트 중..."
   brew update
-  
-  # 완성 스크립트 문제를 감지하고 해결
-  if [[ "$SHELL" == *"zsh"* ]]; then
-    # Homebrew 접두사 확인
-    BREW_PREFIX=$(brew --prefix)
-    
-    # 완성 스크립트 디렉토리 확인
-    if [ ! -d "${BREW_PREFIX}/share/zsh/site-functions" ]; then
-      show_warning "zsh 완성 스크립트 디렉토리가 없습니다. 생성합니다..."
-      mkdir -p "${BREW_PREFIX}/share/zsh/site-functions"
-    fi
-    
-    # 완성 스크립트 문제 해결
-    show_warning "Homebrew 완성 스크립트를 설정합니다..."
-    brew completions link
-  fi
 }
 
-# Docker Desktop 설치 함수
-install_docker_desktop() {
-  show_step "Docker Desktop 설치 확인 중"
+# OrbStack 설치 함수
+install_orbstack() {
+  show_step "OrbStack 설치 확인 중"
   
-  # Docker 명령어 확인
-  if ! command -v docker &> /dev/null; then
-    show_warning "Docker Desktop이 설치되어 있지 않거나 PATH에 추가되지 않았습니다."
+  # OrbStack이 설치되어 있는지 확인
+  if [ -d "/Applications/OrbStack.app" ]; then
+    show_success "OrbStack이 이미 설치되어 있습니다."
     
-    if [ -d "/Applications/Docker.app" ]; then
-      show_warning "Docker.app이 설치되어 있지만 PATH에 추가되지 않았습니다."
-      
-      # Docker 실행
-      open -a Docker
-      show_warning "Docker Desktop을 시작했습니다. 초기화될 때까지 기다려 주세요..."
-      
+    # OrbStack CLI 명령어 확인
+    if command -v orb &> /dev/null; then
+      show_success "OrbStack CLI(orb)가 PATH에 추가되어 있습니다."
     else
-      show_warning "Docker Desktop을 설치합니다. Homebrew를 사용합니다..."
-      brew install --cask docker
+      show_warning "OrbStack CLI가 PATH에 없습니다."
       
-      show_warning "Docker Desktop이 설치되었습니다. 시작하려면 Applications 폴더에서 Docker 앱을 실행하세요."
-      open -a Docker
-      show_warning "Docker Desktop을 시작했습니다. 초기화될 때까지 기다려 주세요..."
-    fi
-    
-    show_warning "Docker Desktop이 초기화를 완료할 때까지 기다립니다 (약 30초)..."
-    sleep 30
-    
-    # 여전히 Docker가 시작되지 않았다면 사용자에게 알림
-    if ! docker info &> /dev/null; then
-      show_warning "Docker Desktop이 아직 시작되지 않았습니다."
-      show_warning "Docker Desktop이 완전히 시작된 후 엔터 키를 눌러 계속하세요..."
-      read -p ""
+      # PATH에 OrbStack CLI 추가 시도
+      if [ -f "/Applications/OrbStack.app/Contents/MacOS/orb" ]; then
+        show_warning "OrbStack CLI를 PATH에 추가합니다..."
+        export PATH="/Applications/OrbStack.app/Contents/MacOS:$PATH"
+        
+        # 쉘 프로필에 추가
+        if ! grep -q "/Applications/OrbStack.app/Contents/MacOS" "$SHELL_PROFILE"; then
+          echo 'export PATH="/Applications/OrbStack.app/Contents/MacOS:$PATH"' >> "$SHELL_PROFILE"
+        fi
+      fi
     fi
   else
-    show_success "Docker Desktop이 설치되어 있습니다."
+    show_warning "OrbStack이 설치되어 있지 않습니다. 설치를 시작합니다..."
+    
+    # Homebrew를 통해 설치
+    brew install orbstack
+    
+    if [ -d "/Applications/OrbStack.app" ]; then
+      show_success "OrbStack이 설치되었습니다."
+      
+      # OrbStack 자동으로 시작 설정
+      defaults write com.orbstack.OrbStack LaunchAtLogin -bool true
+    else
+      show_error "OrbStack 설치에 실패했습니다."
+      exit 1
+    fi
+  fi
+  
+  # Docker CLI 경로 설정
+  if ! command -v docker &> /dev/null; then
+    show_warning "Docker CLI가 PATH에 없습니다. 경로를 추가합니다..."
+    
+    if [ -f "/Applications/OrbStack.app/Contents/MacOS/xbin/docker" ]; then
+      export PATH="/Applications/OrbStack.app/Contents/MacOS/xbin:$PATH"
+      # 쉘 프로필에 추가 (중복 체크)
+      if ! grep -q "/Applications/OrbStack.app/Contents/MacOS/xbin" "$SHELL_PROFILE"; then
+        echo 'export PATH="/Applications/OrbStack.app/Contents/MacOS/xbin:$PATH"' >> "$SHELL_PROFILE"
+      fi
+      show_success "Docker CLI 경로가 PATH에 추가되었습니다."
+    fi
+  fi
+  
+  # Docker 호스트 설정 (SSH 세션 호환성)
+  export DOCKER_HOST="unix://$HOME/.orbstack/run/docker.sock"
+  
+  # Docker 키체인 인증 비활성화 (SSH 세션 호환성)
+  export DOCKER_CLI_NO_CREDENTIAL_STORE=1
+  
+  # OrbStack 시작 시도 (CLI만 사용)
+  if command -v orb &> /dev/null; then
+    show_warning "OrbStack 시작 시도 중..."
+    orb start
+    sleep 5
   fi
   
   # Docker 실행 상태 확인
   if ! docker info &> /dev/null; then
-    show_error "Docker Desktop이 실행 중이 아닙니다."
-    show_warning "Applications 폴더에서 Docker 앱을 실행한 후 이 스크립트를 다시 실행하세요."
-    exit 1
+    show_error "Docker 엔진(OrbStack)이 실행 중이 아닙니다."
+    if command -v orb &> /dev/null; then
+      orb start
+      sleep 5
+      
+      # 다시 확인
+      if ! docker info &> /dev/null; then
+        show_error "Docker 엔진(OrbStack)을 시작할 수 없습니다."
+        exit 1
+      else
+        show_success "Docker 엔진(OrbStack)이 시작되었습니다."
+      fi
+    else
+      show_error "orb 명령어를 찾을 수 없습니다."
+      exit 1
+    fi
   else
-    show_success "Docker Desktop이 실행 중입니다."
-  fi
-  
-  # Docker Compose 확인
-  if ! docker compose version &> /dev/null; then
-    show_warning "Docker Compose V2가 감지되지 않았습니다."
-    show_warning "최신 Docker Desktop에는 Docker Compose V2가 포함되어 있어야 합니다."
-    show_warning "Docker Desktop을 업데이트하는 것을 권장합니다."
-  else
-    show_success "Docker Compose가 설치되어 있습니다: $(docker compose version | head -n 1)"
+    show_success "Docker 엔진(OrbStack)이 실행 중입니다."
   fi
 }
 
@@ -239,8 +241,8 @@ install_dependencies() {
   # Homebrew 설치
   install_homebrew
   
-  # Docker Desktop 설치
-  install_docker_desktop
+  # OrbStack 설치
+  install_orbstack
   
   # 필요한 도구 설치
   install_tools
@@ -284,6 +286,22 @@ $marker
 CREDITCOIN_DIR="$SCRIPT_DIR"
 CREDITCOIN_UTILS="\$CREDITCOIN_DIR/creditcoin-utils.sh"
 
+# OrbStack Docker CLI 경로 추가
+if [ -f "/Applications/OrbStack.app/Contents/MacOS/xbin/docker" ]; then
+    export PATH="/Applications/OrbStack.app/Contents/MacOS/xbin:\$PATH"
+fi
+
+# OrbStack CLI 경로 추가
+if [ -f "/Applications/OrbStack.app/Contents/MacOS/orb" ]; then
+    export PATH="/Applications/OrbStack.app/Contents/MacOS:\$PATH"
+fi
+
+# OrbStack Docker 호스트 설정 (SSH 세션 호환성)
+export DOCKER_HOST="unix://\$HOME/.orbstack/run/docker.sock"
+
+# Docker 키체인 인증 비활성화 (SSH 세션 호환성)
+export DOCKER_CLI_NO_CREDENTIAL_STORE=1
+
 # 유틸리티 함수 로드
 if [ -f "\$CREDITCOIN_UTILS" ]; then
     source "\$CREDITCOIN_UTILS"
@@ -294,19 +312,9 @@ EOF
   show_success "$PROFILE_FILE에 유틸리티가 추가되었습니다."
 }
 
-# Docker Desktop 리소스 권장 설정 안내
-show_docker_resource_recommendations() {
-  show_step "Docker Desktop 리소스 권장 설정"
-  show_warning "Creditcoin 노드는 리소스를 많이 사용합니다. Docker Desktop 설정에서 다음과 같이 리소스를 조정하는 것이 좋습니다:"
-  echo -e "${GREEN}1. CPU: 4코어 이상${NC}"
-  echo -e "${GREEN}2. 메모리: 8GB 이상${NC}"
-  echo -e "${GREEN}3. 디스크 이미지 크기: 100GB 이상${NC}"
-  show_warning "설정을 변경하려면 Docker Desktop 애플리케이션 > 설정 > 리소스에서 조정하세요."
-}
-
 # 메인 함수
 main() {
-  echo -e "${BLUE}=== Creditcoin Docker 유틸리티 설정 ===${NC}"
+  echo -e "${BLUE}=== Creditcoin Docker 유틸리티 설정 (OrbStack) ===${NC}"
 
   # 환경 확인
   check_environment
@@ -314,11 +322,11 @@ main() {
   # 의존성 확인 및 설치
   install_dependencies
 
+  # 자동 시작 설정
+  defaults write com.orbstack.OrbStack LaunchAtLogin -bool true
+
   # 쉘 프로필에 추가
   add_to_shell_profile
-
-  # Docker 리소스 권장 설정 안내
-  show_docker_resource_recommendations
 
   # 마무리 메시지
   show_success "설치가 완료되었습니다!"

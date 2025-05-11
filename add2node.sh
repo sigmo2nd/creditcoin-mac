@@ -1,4 +1,5 @@
 #!/bin/bash
+# add2node.sh - macOS용 OrbStack 호환 Creditcoin 2.0 노드 추가 스크립트
 
 # 색상 정의
 GREEN='\033[0;32m'
@@ -6,6 +7,52 @@ YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
+
+# Docker 명령어 및 환경 확인 (SSH 및 OrbStack 호환성)
+check_docker_env() {
+  # Docker 명령어 경로 확인 및 추가
+  if ! command -v docker &>/dev/null; then
+    echo -e "${YELLOW}Docker 명령어를 찾을 수 없습니다. OrbStack에서 제공하는 Docker CLI를 PATH에 추가합니다.${NC}"
+    
+    if [ -f "/Applications/OrbStack.app/Contents/MacOS/xbin/docker" ]; then
+      export PATH="/Applications/OrbStack.app/Contents/MacOS/xbin:$PATH"
+    fi
+    
+    # 다시 확인
+    if ! command -v docker &>/dev/null; then
+      echo -e "${RED}Docker CLI를 찾을 수 없습니다. OrbStack이 설치되어 있는지 확인하세요.${NC}"
+      exit 1
+    fi
+  fi
+
+  # SSH 세션 호환성 설정
+  export DOCKER_HOST="unix://$HOME/.orbstack/run/docker.sock"
+  export DOCKER_CLI_NO_CREDENTIAL_STORE=1
+  
+  # Docker 실행 상태 확인 및 시작 시도
+  if ! docker info &> /dev/null; then
+    echo -e "${YELLOW}Docker 엔진(OrbStack)이 실행 중이 아닙니다. 시작을 시도합니다...${NC}"
+    # OrbStack 시작 시도
+    if command -v orb &> /dev/null; then
+      orb start
+      sleep 10 # 초기화 시간 부여
+      
+      # 다시 확인
+      if ! docker info &> /dev/null; then
+        echo -e "${RED}오류: Docker 엔진(OrbStack)을 시작할 수 없습니다.${NC}"
+        echo -e "${YELLOW}OrbStack을 수동으로 실행한 후 다시 시도하세요.${NC}"
+        exit 1
+      fi
+    else
+      echo -e "${RED}오류: Docker 엔진(OrbStack)이 실행 중이 아닙니다.${NC}"
+      echo -e "${YELLOW}OrbStack을 실행한 후 다시 시도하세요.${NC}"
+      exit 1
+    fi
+  fi
+}
+
+# Docker 환경 확인
+check_docker_env
 
 # 도움말 표시 함수
 show_help() {
@@ -20,11 +67,11 @@ show_help() {
   echo "  -n, --name         노드 이름 (기본값: Node<번호>)"
   echo ""
   echo "사용 예시:"
-  echo "  ./add2node-mac.sh 0                        # 기본 설정으로 노드 생성"
-  echo "  ./add2node-mac.sh 1 -v 2.230.2-mainnet     # 특정 버전으로 노드 생성"
-  echo "  ./add2node-mac.sh 2 -t                     # 텔레메트리 활성화한 노드 생성"
-  echo "  ./add2node-mac.sh 3 -n MyValidator         # 지정한 이름으로 노드 생성"
-  echo "  ./add2node-mac.sh 4 -v 2.230.2-mainnet -t -n MainNode  # 모든 옵션 지정"
+  echo "  ./add2node.sh 0                        # 기본 설정으로 노드 생성"
+  echo "  ./add2node.sh 1 -v 2.230.2-mainnet     # 특정 버전으로 노드 생성"
+  echo "  ./add2node.sh 2 -t                     # 텔레메트리 활성화한 노드 생성"
+  echo "  ./add2node.sh 3 -n MyValidator         # 지정한 이름으로 노드 생성"
+  echo "  ./add2node.sh 4 -v 2.230.2-mainnet -t -n MainNode  # 모든 옵션 지정"
   echo ""
   echo "버전 정보:"
   echo "  2.230.2-mainnet: Creditcoin 2.0 레거시"
@@ -37,11 +84,25 @@ if [ $# -lt 1 ]; then
   exit 1
 fi
 
-# Docker 실행 상태 확인
+# Docker 실행 상태 확인 (OrbStack 호환)
 if ! docker info &> /dev/null; then
-  echo -e "${RED}오류: Docker Desktop이 실행 중이 아닙니다.${NC}"
-  echo -e "${YELLOW}Docker Desktop을 실행한 후 다시 시도하세요.${NC}"
-  exit 1
+  echo -e "${YELLOW}Docker 엔진(OrbStack)이 실행 중이 아닙니다. 시작을 시도합니다...${NC}"
+  # OrbStack 시작 시도
+  if command -v orb &> /dev/null; then
+    orb start
+    sleep 10 # 초기화 시간 부여
+    
+    # 다시 확인
+    if ! docker info &> /dev/null; then
+      echo -e "${RED}오류: Docker 엔진(OrbStack)을 시작할 수 없습니다.${NC}"
+      echo -e "${YELLOW}OrbStack을 수동으로 실행한 후 다시 시도하세요.${NC}"
+      exit 1
+    fi
+  else
+    echo -e "${RED}오류: Docker 엔진(OrbStack)이 실행 중이 아닙니다.${NC}"
+    echo -e "${YELLOW}OrbStack을 실행한 후 다시 시도하세요.${NC}"
+    exit 1
+  fi
 fi
 
 # 첫 번째 매개변수는 노드 번호
@@ -96,7 +157,7 @@ P2P_PORT=$((BASE_P2P_PORT + $NODE_NUM))
 WS_PORT=$((BASE_WS_PORT + $NODE_NUM))
 
 # .env 파일 업데이트 또는 생성
-SERVER_ID=$(grep SERVER_ID .env 2>/dev/null | cut -d= -f2 || echo "dock")
+SERVER_ID=$(grep SERVER_ID .env 2>/dev/null | cut -d= -f2 || echo "orb")
 if [ ! -f ".env" ]; then
   echo "SERVER_ID=${SERVER_ID}" > .env
 fi
@@ -258,7 +319,7 @@ EODC
       - "\${P2P_PORT_NODE${NODE_NUM}:-${P2P_PORT}}:\${P2P_PORT_NODE${NODE_NUM}:-${P2P_PORT}}"
       - "\${WS_PORT_NODE${NODE_NUM}:-${WS_PORT}}:\${WS_PORT_NODE${NODE_NUM}:-${WS_PORT}}"
     environment:
-      - SERVER_ID=\${SERVER_ID:-dock}
+      - SERVER_ID=\${SERVER_ID:-orb}
       - NODE_NAME=\${NODE_NAME_${NODE_NUM}:-${NODE_NAME}}
       - P2P_PORT=\${P2P_PORT_NODE${NODE_NUM}:-${P2P_PORT}}
       - WS_PORT=\${WS_PORT_NODE${NODE_NUM}:-${WS_PORT}}

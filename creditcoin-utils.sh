@@ -1,5 +1,5 @@
 #!/bin/bash
-# Creditcoin Docker 유틸리티 함수 (macOS 호환)
+# Creditcoin Docker 유틸리티 함수 (macOS + OrbStack 호환)
 
 # 색상 정의
 GREEN='\033[0;32m'
@@ -19,6 +19,12 @@ alias dip='docker ps -q | xargs -n 1 docker inspect --format "{{range .NetworkSe
 alias dvols='docker volume ls'
 alias dnets='docker network ls'
 alias dprune='docker system prune -f'
+
+# OrbStack 특화 별칭들
+alias orbui='open -a OrbStack'
+alias orbstatus='orb status'
+alias orbls='orb ls'
+alias orbinfo='orb info'
 
 # 쉘 관련 별칭
 if [[ "$SHELL" == *"zsh"* ]]; then
