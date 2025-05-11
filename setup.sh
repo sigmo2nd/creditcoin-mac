@@ -265,7 +265,7 @@ install_orbstack() {
   fi
 }
 
-# OrbStack 런치데몬 설정 함수 (시스템 부팅 시 실행, 로그인 불필요)
+# OrbStack 런치데몬 설정 함수 (시스템 부팅 시 실행, 로그인 불필요, 자동 시작)
 setup_orbstack_launchdaemon() {
   show_step "OrbStack 런치데몬 설정 중 (시스템 부팅 시 자동 실행)"
   
@@ -275,12 +275,13 @@ setup_orbstack_launchdaemon() {
     return 1
   fi
   
-  # 현재 사용자 이름 가져오기 (참고용)
+  # 현재 사용자 이름 가져오기
   local CURRENT_USER=$(whoami)
   
-  # 런치데몬 plist 파일 경로
+  # 런치데몬 plist 파일 경로 (2개 데몬 설정)
   local LAUNCH_DAEMON_DIR="/Library/LaunchDaemons"
-  local LAUNCH_DAEMON_FILE="${LAUNCH_DAEMON_DIR}/dev.orbstack.daemon.plist"
+  local ORBSTACK_DAEMON_FILE="${LAUNCH_DAEMON_DIR}/dev.orbstack.daemon.plist"
+  local ORBSTACK_STARTER_FILE="${LAUNCH_DAEMON_DIR}/dev.orbstack.starter.plist"
   
   # 관리자 권한 확인
   if [ ! -w "$LAUNCH_DAEMON_DIR" ]; then
@@ -288,10 +289,13 @@ setup_orbstack_launchdaemon() {
     show_warning "암호를 묻는 창이 뜨면 사용자 암호를 입력하세요."
   fi
   
-  # 다른 버전의 런치데몬 파일이 있는지 확인
-  if sudo test -f "$LAUNCH_DAEMON_FILE"; then
+  # 1. OrbStack 기본 데몬 설정 (서비스 실행)
+  show_warning "OrbStack 메인 데몬 설정 중..."
+  
+  # 기존 데몬 파일 백업
+  if sudo test -f "$ORBSTACK_DAEMON_FILE"; then
     show_warning "OrbStack 런치데몬 파일이 이미 존재합니다. 백업 후 새로 설정합니다."
-    sudo cp "$LAUNCH_DAEMON_FILE" "${LAUNCH_DAEMON_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    sudo cp "$ORBSTACK_DAEMON_FILE" "${ORBSTACK_DAEMON_FILE}.bak.$(date +%Y%m%d%H%M%S)"
   fi
   
   # 새 런치데몬 파일 생성 (시스템 수준에서 실행, 사용자 로그인 전에 실행됨)
@@ -329,45 +333,167 @@ setup_orbstack_launchdaemon() {
 EOL
   
   # 런치데몬 파일 복사 및 권한 설정
-  sudo cp /tmp/orbstack_daemon.plist "$LAUNCH_DAEMON_FILE"
-  sudo chown root:wheel "$LAUNCH_DAEMON_FILE"
-  sudo chmod 644 "$LAUNCH_DAEMON_FILE"
+  sudo cp /tmp/orbstack_daemon.plist "$ORBSTACK_DAEMON_FILE"
+  sudo chown root:wheel "$ORBSTACK_DAEMON_FILE"
+  sudo chmod 644 "$ORBSTACK_DAEMON_FILE"
+  
+  # 2. OrbStack 스타터 데몬 생성 (VM 및 컨테이너 자동 시작)
+  show_warning "OrbStack 자동 시작 데몬 설정 중..."
+  
+  # 스타터 스크립트 생성
+  cat > /tmp/orbstack_start.sh << EOL
+#!/bin/bash
+
+# OrbStack 스타터 스크립트
+# 시스템 부팅 시 OrbStack VM 및 컨테이너 자동 시작
+
+# 로그 파일 설정
+LOG_FILE="/tmp/orbstack-starter.log"
+echo "$(date): OrbStack 자동 시작 스크립트 실행" > "\$LOG_FILE"
+
+# OrbStack 데몬이 준비될 때까지 대기
+for i in {1..30}; do
+  if [ -S "/var/run/orbstack/docker.sock" ]; then
+    echo "$(date): OrbStack 데몬 준비됨" >> "\$LOG_FILE"
+    break
+  fi
+  echo "$(date): OrbStack 데몬 대기 중... (\$i/30)" >> "\$LOG_FILE"
+  sleep 2
+done
+
+# OrbStack 소켓 파일이 준비되지 않은 경우 처리
+if [ ! -S "/var/run/orbstack/docker.sock" ]; then
+  echo "$(date): 오류 - OrbStack 데몬이 준비되지 않았습니다. 수동 시작이 필요합니다." >> "\$LOG_FILE"
+  exit 1
+fi
+
+# OrbStack 소켓 파일 권한 설정
+chmod 777 "/var/run/orbstack/docker.sock" 2>/dev/null
+echo "$(date): 소켓 파일 권한 설정 완료" >> "\$LOG_FILE"
+
+# VM 시작
+echo "$(date): OrbStack VM 시작 중..." >> "\$LOG_FILE"
+/Applications/OrbStack.app/Contents/MacOS/orbctl start --all >> "\$LOG_FILE" 2>&1
+echo "$(date): OrbStack VM 시작 명령 완료" >> "\$LOG_FILE"
+
+# 사용자 홈 디렉토리 생성
+if [ ! -L "/var/run/orbstack/run" ]; then
+  ln -sf "/var/run/orbstack" "/var/run/orbstack/run" 2>/dev/null
+fi
+
+# docker.sock 링크 생성 (사용자별)
+for USER_HOME in /Users/*; do
+  USER_NAME=\$(basename "\$USER_HOME")
+  if [ -d "\$USER_HOME" ] && [ "\$USER_NAME" != "Shared" ]; then
+    mkdir -p "\$USER_HOME/.orbstack/run" 2>/dev/null
+    chown -R "\$USER_NAME" "\$USER_HOME/.orbstack" 2>/dev/null
+    ln -sf "/var/run/orbstack/docker.sock" "\$USER_HOME/.orbstack/run/docker.sock" 2>/dev/null
+    echo "$(date): \$USER_NAME 사용자의 Docker 소켓 링크 생성" >> "\$LOG_FILE"
+  fi
+done
+
+echo "$(date): OrbStack 자동 시작 스크립트 완료" >> "\$LOG_FILE"
+exit 0
+EOL
+  
+  # 스타터 스크립트 권한 설정 및 이동
+  sudo mkdir -p "/usr/local/bin"
+  sudo cp /tmp/orbstack_start.sh "/usr/local/bin/orbstack_start.sh"
+  sudo chmod +x "/usr/local/bin/orbstack_start.sh"
+  
+  # 스타터 데몬 plist 생성
+  cat > /tmp/orbstack_starter.plist << EOL
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.orbstack.starter</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/orbstack_start.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>StandardOutPath</key>
+    <string>/tmp/orbstack-starter-output.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/orbstack-starter-error.log</string>
+    <key>UserName</key>
+    <string>root</string>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
+EOL
+  
+  # 스타터 데몬 plist 설치
+  sudo cp /tmp/orbstack_starter.plist "$ORBSTACK_STARTER_FILE"
+  sudo chown root:wheel "$ORBSTACK_STARTER_FILE"
+  sudo chmod 644 "$ORBSTACK_STARTER_FILE"
   
   # 임시 파일 삭제
-  rm /tmp/orbstack_daemon.plist
+  rm /tmp/orbstack_daemon.plist /tmp/orbstack_start.sh /tmp/orbstack_starter.plist
   
-  # 기존 런치데몬 중지 (있는 경우)
+  # 기존 런치데몬 언로드 (있는 경우)
   if sudo launchctl list | grep -q "dev.orbstack.daemon"; then
     show_warning "기존 OrbStack 런치데몬을 중지합니다..."
-    sudo launchctl unload "$LAUNCH_DAEMON_FILE"
+    sudo launchctl unload "$ORBSTACK_DAEMON_FILE" 2>/dev/null
+  fi
+  
+  if sudo launchctl list | grep -q "dev.orbstack.starter"; then
+    show_warning "기존 OrbStack 스타터 데몬을 중지합니다..."
+    sudo launchctl unload "$ORBSTACK_STARTER_FILE" 2>/dev/null
   fi
   
   # 새 런치데몬 로드
   show_warning "OrbStack 런치데몬을 로드합니다..."
-  sudo launchctl load "$LAUNCH_DAEMON_FILE"
+  sudo launchctl load "$ORBSTACK_DAEMON_FILE"
+  sleep 2
+  show_warning "OrbStack 스타터 데몬을 로드합니다..."
+  sudo launchctl load "$ORBSTACK_STARTER_FILE"
   
-  # OrbStack 서비스 권한 설정 (루트로 실행되지만 더 엄격한 권한 설정)
+  # OrbStack 서비스 권한 설정
   if [ -f "/Applications/OrbStack.app/Contents/MacOS/orb-service" ]; then
     show_warning "OrbStack 서비스 실행 권한을 설정합니다..."
     sudo chown root:wheel "/Applications/OrbStack.app/Contents/MacOS/orb-service"
     sudo chmod 4755 "/Applications/OrbStack.app/Contents/MacOS/orb-service"
     
-    # OrbStack 관련 디렉토리 권한 설정 (필요한 경우)
-    if [ -d "/Library/Application Support/OrbStack" ]; then
-      sudo chmod -R 755 "/Library/Application Support/OrbStack"
+    # orbctl 명령어 권한 설정
+    if [ -f "/Applications/OrbStack.app/Contents/MacOS/orbctl" ]; then
+      sudo chown root:wheel "/Applications/OrbStack.app/Contents/MacOS/orbctl"
+      sudo chmod 4755 "/Applications/OrbStack.app/Contents/MacOS/orbctl"
     fi
   fi
   
-  # 필요한 하위 디렉토리 생성 (시스템 부팅 시 필요할 수 있음)
+  # 필요한 디렉토리 생성 및 권한 설정
   sudo mkdir -p "/var/run/orbstack"
   sudo chmod 777 "/var/run/orbstack"
   
-  # OrbStack 시스템 설정 보안 이슈 해결
-  defaults write com.apple.security.syspolicy.kernel-extension-policy AllowUnknownSystemExtensions -bool true
+  # 사용자 홈 디렉토리에 필요한 디렉토리 생성
+  mkdir -p "$HOME/.orbstack/run"
   
-  # 시스템 부팅 시 OrbStack 데몬이 자동 실행됨을 알림
+  # 소켓 링크 생성
+  if [ -S "/var/run/orbstack/docker.sock" ]; then
+    ln -sf "/var/run/orbstack/docker.sock" "$HOME/.orbstack/run/docker.sock"
+  fi
+  
+  # OrbStack VM 즉시 시작 (현재 세션)
+  show_warning "OrbStack VM을 즉시 시작합니다..."
+  sudo /usr/local/bin/orbstack_start.sh &
+  
+  # 5초 대기 후 상태 확인
+  sleep 5
+  if [ -S "/var/run/orbstack/docker.sock" ] || [ -S "$HOME/.orbstack/run/docker.sock" ]; then
+    show_success "OrbStack Docker 소켓이 준비되었습니다."
+  else
+    show_warning "OrbStack Docker 소켓이 아직 준비되지 않았습니다. 몇 분 후에 자동으로 준비될 것입니다."
+  fi
+  
   show_success "OrbStack 런치데몬이 설정되었습니다. 이제 시스템 부팅 시 자동으로 시작됩니다."
-  show_success "중요: 로그인 전에도 OrbStack 데몬이 실행되므로 SSH 접속으로 즉시 컨테이너를 관리할 수 있습니다."
+  show_success "중요: 로그인 전에도 OrbStack 데몬과 컨테이너가 실행되므로 SSH 접속으로 즉시 관리할 수 있습니다."
 }
 
 # 시스템 절전 모드 설정 함수 (pmset만 사용)
