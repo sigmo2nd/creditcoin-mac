@@ -12,12 +12,6 @@ NC='\033[0m' # No Color
 # 현재 디렉토리 저장
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 
-# 관리자 권한 확인
-IS_ADMIN=false
-if groups | grep -q -w admin; then
-  IS_ADMIN=true
-fi
-
 # 메시지 출력 함수들
 show_step() {
   echo -e "\n${BLUE}=== $1 ===${NC}"
@@ -33,12 +27,6 @@ show_warning() {
 
 show_error() {
   echo -e "${RED}✗ $1${NC}"
-}
-
-# 관리자 권한으로 명령 실행
-run_as_admin() {
-  sudo "$@"
-  return $?
 }
 
 # 시스템 환경 체크
@@ -89,10 +77,13 @@ check_environment() {
   fi
   
   # 관리자 권한 확인
-  if [ "$IS_ADMIN" = true ]; then
-    show_success "관리자 권한으로 필요한 모든 설정을 수행할 수 있습니다."
+  if [ "$(id -u)" == "0" ]; then
+    show_success "관리자 권한으로 실행 중입니다."
+    export ROOT_USER=true
   else
-    show_warning "관리자 권한이 없습니다. 일부 설정은 건너뛰게 됩니다."
+    show_warning "일반 사용자 권한으로 실행 중입니다. 일부 기능은 관리자 권한이 필요합니다."
+    show_warning "필요한 경우 'sudo ./setup.sh'로 다시 실행하세요."
+    export ROOT_USER=false
   fi
   
   # Xcode 명령줄 도구 확인
@@ -167,22 +158,6 @@ install_orbstack() {
     fi
   fi
   
-  # OrbStack CLI 확인
-  if command -v orb &> /dev/null; then
-    show_success "OrbStack CLI가 PATH에 추가되어 있습니다."
-  else
-    show_warning "OrbStack CLI를 PATH에 추가합니다..."
-    if [ -f "/Applications/OrbStack.app/Contents/MacOS/orb" ]; then
-      if [[ "$SHELL_TYPE" == "zsh" ]]; then
-        echo 'export PATH="/Applications/OrbStack.app/Contents/MacOS:$PATH"' >> ~/.zshrc
-      else
-        echo 'export PATH="/Applications/OrbStack.app/Contents/MacOS:$PATH"' >> ~/.bash_profile
-      fi
-      export PATH="/Applications/OrbStack.app/Contents/MacOS:$PATH"
-      show_success "OrbStack CLI가 PATH에 추가되었습니다."
-    fi
-  fi
-  
   # Docker CLI 경로 설정
   if ! command -v docker &> /dev/null; then
     show_warning "Docker CLI를 PATH에 추가합니다..."
@@ -199,219 +174,140 @@ install_orbstack() {
       show_warning "Docker CLI를 찾을 수 없습니다. OrbStack이 제대로 설치되었는지 확인하세요."
     fi
   fi
+  
+  # 소켓 디렉토리 생성
+  mkdir -p "$HOME/.orbstack/run"
 }
 
 # OrbStack 자동 시작 설정
 setup_orbstack_autostart() {
   show_step "OrbStack 자동 시작 설정"
   
-  if [ "$IS_ADMIN" != true ]; then
-    show_warning "일부 설정에는 관리자 권한이 필요합니다."
-    show_warning "나중에 'sudo ./setup.sh'로 다시 실행하여 자동 시작을 설정하세요."
+  if [ "$ROOT_USER" != true ]; then
+    show_warning "자동 시작 설정에는 관리자 권한이 필요합니다."
+    show_warning "나중에 'sudo ./setup.sh'로 다시 실행하세요."
     return 1
   fi
   
-  # 사용자 확인
-  echo -e "${YELLOW}시스템 부팅 시 OrbStack 자동 시작을 설정하시겠습니까? (y/N)${NC}"
-  read -p "" setup_autostart
+  # 시작 스크립트 파일 경로
+  STARTUP_SCRIPT="/usr/local/bin/start-orbstack.sh"
   
-  if [[ ! "$setup_autostart" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-    show_warning "OrbStack 자동 시작 설정을 건너뜁니다."
-    return 0
-  fi
+  # 시작 스크립트 생성
+  show_warning "OrbStack 시작 스크립트 생성 중..."
+  mkdir -p /usr/local/bin
   
-  # 1. 로그인 항목에 OrbStack 추가
-  show_warning "로그인 항목에 OrbStack 추가 중..."
-  
-  if [[ "$SSH_SESSION" == true ]]; then
-    show_warning "SSH 세션에서는 로그인 항목 추가를 건너뛰고 다른 방법을 사용합니다."
-  else
-    # 로컬 세션에서만 AppleScript 실행
-    osascript <<EOT 2>/dev/null
-tell application "System Events"
-    set loginItems to the name of every login item
-    set orbExists to false
-    
-    repeat with itemName in loginItems
-        if itemName is "OrbStack" then
-            set orbExists to true
-        end if
-    end repeat
-    
-    if orbExists is false then
-        make new login item at end with properties {path:"/Applications/OrbStack.app", hidden:false}
-    end if
-end tell
-EOT
-    
-    if [ $? -eq 0 ]; then
-      show_success "OrbStack이 로그인 항목에 추가되었습니다."
-    else
-      show_warning "로그인 항목 추가에 실패했습니다. 다른 방법을 사용합니다."
-    fi
-  fi
-  
-  # 2. OrbStack 자체 자동 시작 설정
-  show_warning "OrbStack 자체 자동 시작 설정 중..."
-  
-  # OrbStack 설정 디렉토리 생성
-  mkdir -p "$HOME/Library/Application Support/OrbStack"
-  
-  # SSH 세션에서는 직접 파일 수정
-  if [[ "$SSH_SESSION" == true ]]; then
-    # 설정 파일 경로
-    PLIST_PATH="$HOME/Library/Preferences/dev.orbstack.plist"
-    
-    if [ -f "$PLIST_PATH" ]; then
-      # 파일이 존재하면 백업
-      cp "$PLIST_PATH" "${PLIST_PATH}.bak"
-      # defaults 명령 대신 직접 설정
-      plutil -replace "app.launch-at-login" -bool true "$PLIST_PATH" 2>/dev/null
-    else
-      # 파일이 없으면 새로 생성
-      echo '<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>app.launch-at-login</key>
-    <true/>
-</dict>
-</plist>' > "$PLIST_PATH"
-    fi
-  else
-    # 로컬 세션에서는 defaults 명령 사용
-    defaults write dev.orbstack app.launch-at-login -bool true
-  fi
-  
-  show_success "OrbStack 자체 자동 시작 설정이 완료되었습니다."
-  
-  # 3. 시작 스크립트 생성
-  show_warning "시스템 시작 스크립트 생성 중..."
-  
-  STARTUP_SCRIPT="/usr/local/bin/orbstack-startup.sh"
-  
-  # 스크립트 내용 생성
-  cat > /tmp/orbstack-startup.sh << 'EOT'
+  cat > "$STARTUP_SCRIPT" << 'EOT'
 #!/bin/bash
 
 # OrbStack 시작 스크립트
-LOG_FILE="/var/log/orbstack-startup.log"
+LOG_FILE="/var/log/orbstack-autostart.log"
 
-echo "$(date): OrbStack 시작 스크립트 실행" > "$LOG_FILE"
+# 로그 디렉토리 확인
+mkdir -p /var/log
 
-# OrbStack이 실행 중인지 확인
-if ! pgrep -f "OrbStack" > /dev/null; then
-    echo "$(date): OrbStack 시작 중..." >> "$LOG_FILE"
-    open -a OrbStack
-    sleep 10
-else
-    echo "$(date): OrbStack이 이미 실행 중입니다." >> "$LOG_FILE"
-fi
+# 로그 시작
+date > "$LOG_FILE"
+echo "OrbStack 자동 시작 스크립트가 실행되었습니다." >> "$LOG_FILE"
 
-# Docker 소켓 파일 확인
-for i in {1..30}; do
+# OrbStack 실행
+if [ -d "/Applications/OrbStack.app" ]; then
+  echo "OrbStack 앱 시작 중..." >> "$LOG_FILE"
+  /usr/bin/open -a "/Applications/OrbStack.app" --args --auto-start
+  echo "OrbStack 앱 시작 명령이 전송되었습니다." >> "$LOG_FILE"
+  
+  # 소켓 파일 생성 대기
+  echo "Docker 소켓 파일 대기 중..." >> "$LOG_FILE"
+  for i in {1..30}; do
     if [ -S "/var/run/orbstack/docker.sock" ]; then
-        echo "$(date): Docker 소켓 파일이 준비되었습니다." >> "$LOG_FILE"
-        chmod 777 "/var/run/orbstack/docker.sock"
-        
-        # 모든 사용자에게 소켓 파일 링크 생성
-        for USER_HOME in /Users/*; do
-            USER_NAME=$(basename "$USER_HOME")
-            if [ -d "$USER_HOME" ] && [ "$USER_NAME" != "Shared" ]; then
-                mkdir -p "$USER_HOME/.orbstack/run" 2>/dev/null
-                chown -R "$USER_NAME" "$USER_HOME/.orbstack" 2>/dev/null
-                ln -sf "/var/run/orbstack/docker.sock" "$USER_HOME/.orbstack/run/docker.sock" 2>/dev/null
-                echo "$(date): $USER_NAME 사용자의 Docker 소켓 링크 생성" >> "$LOG_FILE"
-            fi
-        done
-        
-        echo "$(date): 모든 설정이 완료되었습니다." >> "$LOG_FILE"
-        exit 0
+      echo "Docker 소켓 파일이 생성되었습니다." >> "$LOG_FILE"
+      chmod 777 "/var/run/orbstack/docker.sock"
+      
+      # 모든 사용자 홈 디렉토리에 소켓 링크 생성
+      for USER_HOME in /Users/*; do
+        USER_NAME=$(basename "$USER_HOME")
+        if [ -d "$USER_HOME" ] && [ "$USER_NAME" != "Shared" ]; then
+          mkdir -p "$USER_HOME/.orbstack/run" 2>/dev/null
+          chown -R "$USER_NAME" "$USER_HOME/.orbstack" 2>/dev/null
+          ln -sf "/var/run/orbstack/docker.sock" "$USER_HOME/.orbstack/run/docker.sock" 2>/dev/null
+          echo "사용자 $USER_NAME의 Docker 소켓 링크가 생성되었습니다." >> "$LOG_FILE"
+        fi
+      done
+      
+      echo "설정이 완료되었습니다." >> "$LOG_FILE"
+      exit 0
     fi
-    echo "$(date): Docker 소켓 대기 중... ($i/30)" >> "$LOG_FILE"
+    echo "대기 중... ($i/30)" >> "$LOG_FILE"
     sleep 2
-done
-
-echo "$(date): 시간 내에 Docker 소켓 파일이 생성되지 않았습니다." >> "$LOG_FILE"
-exit 1
+  done
+  
+  echo "시간 내에 Docker 소켓 파일이 생성되지 않았습니다." >> "$LOG_FILE"
+else
+  echo "OrbStack이 설치되어 있지 않습니다." >> "$LOG_FILE"
+fi
 EOT
   
-  # 스크립트 설치 및 권한 설정
-  run_as_admin mkdir -p /usr/local/bin
-  run_as_admin cp /tmp/orbstack-startup.sh "$STARTUP_SCRIPT"
-  run_as_admin chmod +x "$STARTUP_SCRIPT"
-  rm -f /tmp/orbstack-startup.sh
+  # 스크립트 권한 설정
+  chmod +x "$STARTUP_SCRIPT"
+  show_success "시작 스크립트가 생성되었습니다: $STARTUP_SCRIPT"
   
-  # LaunchDaemon 생성
-  LAUNCH_DAEMON_FILE="/Library/LaunchDaemons/com.orbstack.startup.plist"
+  # 런치데몬 plist 파일 생성
+  show_warning "런치데몬 설정 파일 생성 중..."
+  LAUNCH_DAEMON_FILE="/Library/LaunchDaemons/com.orbstack.autostart.plist"
   
-  cat > /tmp/orbstack-startup.plist << EOT
+  cat > "$LAUNCH_DAEMON_FILE" << EOT
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.orbstack.startup</string>
+    <string>com.orbstack.autostart</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/orbstack-startup.sh</string>
+        <string>/usr/local/bin/start-orbstack.sh</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
-    <key>StartInterval</key>
-    <integer>3600</integer>
     <key>StandardOutPath</key>
-    <string>/var/log/orbstack-startup-output.log</string>
+    <string>/var/log/orbstack-autostart-output.log</string>
     <key>StandardErrorPath</key>
-    <string>/var/log/orbstack-startup-error.log</string>
+    <string>/var/log/orbstack-autostart-error.log</string>
 </dict>
 </plist>
 EOT
   
-  # LaunchDaemon 설치 및 로드
-  run_as_admin cp /tmp/orbstack-startup.plist "$LAUNCH_DAEMON_FILE"
-  run_as_admin chown root:wheel "$LAUNCH_DAEMON_FILE"
-  run_as_admin chmod 644 "$LAUNCH_DAEMON_FILE"
-  rm -f /tmp/orbstack-startup.plist
+  # 권한 설정
+  chown root:wheel "$LAUNCH_DAEMON_FILE"
+  chmod 644 "$LAUNCH_DAEMON_FILE"
+  show_success "런치데몬 설정 파일이 생성되었습니다: $LAUNCH_DAEMON_FILE"
   
-  # 기존 LaunchDaemon 언로드 (있는 경우)
-  if sudo launchctl list | grep -q "com.orbstack.startup"; then
-    run_as_admin launchctl unload "$LAUNCH_DAEMON_FILE"
+  # 기존 런치데몬 언로드 (있는 경우)
+  if launchctl list | grep -q "com.orbstack.autostart"; then
+    show_warning "기존 런치데몬 언로드 중..."
+    launchctl unload "$LAUNCH_DAEMON_FILE"
   fi
   
-  # LaunchDaemon 로드
-  run_as_admin launchctl load "$LAUNCH_DAEMON_FILE"
+  # 런치데몬 로드
+  show_warning "런치데몬 로드 중..."
+  launchctl load "$LAUNCH_DAEMON_FILE"
   
-  # 소켓 디렉토리 생성
-  run_as_admin mkdir -p "/var/run/orbstack"
-  run_as_admin chmod 777 "/var/run/orbstack"
-  
-  # OrbStack 시작
-  if ! pgrep -f "OrbStack" > /dev/null; then
-    show_warning "OrbStack을 시작합니다..."
-    open -a OrbStack
-    sleep 5
+  if [ $? -eq 0 ]; then
+    show_success "런치데몬이 성공적으로 로드되었습니다."
+    show_success "이제 시스템 부팅 시 OrbStack이 자동으로 시작됩니다."
+  else
+    show_error "런치데몬 로드 중 오류가 발생했습니다."
+    return 1
   fi
   
-  # 소켓 파일 생성 기다리기
-  show_warning "Docker 소켓 파일 생성 대기 중... (최대 30초)"
-  for i in {1..30}; do
-    if [ -S "/var/run/orbstack/docker.sock" ] || [ -S "$HOME/.orbstack/run/docker.sock" ]; then
-      show_success "Docker 소켓 파일이 생성되었습니다."
-      break
-    fi
-    echo -n "."
-    sleep 1
-  done
+  # 시스템 소켓 디렉토리 생성 (필요한 경우)
+  mkdir -p "/var/run/orbstack"
+  chmod 777 "/var/run/orbstack"
   
-  if [ ! -S "/var/run/orbstack/docker.sock" ] && [ ! -S "$HOME/.orbstack/run/docker.sock" ]; then
-    show_warning "시간 내에 Docker 소켓 파일이 생성되지 않았습니다."
-    show_warning "스크립트가 부팅 시 OrbStack을 시작할 것입니다."
-  fi
+  # OrbStack 시작 테스트
+  show_warning "OrbStack 시작 테스트 중..."
+  "$STARTUP_SCRIPT" &
   
   show_success "OrbStack 자동 시작 설정이 완료되었습니다."
-  show_success "시스템 부팅 시 OrbStack이 자동으로 시작됩니다."
-  
+  show_success "시스템 재부팅 후 로그인 없이도 OrbStack이 자동으로 시작됩니다."
   return 0
 }
 
@@ -420,10 +316,11 @@ configure_power_management() {
   show_step "시스템 절전 모드 설정"
   
   # 관리자 권한 확인
-  if [ "$IS_ADMIN" != true ]; then
+  if [ "$ROOT_USER" != true ]; then
     show_warning "절전 모드 설정에는 관리자 권한이 필요합니다."
-    show_warning "이 단계를 건너뛰고 나중에 'sudo pmset -c sleep 0 disksleep 0 womp 1 autorestart 1'로 설정하세요."
-    return 0
+    show_warning "이 단계를 건너뛰고 나중에 다음 명령으로 설정하세요:"
+    show_warning "sudo pmset -c sleep 0 disksleep 0 womp 1 autorestart 1"
+    return 1
   fi
   
   # 사용자 확인
@@ -443,7 +340,7 @@ configure_power_management() {
   show_warning "시스템 절전 모드를 비활성화합니다..."
   
   # AC 전원 설정 (콘센트 연결 시) - 기본 서버 설정
-  run_as_admin pmset -c sleep 0 disksleep 0 womp 1 networkoversleep 0 ttyskeepawake 1 autorestart 1
+  pmset -c sleep 0 disksleep 0 womp 1 networkoversleep 0 ttyskeepawake 1 autorestart 1
   
   # 배터리 설정 (노트북인 경우)
   if pmset -g | grep -q "Battery Power"; then
@@ -454,7 +351,7 @@ configure_power_management() {
     
     if [[ "$DISABLE_BATTERY_SLEEP" =~ ^([yY][eE][sS]|[yY])$ ]]; then
       # 배터리 사용 시 절전 방지 설정
-      run_as_admin pmset -b sleep 0 disksleep 0 ttyskeepawake 1
+      pmset -b sleep 0 disksleep 0 ttyskeepawake 1
       show_warning "배터리 사용 중에도 절전 모드가 비활성화되었습니다."
     else
       # 배터리 사용 시 기본 설정은 변경하지 않음
@@ -560,7 +457,20 @@ add_to_shell_profile() {
     show_success "$PROFILE_FILE 백업 파일이 생성되었습니다."
     
     # 기존 설정 블록 제거
-    sed -i.bak "/$marker/,/$endmarker/d" "$PROFILE_FILE"
+    TEMP_FILE="${PROFILE_FILE}.tmp"
+    grep -v -F "$marker" "$PROFILE_FILE" | grep -v -F "$endmarker" > "$TEMP_FILE"
+    
+    # 기존 Creditcoin Docker Utils 관련 라인 제거
+    grep -v "CREDITCOIN_DIR" "$TEMP_FILE" | \
+    grep -v "CREDITCOIN_UTILS" | \
+    grep -v "OrbStack Docker CLI" | \
+    grep -v "OrbStack Docker 호스트" | \
+    grep -v "Docker 키체인 인증" | \
+    grep -v "유틸리티 함수 로드" > "${TEMP_FILE}.2"
+    
+    mv "${TEMP_FILE}.2" "$PROFILE_FILE"
+    rm -f "$TEMP_FILE" 2>/dev/null
+    
     show_success "기존 Creditcoin Docker Utils 설정이 제거되었습니다."
   fi
   
@@ -582,29 +492,6 @@ export DOCKER_HOST="unix://\$HOME/.orbstack/run/docker.sock"
 # Docker 키체인 인증 비활성화 (SSH 세션 호환성)
 export DOCKER_CLI_NO_CREDENTIAL_STORE=1
 
-# OrbStack 시작 확인 및 시작 (SSH 세션에서)
-orbstack_check() {
-    # OrbStack이 실행 중인지 확인
-    if ! pgrep -x "OrbStack" > /dev/null && [ -d "/Applications/OrbStack.app" ]; then
-        echo "OrbStack을 시작합니다..."
-        open -a OrbStack
-        # 소켓 생성 대기
-        for i in {1..10}; do
-            if [ -S "\$HOME/.orbstack/run/docker.sock" ]; then
-                echo "Docker 소켓이 준비되었습니다."
-                break
-            fi
-            echo -n "."
-            sleep 1
-        done
-    fi
-}
-
-# SSH 세션일 경우 OrbStack 확인
-if [ -n "\$SSH_CLIENT" ] || [ -n "\$SSH_TTY" ]; then
-    orbstack_check
-fi
-
 # 유틸리티 함수 로드
 if [ -f "\$CREDITCOIN_UTILS" ]; then
     source "\$CREDITCOIN_UTILS"
@@ -613,9 +500,6 @@ $endmarker
 EOT
 
   show_success "$PROFILE_FILE에 유틸리티가 추가되었습니다."
-  
-  # 소켓 디렉토리 생성
-  mkdir -p "$HOME/.orbstack/run"
 }
 
 # 리소스 권장 설정 안내
@@ -639,6 +523,10 @@ show_final_instructions() {
   
   show_success "Creditcoin Docker 유틸리티 설정이 완료되었습니다!"
   
+  if [ "$ROOT_USER" != true ]; then
+    show_warning "관리자 권한이 필요한 설정은 'sudo ./setup.sh'로 다시 실행하세요."
+  fi
+  
   show_warning "변경 사항을 적용하려면 다음 명령어를 실행하세요:"
   if [[ "$SHELL_TYPE" == "zsh" ]]; then
     echo -e "${BLUE}source ~/.zshrc${NC}"
@@ -652,7 +540,7 @@ show_final_instructions() {
     echo -e "\n${YELLOW}SSH 세션 사용 팁:${NC}"
     echo -e "1. 환경 변수가 제대로 설정되었는지 확인하세요: ${BLUE}echo \$DOCKER_HOST${NC}"
     echo -e "2. Docker가 작동하는지 확인하세요: ${BLUE}docker ps${NC}"
-    echo -e "3. 시스템 재부팅 후에도 Docker가 자동으로 실행됩니다."
+    echo -e "3. 로그 확인: ${BLUE}cat /var/log/orbstack-autostart.log${NC}"
   fi
 }
 
@@ -676,15 +564,12 @@ main() {
   install_orbstack
   
   # 관리자 권한이 있는 경우에만 추가 설정
-  if [ "$IS_ADMIN" = true ]; then
+  if [ "$ROOT_USER" == true ]; then
     # OrbStack 자동 시작 설정
     setup_orbstack_autostart
     
     # 시스템 절전 모드 설정
     configure_power_management
-  else
-    show_warning "일부 설정은 관리자 권한이 필요하므로 건너뛰었습니다."
-    show_warning "나중에 관리자 권한으로 'sudo ./setup.sh'를 실행하여 설정을 완료하세요."
   fi
   
   # 쉘 프로필 설정
