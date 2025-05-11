@@ -274,19 +274,75 @@ setup_orbstack_daemon() {
 
   # OrbStack 서비스 실행 파일 권한 설정
   show_warning "OrbStack 서비스 파일 권한을 설정합니다..."
-  run_as_admin chown root:wheel "/Applications/OrbStack.app/Contents/MacOS/orb-service"
-  run_as_admin chmod 4755 "/Applications/OrbStack.app/Contents/MacOS/orb-service"
-
-  if [ -f "/Applications/OrbStack.app/Contents/MacOS/orbctl" ]; then
-    run_as_admin chown root:wheel "/Applications/OrbStack.app/Contents/MacOS/orbctl"
-    run_as_admin chmod 4755 "/Applications/OrbStack.app/Contents/MacOS/orbctl"
+  
+  # orb-service 파일 찾기
+  ORB_SERVICE_PATH=""
+  
+  # 가능한 경로 목록
+  ORB_SERVICE_PATHS=(
+    "/Applications/OrbStack.app/Contents/MacOS/orb-service"
+    "/Applications/OrbStack.app/Contents/Resources/orb-service"
+    "/Applications/OrbStack.app/Contents/MacOS/bin/orb-service"
+  )
+  
+  for path in "${ORB_SERVICE_PATHS[@]}"; do
+    if [ -f "$path" ]; then
+      ORB_SERVICE_PATH="$path"
+      break
+    fi
+  done
+  
+  # orb-service를 찾지 못한 경우 검색
+  if [ -z "$ORB_SERVICE_PATH" ]; then
+    show_warning "orb-service 파일을 자동으로 찾는 중..."
+    ORB_SERVICE_PATH=$(find /Applications/OrbStack.app -name "orb-service" -type f 2>/dev/null | head -n 1)
+  fi
+  
+  if [ -n "$ORB_SERVICE_PATH" ]; then
+    show_success "orb-service 파일을 찾았습니다: $ORB_SERVICE_PATH"
+    run_as_admin chown root:wheel "$ORB_SERVICE_PATH"
+    run_as_admin chmod 4755 "$ORB_SERVICE_PATH"
+  else
+    show_warning "orb-service 파일을 찾을 수 없습니다. 권한 설정을 건너뜁니다."
+  fi
+  
+  # orbctl 파일 찾기
+  ORBCTL_PATH=""
+  
+  # 가능한 경로 목록
+  ORBCTL_PATHS=(
+    "/Applications/OrbStack.app/Contents/MacOS/orbctl"
+    "/Applications/OrbStack.app/Contents/Resources/orbctl"
+    "/Applications/OrbStack.app/Contents/MacOS/bin/orbctl"
+  )
+  
+  for path in "${ORBCTL_PATHS[@]}"; do
+    if [ -f "$path" ]; then
+      ORBCTL_PATH="$path"
+      break
+    fi
+  done
+  
+  # orbctl을 찾지 못한 경우 검색
+  if [ -z "$ORBCTL_PATH" ]; then
+    ORBCTL_PATH=$(find /Applications/OrbStack.app -name "orbctl" -type f 2>/dev/null | head -n 1)
+  fi
+  
+  if [ -n "$ORBCTL_PATH" ]; then
+    show_success "orbctl 파일을 찾았습니다: $ORBCTL_PATH"
+    run_as_admin chown root:wheel "$ORBCTL_PATH"
+    run_as_admin chmod 4755 "$ORBCTL_PATH"
+  else
+    show_warning "orbctl 파일을 찾을 수 없습니다. 권한 설정을 건너뜁니다."
   fi
 
   # 런치데몬 plist 파일 생성
   show_warning "OrbStack 런치데몬 파일을 생성합니다..."
   
-  # 임시 파일 생성
-  cat > /tmp/orbstack_daemon.plist << EOL
+  # 실제 실행 파일 경로 업데이트
+  if [ -n "$ORB_SERVICE_PATH" ]; then
+    # 임시 파일 생성
+    cat > /tmp/orbstack_daemon.plist << EOL
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -295,7 +351,7 @@ setup_orbstack_daemon() {
     <string>dev.orbstack.daemon</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Applications/OrbStack.app/Contents/MacOS/orb-service</string>
+        <string>${ORB_SERVICE_PATH}</string>
         <string>daemon</string>
         <string>--auto-start</string>
     </array>
@@ -321,6 +377,34 @@ setup_orbstack_daemon() {
 </dict>
 </plist>
 EOL
+  else
+    # orb-service 파일을 찾지 못한 경우 대체 방법
+    show_warning "orb-service 파일을 찾을 수 없어 대체 방법을 사용합니다..."
+    cat > /tmp/orbstack_daemon.plist << EOL
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.orbstack.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>open</string>
+        <string>-a</string>
+        <string>OrbStack</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/var/log/orbstack.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/orbstack-error.log</string>
+</dict>
+</plist>
+EOL
+  fi
 
   # plist 파일 복사 및 권한 설정
   run_as_admin cp /tmp/orbstack_daemon.plist "$ORBSTACK_DAEMON_FILE"
