@@ -1,6 +1,5 @@
 #!/bin/bash
 # setup.sh - Creditcoin Docker 유틸리티 설정 스크립트 (macOS + OrbStack 환경용)
-# 이 스크립트는 macOS에서 Creditcoin 노드 운영을 위한 환경을 설정합니다.
 
 # 색상 정의
 GREEN='\033[0;32m'
@@ -12,24 +11,27 @@ NC='\033[0m' # No Color
 # 현재 디렉토리 저장
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 
-# 메시지 출력 함수들
+# 진행 상황 표시 함수
 show_step() {
   echo -e "\n${BLUE}=== $1 ===${NC}"
 }
 
+# 성공 메시지 표시 함수
 show_success() {
   echo -e "${GREEN}✓ $1${NC}"
 }
 
+# 경고 메시지 표시 함수
 show_warning() {
   echo -e "${YELLOW}! $1${NC}"
 }
 
+# 오류 메시지 표시 함수
 show_error() {
   echo -e "${RED}✗ $1${NC}"
 }
 
-# 시스템 환경 체크
+# macOS 환경 확인
 check_environment() {
   show_step "시스템 환경 확인"
   
@@ -76,16 +78,6 @@ check_environment() {
     export SSH_SESSION=false
   fi
   
-  # 관리자 권한 확인
-  if [ "$(id -u)" == "0" ]; then
-    show_success "관리자 권한으로 실행 중입니다."
-    export ROOT_USER=true
-  else
-    show_warning "일반 사용자 권한으로 실행 중입니다. 일부 기능은 관리자 권한이 필요합니다."
-    show_warning "필요한 경우 'sudo ./setup.sh'로 다시 실행하세요."
-    export ROOT_USER=false
-  fi
-  
   # Xcode 명령줄 도구 확인
   if ! xcode-select -p &> /dev/null; then
     show_warning "Xcode 명령줄 도구가 설치되어 있지 않습니다. 설치를 시작합니다..."
@@ -98,7 +90,42 @@ check_environment() {
   fi
 }
 
-# Homebrew 설치
+# FileVault 상태 확인
+check_filevault() {
+  show_step "FileVault 상태 확인"
+  
+  if [[ "$SSH_SESSION" == true ]]; then
+    show_warning "SSH 세션에서는 FileVault 상태를 확인할 수 없습니다."
+    return 0
+  fi
+  
+  # FileVault 상태 확인
+  FILEVAULT_STATUS=$(fdesetup status 2>/dev/null || echo "FileVault status unknown")
+  
+  if [[ "$FILEVAULT_STATUS" == *"FileVault is On"* ]]; then
+    show_warning "FileVault가 활성화되어 있습니다."
+    show_warning "FileVault는 디스크 암호화로 인해 OrbStack 성능에 영향을 줄 수 있습니다."
+    show_warning "최적의 성능을 위해 FileVault 해제를 권장합니다."
+    
+    # 해제 방법 안내
+    echo ""
+    echo -e "${YELLOW}===== FileVault 해제 방법 =====${NC}"
+    echo "1. 시스템 환경설정(또는 시스템 설정) 열기"
+    echo "2. '보안 및 개인 정보 보호' 선택"
+    echo "3. 'FileVault' 탭 선택"
+    echo "4. '해제' 버튼 클릭"
+    echo "5. 관리자 암호 입력"
+    echo "6. 컴퓨터 재시작으로 암호화 해제 과정이 완료됩니다."
+    echo ""
+    
+    show_warning "FileVault 해제는 시간이 오래 걸릴 수 있으며, 디스크 크기에 따라 수 시간이 소요될 수 있습니다."
+    show_warning "해제 과정 중에도 설치를 계속 진행합니다."
+  else
+    show_success "FileVault가 비활성화되어 있거나 상태를 확인할 수 없습니다."
+  fi
+}
+
+# Homebrew 설치 함수
 install_homebrew() {
   show_step "Homebrew 설치 확인"
   
@@ -136,7 +163,37 @@ install_homebrew() {
   brew update
 }
 
-# OrbStack 설치
+# 필요한 도구 설치
+install_tools() {
+  show_step "필요한 도구 설치"
+  
+  # git-lfs 확인 및 설치
+  if ! command -v git-lfs &> /dev/null; then
+    show_warning "git-lfs가 설치되어 있지 않습니다. 설치를 시작합니다..."
+    brew install git-lfs
+    git lfs install
+    show_success "git-lfs가 설치되었습니다."
+  else
+    show_success "git-lfs가 설치되어 있습니다."
+  fi
+  
+  # jq 확인 및 설치 (JSON 처리 유틸리티)
+  if ! command -v jq &> /dev/null; then
+    show_warning "jq가 설치되어 있지 않습니다. 설치를 시작합니다..."
+    brew install jq
+    show_success "jq가 설치되었습니다."
+  else
+    show_success "jq가 설치되어 있습니다."
+  fi
+  
+  # GNU 유틸리티 설치 (Linux 호환 유틸리티)
+  show_warning "GNU 버전 유틸리티 설치 중..."
+  brew install coreutils findutils gnu-sed gawk grep
+  
+  show_success "모든 필요한 도구가 설치되었습니다."
+}
+
+# OrbStack 설치 함수
 install_orbstack() {
   show_step "OrbStack 설치 확인"
   
@@ -179,14 +236,23 @@ install_orbstack() {
   mkdir -p "$HOME/.orbstack/run"
 }
 
-# OrbStack 자동 시작 설정
+# OrbStack 자동 시작 설정 (sudo 필요)
 setup_orbstack_autostart() {
   show_step "OrbStack 자동 시작 설정"
   
-  if [ "$ROOT_USER" != true ]; then
-    show_warning "자동 시작 설정에는 관리자 권한이 필요합니다."
-    show_warning "나중에 'sudo ./setup.sh'로 다시 실행하세요."
-    return 1
+  # 권한 확인 및 sudo 요청
+  if [ "$(id -u)" != "0" ]; then
+    show_warning "OrbStack 자동 시작을 설정하려면 관리자 권한이 필요합니다."
+    show_warning "관리자 암호를 입력하세요:"
+    sudo -v || return 1
+    
+    # 현재 스크립트를 sudo로 실행하여 이 함수만 다시 호출
+    show_warning "관리자 권한으로 자동 시작 설정을 진행합니다..."
+    sudo "$0" --autostart-only
+    local RET=$?
+    
+    # 성공 여부 반환
+    return $RET
   fi
   
   # 시작 스크립트 파일 경로
@@ -311,16 +377,22 @@ EOT
   return 0
 }
 
-# 시스템 절전 모드 설정
+# 시스템 절전 모드 설정 (sudo 필요)
 configure_power_management() {
   show_step "시스템 절전 모드 설정"
   
-  # 관리자 권한 확인
-  if [ "$ROOT_USER" != true ]; then
-    show_warning "절전 모드 설정에는 관리자 권한이 필요합니다."
-    show_warning "이 단계를 건너뛰고 나중에 다음 명령으로 설정하세요:"
-    show_warning "sudo pmset -c sleep 0 disksleep 0 womp 1 autorestart 1"
-    return 1
+  # 권한 확인 및 sudo 요청
+  if [ "$(id -u)" != "0" ]; then
+    show_warning "시스템 절전 모드 설정을 위해 관리자 권한이 필요합니다."
+    show_warning "관리자 암호를 입력하세요:"
+    sudo -v || return 1
+    
+    # 현재 스크립트를 sudo로 실행하여 이 함수만 다시 호출
+    sudo "$0" --power-only
+    local RET=$?
+    
+    # 성공 여부 반환
+    return $RET
   fi
   
   # 사용자 확인
@@ -364,71 +436,6 @@ configure_power_management() {
   # 변경된 설정 표시
   echo -e "${GREEN}새로운 전원 관리 설정:${NC}"
   pmset -g
-}
-
-# FileVault 상태 확인
-check_filevault() {
-  show_step "FileVault 상태 확인"
-  
-  if [[ "$SSH_SESSION" == true ]]; then
-    show_warning "SSH 세션에서는 FileVault 상태를 확인할 수 없습니다."
-    return 0
-  fi
-  
-  # FileVault 상태 확인
-  FILEVAULT_STATUS=$(fdesetup status 2>/dev/null || echo "FileVault status unknown")
-  
-  if [[ "$FILEVAULT_STATUS" == *"FileVault is On"* ]]; then
-    show_warning "FileVault가 활성화되어 있습니다."
-    show_warning "FileVault는 디스크 암호화로 인해 OrbStack 성능에 영향을 줄 수 있습니다."
-    show_warning "최적의 성능을 위해 FileVault 해제를 권장합니다."
-    
-    # 해제 방법 안내
-    echo ""
-    echo -e "${YELLOW}===== FileVault 해제 방법 =====${NC}"
-    echo "1. 시스템 환경설정(또는 시스템 설정) 열기"
-    echo "2. '보안 및 개인 정보 보호' 선택"
-    echo "3. 'FileVault' 탭 선택"
-    echo "4. '해제' 버튼 클릭"
-    echo "5. 관리자 암호 입력"
-    echo "6. 컴퓨터 재시작으로 암호화 해제 과정이 완료됩니다."
-    echo ""
-    
-    show_warning "FileVault 해제는 시간이 오래 걸릴 수 있으며, 디스크 크기에 따라 수 시간이 소요될 수 있습니다."
-    show_warning "해제 과정 중에도 설치를 계속 진행합니다."
-  else
-    show_success "FileVault가 비활성화되어 있거나 상태를 확인할 수 없습니다."
-  fi
-}
-
-# 필요한 도구 설치
-install_tools() {
-  show_step "필요한 도구 설치"
-  
-  # git-lfs 확인 및 설치
-  if ! command -v git-lfs &> /dev/null; then
-    show_warning "git-lfs가 설치되어 있지 않습니다. 설치를 시작합니다..."
-    brew install git-lfs
-    git lfs install
-    show_success "git-lfs가 설치되었습니다."
-  else
-    show_success "git-lfs가 설치되어 있습니다."
-  fi
-  
-  # jq 확인 및 설치 (JSON 처리 유틸리티)
-  if ! command -v jq &> /dev/null; then
-    show_warning "jq가 설치되어 있지 않습니다. 설치를 시작합니다..."
-    brew install jq
-    show_success "jq가 설치되었습니다."
-  else
-    show_success "jq가 설치되어 있습니다."
-  fi
-  
-  # GNU 유틸리티 설치 (Linux 호환 유틸리티)
-  show_warning "GNU 버전 유틸리티 설치 중..."
-  brew install coreutils findutils gnu-sed gawk grep
-  
-  show_success "모든 필요한 도구가 설치되었습니다."
 }
 
 # 쉘 프로필에 추가
@@ -523,10 +530,6 @@ show_final_instructions() {
   
   show_success "Creditcoin Docker 유틸리티 설정이 완료되었습니다!"
   
-  if [ "$ROOT_USER" != true ]; then
-    show_warning "관리자 권한이 필요한 설정은 'sudo ./setup.sh'로 다시 실행하세요."
-  fi
-  
   show_warning "변경 사항을 적용하려면 다음 명령어를 실행하세요:"
   if [[ "$SHELL_TYPE" == "zsh" ]]; then
     echo -e "${BLUE}source ~/.zshrc${NC}"
@@ -546,34 +549,28 @@ show_final_instructions() {
 
 # 메인 스크립트
 main() {
+  # 특정 기능만 실행하는 옵션 처리
+  if [ "$1" == "--autostart-only" ]; then
+    setup_orbstack_autostart
+    exit $?
+  elif [ "$1" == "--power-only" ]; then
+    configure_power_management
+    exit $?
+  fi
+
   echo -e "${BLUE}=== Creditcoin Docker 유틸리티 설정 (macOS + OrbStack) ===${NC}"
   
-  # 환경 확인
+  # 기본 설정 (sudo 필요 없음)
   check_environment
-  
-  # FileVault 상태 확인
   check_filevault
-  
-  # Homebrew 설치
   install_homebrew
-  
-  # 필요한 도구 설치
   install_tools
-  
-  # OrbStack 설치
   install_orbstack
-  
-  # 관리자 권한이 있는 경우에만 추가 설정
-  if [ "$ROOT_USER" == true ]; then
-    # OrbStack 자동 시작 설정
-    setup_orbstack_autostart
-    
-    # 시스템 절전 모드 설정
-    configure_power_management
-  fi
-  
-  # 쉘 프로필 설정
   add_to_shell_profile
+  
+  # sudo 필요한 작업들
+  setup_orbstack_autostart
+  configure_power_management
   
   # 리소스 권장 설정 안내
   show_resource_recommendations
