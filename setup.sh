@@ -614,6 +614,7 @@ install_dependencies() {
 # 쉘 프로필에 추가
 add_to_shell_profile() {
   local marker="# === Creditcoin Docker Utils ==="
+  local endmarker="# === End Creditcoin Docker Utils ==="
   
   # zsh 또는 bash 확인
   if [[ "$SHELL" == *"zsh"* ]]; then
@@ -632,38 +633,47 @@ add_to_shell_profile() {
     cp "$PROFILE_FILE" "${PROFILE_FILE}.bak.$(date +%Y%m%d%H%M%S)"
     show_warning "$PROFILE_FILE 백업 파일이 생성되었습니다: ${PROFILE_FILE}.bak.$(date +%Y%m%d%H%M%S)"
     
-    # 기존 설정 블록 제거
-    awk -v marker="$marker" 'BEGIN{skip=0;} /^# === Creditcoin Docker Utils ===$/{ skip=1; next } /^# === End Creditcoin Docker Utils ===$/{ skip=0; next } !skip{ print $0 }' "$PROFILE_FILE" > "${PROFILE_FILE}.tmp"
-    mv "${PROFILE_FILE}.tmp" "$PROFILE_FILE"
+    # 기존 설정 블록 제거 (단순화된 방법)
+    TEMP_FILE="${PROFILE_FILE}.tmp"
+    grep -v -F "$marker" "$PROFILE_FILE" | grep -v -F "$endmarker" > "$TEMP_FILE"
+    
+    # 기존 Creditcoin Docker Utils 관련 라인 제거
+    grep -v "CREDITCOIN_DIR" "$TEMP_FILE" | \
+    grep -v "CREDITCOIN_UTILS" | \
+    grep -v "OrbStack Docker CLI" | \
+    grep -v "OrbStack Docker 호스트" | \
+    grep -v "Docker 키체인 인증" | \
+    grep -v "유틸리티 함수 로드" > "${TEMP_FILE}.2"
+    
+    mv "${TEMP_FILE}.2" "$PROFILE_FILE"
+    rm -f "$TEMP_FILE" 2>/dev/null
     
     show_warning "기존 Creditcoin Docker Utils 설정이 제거되었습니다."
   fi
   
   # 프로필 파일에 추가
-  cat >> "$PROFILE_FILE" << EOF
-
-$marker
-# Creditcoin Docker 설치 경로
-CREDITCOIN_DIR="$SCRIPT_DIR"
-CREDITCOIN_UTILS="\$CREDITCOIN_DIR/creditcoin-utils.sh"
-
-# OrbStack Docker CLI 경로 추가
-if [ -f "/Applications/OrbStack.app/Contents/MacOS/xbin/docker" ]; then
-    export PATH="/Applications/OrbStack.app/Contents/MacOS/xbin:\$PATH"
-fi
-
-# OrbStack Docker 호스트 설정 (SSH 세션 호환성)
-export DOCKER_HOST="unix://\$HOME/.orbstack/run/docker.sock"
-
-# Docker 키체인 인증 비활성화 (SSH 세션 호환성)
-export DOCKER_CLI_NO_CREDENTIAL_STORE=1
-
-# 유틸리티 함수 로드
-if [ -f "\$CREDITCOIN_UTILS" ]; then
-    source "\$CREDITCOIN_UTILS"
-fi
-# === End Creditcoin Docker Utils ===
-EOF
+  echo "" >> "$PROFILE_FILE"
+  echo "$marker" >> "$PROFILE_FILE"
+  echo "# Creditcoin Docker 설치 경로" >> "$PROFILE_FILE"
+  echo "CREDITCOIN_DIR=\"$SCRIPT_DIR\"" >> "$PROFILE_FILE"
+  echo "CREDITCOIN_UTILS=\"\$CREDITCOIN_DIR/creditcoin-utils.sh\"" >> "$PROFILE_FILE"
+  echo "" >> "$PROFILE_FILE"
+  echo "# OrbStack Docker CLI 경로 추가" >> "$PROFILE_FILE"
+  echo "if [ -f \"/Applications/OrbStack.app/Contents/MacOS/xbin/docker\" ]; then" >> "$PROFILE_FILE"
+  echo "    export PATH=\"/Applications/OrbStack.app/Contents/MacOS/xbin:\$PATH\"" >> "$PROFILE_FILE"
+  echo "fi" >> "$PROFILE_FILE"
+  echo "" >> "$PROFILE_FILE"
+  echo "# OrbStack Docker 호스트 설정 (SSH 세션 호환성)" >> "$PROFILE_FILE"
+  echo "export DOCKER_HOST=\"unix://\$HOME/.orbstack/run/docker.sock\"" >> "$PROFILE_FILE"
+  echo "" >> "$PROFILE_FILE"
+  echo "# Docker 키체인 인증 비활성화 (SSH 세션 호환성)" >> "$PROFILE_FILE"
+  echo "export DOCKER_CLI_NO_CREDENTIAL_STORE=1" >> "$PROFILE_FILE"
+  echo "" >> "$PROFILE_FILE"
+  echo "# 유틸리티 함수 로드" >> "$PROFILE_FILE"
+  echo "if [ -f \"\$CREDITCOIN_UTILS\" ]; then" >> "$PROFILE_FILE"
+  echo "    source \"\$CREDITCOIN_UTILS\"" >> "$PROFILE_FILE"
+  echo "fi" >> "$PROFILE_FILE"
+  echo "$endmarker" >> "$PROFILE_FILE"
 
   show_success "$PROFILE_FILE에 유틸리티가 추가되었습니다."
 }
