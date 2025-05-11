@@ -223,7 +223,11 @@ setup_orbstack_autostart() {
   # 1. 로그인 항목에 OrbStack 추가
   show_warning "로그인 항목에 OrbStack 추가 중..."
   
-  osascript <<EOT
+  if [[ "$SSH_SESSION" == true ]]; then
+    show_warning "SSH 세션에서는 로그인 항목 추가를 건너뛰고 다른 방법을 사용합니다."
+  else
+    # 로컬 세션에서만 AppleScript 실행
+    osascript <<EOT 2>/dev/null
 tell application "System Events"
     set loginItems to the name of every login item
     set orbExists to false
@@ -239,16 +243,46 @@ tell application "System Events"
     end if
 end tell
 EOT
-  
-  if [ $? -eq 0 ]; then
-    show_success "OrbStack이 로그인 항목에 추가되었습니다."
-  else
-    show_warning "로그인 항목 추가에 실패했습니다. 수동으로 추가해주세요."
-    show_warning "시스템 환경설정 > 사용자 및 그룹 > 로그인 항목에서 OrbStack을 추가하세요."
+    
+    if [ $? -eq 0 ]; then
+      show_success "OrbStack이 로그인 항목에 추가되었습니다."
+    else
+      show_warning "로그인 항목 추가에 실패했습니다. 다른 방법을 사용합니다."
+    fi
   fi
   
   # 2. OrbStack 자체 자동 시작 설정
-  defaults write dev.orbstack app.launch-at-login -bool true
+  show_warning "OrbStack 자체 자동 시작 설정 중..."
+  
+  # OrbStack 설정 디렉토리 생성
+  mkdir -p "$HOME/Library/Application Support/OrbStack"
+  
+  # SSH 세션에서는 직접 파일 수정
+  if [[ "$SSH_SESSION" == true ]]; then
+    # 설정 파일 경로
+    PLIST_PATH="$HOME/Library/Preferences/dev.orbstack.plist"
+    
+    if [ -f "$PLIST_PATH" ]; then
+      # 파일이 존재하면 백업
+      cp "$PLIST_PATH" "${PLIST_PATH}.bak"
+      # defaults 명령 대신 직접 설정
+      plutil -replace "app.launch-at-login" -bool true "$PLIST_PATH" 2>/dev/null
+    else
+      # 파일이 없으면 새로 생성
+      echo '<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>app.launch-at-login</key>
+    <true/>
+</dict>
+</plist>' > "$PLIST_PATH"
+    fi
+  else
+    # 로컬 세션에서는 defaults 명령 사용
+    defaults write dev.orbstack app.launch-at-login -bool true
+  fi
+  
   show_success "OrbStack 자체 자동 시작 설정이 완료되었습니다."
   
   # 3. 시작 스크립트 생성
@@ -547,6 +581,29 @@ export DOCKER_HOST="unix://\$HOME/.orbstack/run/docker.sock"
 
 # Docker 키체인 인증 비활성화 (SSH 세션 호환성)
 export DOCKER_CLI_NO_CREDENTIAL_STORE=1
+
+# OrbStack 시작 확인 및 시작 (SSH 세션에서)
+orbstack_check() {
+    # OrbStack이 실행 중인지 확인
+    if ! pgrep -x "OrbStack" > /dev/null && [ -d "/Applications/OrbStack.app" ]; then
+        echo "OrbStack을 시작합니다..."
+        open -a OrbStack
+        # 소켓 생성 대기
+        for i in {1..10}; do
+            if [ -S "\$HOME/.orbstack/run/docker.sock" ]; then
+                echo "Docker 소켓이 준비되었습니다."
+                break
+            fi
+            echo -n "."
+            sleep 1
+        done
+    fi
+}
+
+# SSH 세션일 경우 OrbStack 확인
+if [ -n "\$SSH_CLIENT" ] || [ -n "\$SSH_TTY" ]; then
+    orbstack_check
+fi
 
 # 유틸리티 함수 로드
 if [ -f "\$CREDITCOIN_UTILS" ]; then
