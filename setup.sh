@@ -447,7 +447,7 @@ add_to_shell_profile() {
   local endmarker="# === End Creditcoin Docker Utils ==="
   
   # 프로필 파일 설정
-  if [[ "$SHELL_TYPE" == "zsh" ]]; then
+  if [[ "$SHELL" == *"zsh"* ]]; then
     PROFILE_FILE="$HOME/.zshrc"
     show_success "zsh 쉘이 감지되었습니다. $PROFILE_FILE에 설정을 추가합니다."
   else
@@ -463,20 +463,15 @@ add_to_shell_profile() {
     cp "$PROFILE_FILE" "${PROFILE_FILE}.bak.$(date +%Y%m%d%H%M%S)"
     show_success "$PROFILE_FILE 백업 파일이 생성되었습니다."
     
-    # 기존 설정 블록 제거
-    TEMP_FILE="${PROFILE_FILE}.tmp"
-    grep -v -F "$marker" "$PROFILE_FILE" | grep -v -F "$endmarker" > "$TEMP_FILE"
+    # 파일 전체 내용을 임시 파일로 저장
+    cat "$PROFILE_FILE" > "${PROFILE_FILE}.tmp"
     
-    # 기존 Creditcoin Docker Utils 관련 라인 제거
-    grep -v "CREDITCOIN_DIR" "$TEMP_FILE" | \
-    grep -v "CREDITCOIN_UTILS" | \
-    grep -v "OrbStack Docker CLI" | \
-    grep -v "OrbStack Docker 호스트" | \
-    grep -v "Docker 키체인 인증" | \
-    grep -v "유틸리티 함수 로드" > "${TEMP_FILE}.2"
+    # 설정 블록 제거 
+    # 시작 및 종료 마커 사이의 모든 내용 삭제 (시작과 종료 마커 포함)
+    sed -i.bak "/$marker/,/$endmarker/d" "${PROFILE_FILE}.tmp"
     
-    mv "${TEMP_FILE}.2" "$PROFILE_FILE"
-    rm -f "$TEMP_FILE" 2>/dev/null
+    # 임시 파일을 원래 파일로 이동
+    mv "${PROFILE_FILE}.tmp" "$PROFILE_FILE"
     
     show_success "기존 Creditcoin Docker Utils 설정이 제거되었습니다."
   fi
