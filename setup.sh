@@ -31,6 +31,15 @@ show_error() {
   echo -e "${RED}✗ $1${NC}"
 }
 
+# 사용자 쉘 프로필 파일 찾기
+get_shell_profile() {
+  if [[ "$SHELL" == *"zsh"* ]]; then
+    echo "$HOME/.zshrc"
+  else
+    echo "$HOME/.bash_profile"
+  fi
+}
+
 # macOS 환경 확인
 check_environment() {
   show_step "시스템 환경 확인"
@@ -62,11 +71,9 @@ check_environment() {
   if [[ "$SHELL" == *"zsh"* ]]; then
     show_success "기본 쉘: zsh"
     export SHELL_TYPE="zsh"
-    export SHELL_PROFILE="$HOME/.zshrc"
   else
     show_success "기본 쉘: bash 또는 기타"
     export SHELL_TYPE="bash"
-    export SHELL_PROFILE="$HOME/.bash_profile"
   fi
   
   # SSH 세션 확인
@@ -115,11 +122,9 @@ check_filevault() {
     echo "3. 'FileVault' 탭 선택"
     echo "4. '해제' 버튼 클릭"
     echo "5. 관리자 암호 입력"
-    echo "6. 컴퓨터 재시작으로 암호화 해제 과정이 완료됩니다."
     echo ""
     
     show_warning "FileVault 해제는 시간이 오래 걸릴 수 있으며, 디스크 크기에 따라 수 시간이 소요될 수 있습니다."
-    show_warning "해제 과정 중에도 설치를 계속 진행합니다."
   else
     show_success "FileVault가 비활성화되어 있거나 상태를 확인할 수 없습니다."
   fi
@@ -140,7 +145,7 @@ install_homebrew() {
       if [[ "$SHELL_TYPE" == "zsh" ]]; then
         echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
       else
-        echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.bash_profile
+        echo 'eval "$(/usr/local/bin/brew shellenv)"' >> ~/.bash_profile
       fi
       eval "$(/opt/homebrew/bin/brew shellenv)"
     else
@@ -221,11 +226,13 @@ install_orbstack() {
     
     if [ -f "/Applications/OrbStack.app/Contents/MacOS/xbin/docker" ]; then
       export PATH="/Applications/OrbStack.app/Contents/MacOS/xbin:$PATH"
-      if [[ "$SHELL_TYPE" == "zsh" ]]; then
-        echo 'export PATH="/Applications/OrbStack.app/Contents/MacOS/xbin:$PATH"' >> ~/.zshrc
-      else
-        echo 'export PATH="/Applications/OrbStack.app/Contents/MacOS/xbin:$PATH"' >> ~/.bash_profile
+      
+      # 프로필 파일에 경로 추가
+      PROFILE_FILE=$(get_shell_profile)
+      if ! grep -q "OrbStack.app/Contents/MacOS/xbin" "$PROFILE_FILE"; then
+        echo 'export PATH="/Applications/OrbStack.app/Contents/MacOS/xbin:$PATH"' >> "$PROFILE_FILE"
       fi
+      
       show_success "Docker CLI 경로가 PATH에 추가되었습니다."
     else
       show_warning "Docker CLI를 찾을 수 없습니다. OrbStack이 제대로 설치되었는지 확인하세요."
@@ -255,125 +262,103 @@ setup_orbstack_autostart() {
     return $RET
   fi
   
-  # 시작 스크립트 파일 경로
-  STARTUP_SCRIPT="/usr/local/bin/start-orbstack.sh"
+  # 로그 디렉토리 생성
+  show_warning "OrbStack 로그 디렉토리 생성 중..."
+  mkdir -p /Library/Logs/OrbStack
+  chmod 755 /Library/Logs/OrbStack
   
-  # 시작 스크립트 생성
-  show_warning "OrbStack 시작 스크립트 생성 중..."
-  mkdir -p /usr/local/bin
+  # 기존 런치데몬 정리
+  show_warning "기존 런치데몬 정리 중..."
+  launchctl unload /Library/LaunchDaemons/com.orbstack.autostart.plist 2>/dev/null || true
+  rm -f /Library/LaunchDaemons/com.orbstack.autostart.plist
+  launchctl unload /Library/LaunchDaemons/local.orbstack.plist 2>/dev/null || true
+  rm -f /Library/LaunchDaemons/local.orbstack.plist
+  launchctl unload /Library/LaunchDaemons/dev.orbstack.daemon.plist 2>/dev/null || true
   
-  cat > "$STARTUP_SCRIPT" << 'EOT'
-#!/bin/bash
-
-# OrbStack 시작 스크립트
-LOG_FILE="/var/log/orbstack-autostart.log"
-
-# 로그 디렉토리 확인
-mkdir -p /var/log
-
-# 로그 시작
-date > "$LOG_FILE"
-echo "OrbStack 자동 시작 스크립트가 실행되었습니다." >> "$LOG_FILE"
-
-# OrbStack 실행
-if [ -d "/Applications/OrbStack.app" ]; then
-  echo "OrbStack 앱 시작 중..." >> "$LOG_FILE"
-  /usr/bin/open -a "/Applications/OrbStack.app" --args --auto-start
-  echo "OrbStack 앱 시작 명령이 전송되었습니다." >> "$LOG_FILE"
-  
-  # 소켓 파일 생성 대기
-  echo "Docker 소켓 파일 대기 중..." >> "$LOG_FILE"
-  for i in {1..30}; do
-    if [ -S "/var/run/orbstack/docker.sock" ]; then
-      echo "Docker 소켓 파일이 생성되었습니다." >> "$LOG_FILE"
-      chmod 777 "/var/run/orbstack/docker.sock"
-      
-      # 모든 사용자 홈 디렉토리에 소켓 링크 생성
-      for USER_HOME in /Users/*; do
-        USER_NAME=$(basename "$USER_HOME")
-        if [ -d "$USER_HOME" ] && [ "$USER_NAME" != "Shared" ]; then
-          mkdir -p "$USER_HOME/.orbstack/run" 2>/dev/null
-          chown -R "$USER_NAME" "$USER_HOME/.orbstack" 2>/dev/null
-          ln -sf "/var/run/orbstack/docker.sock" "$USER_HOME/.orbstack/run/docker.sock" 2>/dev/null
-          echo "사용자 $USER_NAME의 Docker 소켓 링크가 생성되었습니다." >> "$LOG_FILE"
-        fi
-      done
-      
-      echo "설정이 완료되었습니다." >> "$LOG_FILE"
-      exit 0
-    fi
-    echo "대기 중... ($i/30)" >> "$LOG_FILE"
-    sleep 2
-  done
-  
-  echo "시간 내에 Docker 소켓 파일이 생성되지 않았습니다." >> "$LOG_FILE"
-else
-  echo "OrbStack이 설치되어 있지 않습니다." >> "$LOG_FILE"
-fi
-EOT
-  
-  # 스크립트 권한 설정
-  chmod +x "$STARTUP_SCRIPT"
-  show_success "시작 스크립트가 생성되었습니다: $STARTUP_SCRIPT"
-  
-  # 런치데몬 plist 파일 생성
-  show_warning "런치데몬 설정 파일 생성 중..."
-  LAUNCH_DAEMON_FILE="/Library/LaunchDaemons/com.orbstack.autostart.plist"
-  
-  cat > "$LAUNCH_DAEMON_FILE" << EOT
+  # 새 런치데몬 생성
+  show_warning "OrbStack 자동 시작 런치데몬 생성 중..."
+  cat > /Library/LaunchDaemons/dev.orbstack.daemon.plist << 'EOT'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.orbstack.autostart</string>
+    <string>dev.orbstack.daemon</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/start-orbstack.sh</string>
+        <string>/Applications/OrbStack.app/Contents/MacOS/orbd</string>
+        <string>daemon</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
-    <key>StandardOutPath</key>
-    <string>/var/log/orbstack-autostart-output.log</string>
+    <key>KeepAlive</key>
+    <true/>
     <key>StandardErrorPath</key>
-    <string>/var/log/orbstack-autostart-error.log</string>
+    <string>/Library/Logs/OrbStack/orbstack-daemon.log</string>
+    <key>StandardOutPath</key>
+    <string>/Library/Logs/OrbStack/orbstack-daemon.log</string>
 </dict>
 </plist>
 EOT
   
   # 권한 설정
-  chown root:wheel "$LAUNCH_DAEMON_FILE"
-  chmod 644 "$LAUNCH_DAEMON_FILE"
-  show_success "런치데몬 설정 파일이 생성되었습니다: $LAUNCH_DAEMON_FILE"
-  
-  # 기존 런치데몬 언로드 (있는 경우)
-  if launchctl list | grep -q "com.orbstack.autostart"; then
-    show_warning "기존 런치데몬 언로드 중..."
-    launchctl unload "$LAUNCH_DAEMON_FILE"
-  fi
+  chmod 644 /Library/LaunchDaemons/dev.orbstack.daemon.plist
+  chown root:wheel /Library/LaunchDaemons/dev.orbstack.daemon.plist
   
   # 런치데몬 로드
   show_warning "런치데몬 로드 중..."
-  launchctl load "$LAUNCH_DAEMON_FILE"
+  launchctl load -w /Library/LaunchDaemons/dev.orbstack.daemon.plist
   
   if [ $? -eq 0 ]; then
     show_success "런치데몬이 성공적으로 로드되었습니다."
-    show_success "이제 시스템 부팅 시 OrbStack이 자동으로 시작됩니다."
   else
     show_error "런치데몬 로드 중 오류가 발생했습니다."
     return 1
   fi
   
-  # 시스템 소켓 디렉토리 생성 (필요한 경우)
-  mkdir -p "/var/run/orbstack"
-  chmod 777 "/var/run/orbstack"
+  # CLI 설정으로 자동 시작 및 헤드리스 모드 활성화
+  # orb 명령어 경로 찾기
+  ORB_CMD=""
+  for path in "/opt/homebrew/bin/orb" "/usr/local/bin/orb" "/Applications/OrbStack.app/Contents/MacOS/orb"; do
+    if [ -f "$path" ]; then
+      ORB_CMD="$path"
+      break
+    fi
+  done
   
-  # OrbStack 시작 테스트
-  show_warning "OrbStack 시작 테스트 중..."
-  "$STARTUP_SCRIPT" &
+  if [ -n "$ORB_CMD" ]; then
+    show_warning "OrbStack CLI 설정 중..."
+    show_warning "자동 시작 활성화..."
+    "$ORB_CMD" settings set auto-start true
+    
+    # 서버 환경에서는 헤드리스 모드 활성화
+    if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ]; then
+      show_warning "헤드리스 모드 활성화..."
+      "$ORB_CMD" settings set headless true
+    fi
+  fi
+  
+  # 소켓 디렉토리 생성
+  mkdir -p /var/run/orbstack
+  chmod 777 /var/run/orbstack
+  
+  # OrbStack 시작
+  show_warning "OrbStack 시작 중..."
+  if [ -n "$ORB_CMD" ]; then
+    "$ORB_CMD" start
+    sleep 5
+    
+    # 시작 상태 확인
+    STATUS=$("$ORB_CMD" status)
+    if [ "$STATUS" == "Running" ]; then
+      show_success "OrbStack이 성공적으로 시작되었습니다."
+    else
+      show_warning "OrbStack 시작이 지연되고 있습니다. 몇 분 내에 시작될 예정입니다."
+    fi
+  fi
   
   show_success "OrbStack 자동 시작 설정이 완료되었습니다."
-  show_success "시스템 재부팅 후 로그인 없이도 OrbStack이 자동으로 시작됩니다."
+  show_success "시스템 재부팅 후 OrbStack이 자동으로 시작됩니다."
   return 0
 }
 
@@ -442,18 +427,19 @@ configure_power_management() {
 add_to_shell_profile() {
   show_step "쉘 프로필 설정"
   
+  # 프로필 파일 결정
+  PROFILE_FILE=$(get_shell_profile)
+  
+  # 쉘 타입에 따른 메시지
+  if [[ "$SHELL" == *"zsh"* ]]; then
+    show_success "zsh 쉘이 감지되었습니다. $PROFILE_FILE에 설정을 추가합니다."
+  else
+    show_success "bash 쉘이 감지되었습니다. $PROFILE_FILE에 설정을 추가합니다."
+  fi
+  
   # 마커 문자열 설정
   local marker="# === Creditcoin Docker Utils ==="
   local endmarker="# === End Creditcoin Docker Utils ==="
-  
-  # 프로필 파일 설정
-  if [[ "$SHELL" == *"zsh"* ]]; then
-    PROFILE_FILE="$HOME/.zshrc"
-    show_success "zsh 쉘이 감지되었습니다. $PROFILE_FILE에 설정을 추가합니다."
-  else
-    PROFILE_FILE="$HOME/.bash_profile"
-    show_success "bash 쉘이 감지되었습니다. $PROFILE_FILE에 설정을 추가합니다."
-  fi
   
   # 이미 추가되었는지 확인
   if grep -q "$marker" "$PROFILE_FILE" 2>/dev/null; then
@@ -463,15 +449,9 @@ add_to_shell_profile() {
     cp "$PROFILE_FILE" "${PROFILE_FILE}.bak.$(date +%Y%m%d%H%M%S)"
     show_success "$PROFILE_FILE 백업 파일이 생성되었습니다."
     
-    # 파일 전체 내용을 임시 파일로 저장
-    cat "$PROFILE_FILE" > "${PROFILE_FILE}.tmp"
-    
-    # 설정 블록 제거 
-    # 시작 및 종료 마커 사이의 모든 내용 삭제 (시작과 종료 마커 포함)
-    sed -i.bak "/$marker/,/$endmarker/d" "${PROFILE_FILE}.tmp"
-    
-    # 임시 파일을 원래 파일로 이동
-    mv "${PROFILE_FILE}.tmp" "$PROFILE_FILE"
+    # 시작 마커와 종료 마커 사이의 내용 삭제
+    sed -i.tmp "/$marker/,/$endmarker/d" "$PROFILE_FILE"
+    rm -f "${PROFILE_FILE}.tmp"
     
     show_success "기존 Creditcoin Docker Utils 설정이 제거되었습니다."
   fi
@@ -526,7 +506,7 @@ show_final_instructions() {
   show_success "Creditcoin Docker 유틸리티 설정이 완료되었습니다!"
   
   show_warning "변경 사항을 적용하려면 다음 명령어를 실행하세요:"
-  if [[ "$SHELL_TYPE" == "zsh" ]]; then
+  if [[ "$SHELL" == *"zsh"* ]]; then
     echo -e "${BLUE}source ~/.zshrc${NC}"
   else
     echo -e "${BLUE}source ~/.bash_profile${NC}"
@@ -538,7 +518,7 @@ show_final_instructions() {
     echo -e "\n${YELLOW}SSH 세션 사용 팁:${NC}"
     echo -e "1. 환경 변수가 제대로 설정되었는지 확인하세요: ${BLUE}echo \$DOCKER_HOST${NC}"
     echo -e "2. Docker가 작동하는지 확인하세요: ${BLUE}docker ps${NC}"
-    echo -e "3. 로그 확인: ${BLUE}cat /var/log/orbstack-autostart.log${NC}"
+    echo -e "3. 로그 확인: ${BLUE}cat /var/log/orbstack-daemon.log${NC}"
   fi
 }
 
