@@ -1,6 +1,6 @@
 # Creditcoin Docker for macOS
 
-This project is a collection of scripts for easily setting up and managing Creditcoin nodes using Docker in a **macOS** environment.
+This project is a collection of scripts for easily setting up and managing Creditcoin nodes using Docker and OrbStack in a macOS environment.
 
 ## Key Features
 
@@ -11,21 +11,33 @@ This project is a collection of scripts for easily setting up and managing Credi
 
 ## Installation
 
-To install the utility scripts:
+### Prerequisites
+
+- macOS operating system
+- Administrator privileges (required for some installation steps)
+
+### Setup
+
+1. Install utility scripts:
 
 ```bash
 ./setup.sh
 ```
 
-For zsh (default shell on macOS):
-```bash
-source ~/.zshrc
-```
+2. Apply changes:
 
-For bash:
 ```bash
+# zsh (default macOS shell)
+source ~/.zshrc
+
+# or bash
 source ~/.bash_profile
 ```
+
+3. OrbStack Configuration:
+   - OrbStack must be managed through the **desktop application**.
+   - After installation, open OrbStack.app and complete the initial setup.
+   - Enable the auto-start option in the OrbStack app settings to start on system boot.
 
 ## Usage
 
@@ -60,7 +72,7 @@ source ~/.bash_profile
 
 # Usage examples:
 ./add2node.sh 0                        # Create node with default settings
-./add2node.sh 1 -t -n ValidatorLegacy  # Create node with telemetry enabled and specified name
+./add2node.sh 1 -t -n ValidatorLegacy  # Create node with telemetry enabled and name
 ```
 
 ### Node Cleanup
@@ -142,7 +154,7 @@ Session keys are essential for validator operations. The utility provides two co
    - Stop the target node if it's running (after confirmation)
    - Backup existing keys (if any)
    - Restore session keys from the backup file
-   - Offer to restart the node
+   - Ask to restart the node
 
 **Important**: Never run two nodes with the same session keys simultaneously, as this could result in slashing penalties.
 
@@ -156,9 +168,9 @@ Session keys are essential for validator operations. The utility provides two co
 ## macOS Specific Notes
 
 - These scripts are specifically optimized for macOS environments
-- Docker Desktop must be installed and running before using these scripts
-- The scripts automatically detect and adapt to Apple Silicon (arm64) or Intel (x86_64) architecture
-- The setup script will install required dependencies like git-lfs and jq via Homebrew
+- OrbStack must be managed through the desktop application
+- OrbStack should be configured to start automatically at system boot (set in app settings)
+- If accessing via SSH from a remote server, first run the OrbStack.app on local macOS to complete the initial setup
 
 ## Contributing
 
