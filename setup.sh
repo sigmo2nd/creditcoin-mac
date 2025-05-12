@@ -249,14 +249,18 @@ show_final_instructions() {
   
   show_success "Creditcoin Docker 유틸리티 설정이 완료되었습니다!"
   
-  show_warning "변경 사항을 적용하려면 다음 명령어를 실행하세요:"
-  echo -e "${BLUE}source $SHELL_PROFILE${NC}"
+  echo -e "\n${RED}중요: 다음 명령어를 실행하여 변경사항을 적용하세요:${NC}"
+  if [[ "$SHELL" == *"zsh"* ]]; then
+    echo -e "\n    ${GREEN}source ~/.zshrc${NC}\n"
+  else
+    echo -e "\n    ${GREEN}source ~/.bash_profile${NC}\n"
+  fi
   
-  echo -e "\n${YELLOW}다음으로 add3node.sh 또는 add2node.sh 스크립트를 사용하여 노드를 생성할 수 있습니다.${NC}"
+  echo -e "${YELLOW}다음으로 add3node.sh 또는 add2node.sh 스크립트를 사용하여 노드를 생성할 수 있습니다.${NC}"
   
   # SSH 세션인 경우 데스크톱 앱 설정 강조
   if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ]; then
-    echo -e "\n${YELLOW}중요: OrbStack은 데스크톱 앱에서 관리해야 합니다.${NC}"
+    echo -e "\n${RED}중요: OrbStack은 데스크톱 앱에서 관리해야 합니다.${NC}"
     echo -e "${YELLOW}데스크톱 환경에서 OrbStack.app을 실행하고, 자동 시작 옵션을 활성화하세요.${NC}"
   fi
 }
