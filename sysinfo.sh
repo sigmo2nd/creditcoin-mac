@@ -383,7 +383,7 @@ monitor_mode() {
   local old_tty_settings
   old_tty_settings=$(stty -g)
   
-  # 화면 지우기
+  # 화면 지우기 (처음 한 번만)
   clear
   
   # Ctrl+C 핸들러 설정
@@ -391,6 +391,14 @@ monitor_mode() {
   
   # 커서 숨기기
   echo -en "\033[?25l"
+  
+  # 터미널 크기 구하기
+  TERM_ROWS=$(tput lines)
+  
+  # 빈 줄 출력 (화면을 채우기 위해)
+  for ((i=1; i<=$TERM_ROWS; i++)); do
+    echo ""
+  done
   
   # 모니터링 루프
   while true; do
@@ -409,6 +417,21 @@ monitor_mode() {
     else
       output_text
       echo -e "\n${BLUE}모니터링 모드 - Ctrl+C를 눌러 종료${NC}"
+      
+      # 화면 나머지 부분을 빈 줄로 채우기 (이전 내용 지우기)
+      CURRENT_ROWS=$(tput lines)
+      LINES_USED=13  # 대략적인 출력 줄 수
+      if [ "$DOCKER_RUNNING" = true ]; then
+        LINES_USED=$((LINES_USED + NODE_COUNT + 3))  # 노드 수 + 헤더/푸터
+      fi
+      
+      # 남은 줄 지우기
+      for ((i=LINES_USED; i<CURRENT_ROWS; i++)); do
+        echo -e "\033[K"  # 현재 줄 지우기
+        if [ $i -lt $((CURRENT_ROWS-1)) ]; then
+          echo ""  # 빈 줄 출력 (다음 줄로 이동)
+        fi
+      done
     fi
     
     # 루프 실행 시간 계산
@@ -427,3 +450,10 @@ monitor_mode() {
   stty $old_tty_settings
   echo -en "\033[?25h"
 }
+
+# 메인 실행
+if [ "$MONITOR_MODE" = true ]; then
+  monitor_mode "$INTERVAL"
+else
+  single_output
+fi
