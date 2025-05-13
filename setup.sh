@@ -77,6 +77,104 @@ check_environment() {
   fi
 }
 
+# 전원 관리 설정 최적화
+optimize_power_settings() {
+  show_step "전원 관리 설정 최적화"
+  
+  # 현재 설정 확인
+  show_warning "현재 전원 관리 설정:"
+  pmset -g
+  
+  # 최적화 여부 물어보기
+  read -p "블록체인 노드 운영에 최적화된 전원 설정을 적용하시겠습니까? (Y/n): " response
+  if [[ ! "$response" =~ ^([nN][oO]|[nN])$ ]]; then
+    show_warning "최적화된 전원 설정을 적용합니다..."
+    
+    # 전원 관리 설정 (즉시 적용)
+    sudo pmset -a displaysleep 10  # 디스플레이만 10분 후 절전
+    sudo pmset -a sleep 0          # 시스템 절전 비활성화
+    sudo pmset -a disksleep 0      # 디스크 절전 비활성화
+    sudo pmset -a standby 0        # 대기 모드 비활성화
+    sudo pmset -a autopoweroff 0   # 자동 전원 끄기 비활성화
+    sudo pmset -a powernap 0       # PowerNap 비활성화
+    sudo pmset -a ttyskeepawake 1  # SSH 세션 활성화 시 깨어있음
+    sudo pmset -a tcpkeepalive 1   # TCP 연결 유지
+    sudo pmset -a networkoversleep 0  # 네트워크 연결 유지
+    
+    show_success "전원 관리 설정이 최적화되었습니다."
+    show_warning "새 설정:"
+    pmset -g
+  else
+    show_warning "전원 관리 설정 최적화를 건너뛰었습니다."
+    show_warning "블록체인 노드를 24/7 운영하려면 전원 관리 설정 최적화를 권장합니다."
+  fi
+}
+
+# 시간 서버 설정 확인 및 구성
+check_time_server() {
+  show_step "시스템 시간 서버 확인"
+  
+  # 현재 시간 서버 확인
+  current_server=$(sudo systemsetup -getnetworktimeserver 2>/dev/null | awk -F ': ' '{print $2}')
+  network_time_enabled=$(sudo systemsetup -getusingnetworktime 2>/dev/null | grep -q "On" && echo "yes" || echo "no")
+  
+  if [[ "$current_server" == "(null)" || "$current_server" == "" ]]; then
+    show_warning "⚠️ 경고: 시간 서버가 설정되어 있지 않습니다!"
+    show_warning "블록체인 노드 운영에는 정확한 시간 동기화가 필수적입니다."
+    
+    read -p "자동으로 시간 서버를 설정하시겠습니까? (Y/n): " response
+    if [[ ! "$response" =~ ^([nN][oO]|[nN])$ ]]; then
+      sudo systemsetup -setnetworktimeserver time.apple.com
+      sudo systemsetup -setusingnetworktime on
+      
+      show_warning "시간 서비스 재시작 중..."
+      sudo launchctl unload -w /System/Library/LaunchDaemons/com.apple.timed.plist 2>/dev/null
+      sleep 5
+      sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.timed.plist
+      
+      show_warning "시간 강제 동기화 중..."
+      sudo sntp -sS time.apple.com
+      
+      show_success "시간 서버가 time.apple.com(자동 지역 감지)으로 설정되었습니다."
+    else
+      show_warning "시간 서버를 설정하지 않았습니다. 블록체인 노드 운영에 문제가 발생할 수 있습니다."
+    fi
+  elif [[ "$network_time_enabled" != "yes" ]]; then
+    show_warning "⚠️ 경고: 네트워크 시간 동기화가 비활성화되어 있습니다!"
+    read -p "네트워크 시간 동기화를 활성화하시겠습니까? (Y/n): " response
+    if [[ ! "$response" =~ ^([nN][oO]|[nN])$ ]]; then
+      sudo systemsetup -setusingnetworktime on
+      
+      show_warning "시간 서비스 재시작 중..."
+      sudo launchctl unload -w /System/Library/LaunchDaemons/com.apple.timed.plist 2>/dev/null
+      sleep 5
+      sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.timed.plist
+      
+      show_warning "시간 강제 동기화 중..."
+      sudo sntp -sS "$current_server"
+      
+      show_success "네트워크 시간 동기화가 활성화되었습니다."
+    else
+      show_warning "네트워크 시간 동기화가 비활성화된 상태로 유지됩니다. 블록체인 노드 운영에 문제가 발생할 수 있습니다."
+    fi
+  else
+    show_success "시간 서버가 올바르게 설정되어 있습니다: $current_server"
+    show_success "네트워크 시간 동기화가 활성화되어 있습니다."
+    
+    # 강제 시간 동기화 제안
+    read -p "시간을 강제로 동기화하시겠습니까? (Y/n): " sync_response
+    if [[ ! "$sync_response" =~ ^([nN][oO]|[nN])$ ]]; then
+      show_warning "시간 강제 동기화 중..."
+      sudo sntp -sS "$current_server"
+      show_success "시간이 강제로 동기화되었습니다."
+    fi
+  fi
+  
+  # 현재 시간 표시
+  current_time=$(date)
+  show_success "현재 시스템 시간: $current_time"
+}
+
 # Homebrew 설치
 install_homebrew() {
   show_step "Homebrew 설치 확인"
@@ -249,18 +347,14 @@ show_final_instructions() {
   
   show_success "Creditcoin Docker 유틸리티 설정이 완료되었습니다!"
   
-  echo -e "\n${RED}중요: 다음 명령어를 실행하여 변경사항을 적용하세요:${NC}"
-  if [[ "$SHELL" == *"zsh"* ]]; then
-    echo -e "\n    ${GREEN}source ~/.zshrc${NC}\n"
-  else
-    echo -e "\n    ${GREEN}source ~/.bash_profile${NC}\n"
-  fi
+  show_warning "변경 사항을 적용하려면 다음 명령어를 실행하세요:"
+  echo -e "${BLUE}source $SHELL_PROFILE${NC}"
   
-  echo -e "${YELLOW}다음으로 add3node.sh 또는 add2node.sh 스크립트를 사용하여 노드를 생성할 수 있습니다.${NC}"
+  echo -e "\n${YELLOW}다음으로 add3node.sh 또는 add2node.sh 스크립트를 사용하여 노드를 생성할 수 있습니다.${NC}"
   
   # SSH 세션인 경우 데스크톱 앱 설정 강조
   if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ]; then
-    echo -e "\n${RED}중요: OrbStack은 데스크톱 앱에서 관리해야 합니다.${NC}"
+    echo -e "\n${YELLOW}중요: OrbStack은 데스크톱 앱에서 관리해야 합니다.${NC}"
     echo -e "${YELLOW}데스크톱 환경에서 OrbStack.app을 실행하고, 자동 시작 옵션을 활성화하세요.${NC}"
   fi
 }
@@ -271,6 +365,12 @@ main() {
   
   # 환경 확인
   check_environment
+  
+  # 시간 서버 설정 확인 (새로 추가됨)
+  check_time_server
+  
+  # 전원 관리 설정 최적화 (새로 추가됨)
+  optimize_power_settings
   
   # 기본 도구 설치
   install_homebrew
