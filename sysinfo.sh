@@ -505,11 +505,8 @@ monitor_mode() {
   # 커서 숨기기
   echo -en "\033[?25l"
   
-  # 모니터링 루프
+  # 간단한 모니터링 루프 - 가장 기본적인 방식으로 구현
   while true; do
-    # 루프 시작 시간 기록
-    local loop_start=$(date +%s.%N)
-    
     # 커서를 화면 상단으로 이동 (화면 지우기 없이)
     echo -en "\033[H"
     
@@ -517,25 +514,17 @@ monitor_mode() {
     get_dynamic_info
     
     # 출력
-    if [ "$JSON_OUTPUT" = true ]; then
-      output_json
-    else
-      output_text
-      printf "\n${BLUE}모니터링 모드 - Ctrl+C를 눌러 종료${NC}%s\n" "$CLEAR_EOL"
-    fi
+    output_text
+    printf "\n${BLUE}모니터링 모드 - Ctrl+C를 눌러 종료 (업데이트 간격: ${interval}초)${NC}%s\n" "$CLEAR_EOL"
     
     # 화면 끝까지 지우기
     echo -en "\033[J"
     
-    # 루프 실행 시간 계산
-    local loop_end=$(date +%s.%N)
-    local loop_time=$(echo "$loop_end - $loop_start" | bc)
-
-    # 간격 강제 설정 (대기 시간 계산 무시)
+    # 고정된 간격으로 일시 정지
     sleep $interval
   done
   
-  # 터미널 설정 복원
+  # 터미널 설정 복원 (실행되지 않지만 완전성을 위해 포함)
   stty $old_tty_settings
   echo -en "\033[?25h"
 }
