@@ -505,8 +505,14 @@ monitor_mode() {
   # 커서 숨기기
   echo -en "\033[?25l"
   
-  # 간단한 모니터링 루프 - 가장 기본적인 방식으로 구현
+  # 디버그 메시지 표시 (문제 진단용)
+  echo "모니터링을 시작합니다. 간격: ${interval}초" >&2
+  
+  # 간단한 모니터링 루프
   while true; do
+    # 타임스탬프 (디버그용)
+    local timestamp=$(date +"%H:%M:%S")
+    
     # 커서를 화면 상단으로 이동 (화면 지우기 없이)
     echo -en "\033[H"
     
@@ -514,13 +520,17 @@ monitor_mode() {
     get_dynamic_info
     
     # 출력
-    output_text
-    printf "\n${BLUE}모니터링 모드 - Ctrl+C를 눌러 종료 (업데이트 간격: ${interval}초)${NC}%s\n" "$CLEAR_EOL"
+    if [ "$JSON_OUTPUT" = true ]; then
+      output_json
+    else
+      output_text
+      printf "\n${BLUE}모니터링 모드 - Ctrl+C를 눌러 종료 (업데이트 간격: ${interval}초, 현재 시간: ${timestamp})${NC}%s\n" "$CLEAR_EOL"
+    fi
     
     # 화면 끝까지 지우기
     echo -en "\033[J"
     
-    # 고정된 간격으로 일시 정지
+    # 정확히 지정된 시간만큼 대기
     sleep $interval
   done
   
