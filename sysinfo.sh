@@ -528,15 +528,11 @@ monitor_mode() {
     echo -en "\033[J"
     
     # 루프 실행 시간 계산
-    local loop_time=$(echo "$(date +%s.%N) - $loop_start" | bc)
-    
-    # 남은 대기 시간 계산 (음수가 되지 않도록)
-    local wait_time=$(echo "$interval - $loop_time" | bc)
-    
-    # 대기 시간이 양수인 경우에만 대기
-    if (( $(echo "$wait_time > 0" | bc -l) )); then
-      sleep $wait_time
-    fi
+    local loop_end=$(date +%s.%N)
+    local loop_time=$(echo "$loop_end - $loop_start" | bc)
+
+    # 간격 강제 설정 (대기 시간 계산 무시)
+    sleep $interval
   done
   
   # 터미널 설정 복원
