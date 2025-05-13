@@ -10,7 +10,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # 터미널 제어 시퀀스
-CLEAR_TO_EOL='\033[K'  # 현재 커서 위치부터 줄 끝까지 지우기
+CLEAR_EOL=$'\033[K'  # 현재 커서 위치부터 줄 끝까지 지우기
 
 # 옵션 파싱
 MONITOR_MODE=false
@@ -70,18 +70,6 @@ format_decimal() {
   local num=$1
   local decimals=${2:-2}
   printf "%.${decimals}f" "$num"
-}
-
-# 단위 변환 (GiB/MiB를 GB/MB로)
-convert_to_gb() {
-  local value=$1
-  local unit=$2
-  
-  case $unit in
-    GiB) echo "scale=3; $value * 1.074" | bc ;;
-    MiB) echo "scale=3; $value * 1.074 / 1000" | bc ;;
-    *) echo "$value" ;;
-  esac
 }
 
 # 시스템 정보 수집
@@ -187,7 +175,7 @@ get_dynamic_info() {
       TOTAL_CPU_TOTAL=$(format_decimal "$(echo "scale=4; $TOTAL_CPU_TOTAL + $cpu_total" | bc)")
       
       # 메모리 정보 처리
-      # 형식: "4.909GiB / 58.81GiB" -> "4.909GB / 58.81GB"
+      # 형식: "4.909GiB / 58.81GiB"
       mem_parts=(${mem//\// })
       mem_used=${mem_parts[0]}
       mem_limit=${mem_parts[2]}
@@ -195,10 +183,18 @@ get_dynamic_info() {
       # 숫자와 단위 분리
       mem_used_num=$(echo "$mem_used" | sed 's/[A-Za-z]*//g')
       mem_used_unit=$(echo "$mem_used" | sed 's/[0-9.]*//g')
-      mem_limit_num=$(echo "$mem_limit" | sed 's/[A-Za-z]*//g')
-      mem_limit_unit=$(echo "$mem_limit" | sed 's/[0-9.]*//g')
       
-      # GiB를 GB로 변환
+      # 메모리 값이 있는지 확인
+      if [ -n "$mem_limit" ]; then
+        mem_limit_num=$(echo "$mem_limit" | sed 's/[A-Za-z]*//g')
+        mem_limit_unit=$(echo "$mem_limit" | sed 's/[0-9.]*//g')
+      else
+        # 제한값이 없으면, 전체 시스템 메모리로 대체
+        mem_limit_num=$TOTAL_MEM_GB
+        mem_limit_unit="GB"
+      fi
+      
+      # 단위 변환 (GiB -> GB)
       if [[ "$mem_used_unit" == "GiB" ]]; then
         mem_used_gb=$(format_decimal "$(echo "scale=3; $mem_used_num" | bc)")
       elif [[ "$mem_used_unit" == "MiB" ]]; then
@@ -212,7 +208,7 @@ get_dynamic_info() {
       elif [[ "$mem_limit_unit" == "MiB" ]]; then
         mem_limit_gb=$(format_decimal "$(echo "scale=2; $mem_limit_num / 1024" | bc)")
       else
-        mem_limit_gb="0.00"
+        mem_limit_gb=$mem_limit_num  # 이미 GB 단위
       fi
       
       # 포맷팅된 메모리 문자열 생성 (GB로 통일)
@@ -357,50 +353,52 @@ output_json() {
 # 일반 텍스트 출력
 output_text() {
   # 헤더 출력
-  echo -e "${BLUE}CREDITCOIN NODE RESOURCE MONITOR                                  $(date +"%Y-%m-%d %H:%M:%S")${NC}${CLEAR_TO_EOL}"
-  echo "${CLEAR_TO_EOL}"
+  printf "${BLUE}CREDITCOIN NODE RESOURCE MONITOR                                  $(date +"%Y-%m-%d %H:%M:%S")${NC}%s\n" "$CLEAR_EOL"
+  printf "%s\n" "$CLEAR_EOL"
   
   # Docker가 실행 중이 아닌 경우
   if [ "$DOCKER_RUNNING" != "true" ]; then
-    echo -e "${RED}Docker가 실행 중이 아니거나 액세스할 수 없습니다.${NC}${CLEAR_TO_EOL}"
-    echo "${CLEAR_TO_EOL}"
+    printf "${RED}Docker가 실행 중이 아니거나 액세스할 수 없습니다.${NC}%s\n" "$CLEAR_EOL"
+    printf "%s\n" "$CLEAR_EOL"
   else
     # 테이블 헤더
-    printf "%-10s %-8s %-10s %-21s %-8s %-15s${CLEAR_TO_EOL}\n" "NODE" "CPU%" "OF TOTAL%" "MEM USAGE" "MEM%" "NET RX/TX"
+    printf "%-10s %-8s %-10s %-21s %-8s %-15s%s\n" "NODE" "CPU%" "OF TOTAL%" "MEM USAGE" "MEM%" "NET RX/TX" "$CLEAR_EOL"
     
     # 노드별 데이터 출력
     for i in $(seq 0 $((NODE_COUNT-1))); do
-      printf "%-10s %-8s %-10s %-21s %-8s %-15s${CLEAR_TO_EOL}\n" \
+      printf "%-10s %-8s %-10s %-21s %-8s %-15s%s\n" \
         "${NODE_NAMES[$i]}" \
         "${NODE_CPU[$i]}%" \
         "${NODE_CPU_TOTAL[$i]}%" \
         "${NODE_MEM[$i]}" \
         "${NODE_MEM_PCT[$i]}%" \
-        "${NODE_NET_RX[$i]}/${NODE_NET_TX[$i]}"
+        "${NODE_NET_RX[$i]}/${NODE_NET_TX[$i]}" \
+        "$CLEAR_EOL"
     done
     
     # 구분선
-    printf "%-10s %-8s %-10s %-21s %-8s %-15s${CLEAR_TO_EOL}\n" \
-      "----------" "--------" "----------" "---------------------" "--------" "---------------"
+    printf "%-10s %-8s %-10s %-21s %-8s %-15s%s\n" \
+      "----------" "--------" "----------" "---------------------" "--------" "---------------" "$CLEAR_EOL"
     
     # 합계 출력
-    printf "%-10s %-8s %-10s %-21s %-8s %-15s${CLEAR_TO_EOL}\n" \
+    printf "%-10s %-8s %-10s %-21s %-8s %-15s%s\n" \
       "TOTAL" \
       "${TOTAL_CPU}%" \
       "${TOTAL_CPU_TOTAL}%" \
       "${TOTAL_MEM_NODES_GB} GB" \
       "${NODE_MEM_PCT_TOTAL}%" \
-      "${TOTAL_NET_RX_MB}MB/${TOTAL_NET_TX_MB}MB"
+      "${TOTAL_NET_RX_MB}MB/${TOTAL_NET_TX_MB}MB" \
+      "$CLEAR_EOL"
   fi
   
   # 시스템 정보 출력
-  echo "${CLEAR_TO_EOL}"
-  echo -e "${BLUE}SYSTEM INFORMATION:${NC}${CLEAR_TO_EOL}"
-  echo -e "${YELLOW}MODEL:${NC} $MODEL ($CHIP)${CLEAR_TO_EOL}"
-  echo -e "${YELLOW}CPU CORES:${NC} $TOTAL_CORES (${PERF_CORES} Performance, ${EFF_CORES} Efficiency)${CLEAR_TO_EOL}"
-  echo -e "${YELLOW}CPU USAGE:${NC} 사용자 ${USER_CPU}%, 시스템 ${SYS_CPU}%, 유휴 ${IDLE_CPU}%${CLEAR_TO_EOL}"
-  echo -e "${YELLOW}MEMORY:${NC} ${TOTAL_MEM_GB} GB 총량 (사용: ${USED_MEMORY_GB} GB, ${MEM_USAGE_PCT}%)${CLEAR_TO_EOL}"
-  echo -e "${YELLOW}DISK:${NC} ${DISK_USED}/${DISK_TOTAL} (${DISK_PERCENT}% 사용)${CLEAR_TO_EOL}"
+  printf "%s\n" "$CLEAR_EOL"
+  printf "${BLUE}SYSTEM INFORMATION:${NC}%s\n" "$CLEAR_EOL"
+  printf "${YELLOW}MODEL:${NC} %s (%s)%s\n" "$MODEL" "$CHIP" "$CLEAR_EOL"
+  printf "${YELLOW}CPU CORES:${NC} %s (%s Performance, %s Efficiency)%s\n" "$TOTAL_CORES" "$PERF_CORES" "$EFF_CORES" "$CLEAR_EOL"
+  printf "${YELLOW}CPU USAGE:${NC} 사용자 %s%%, 시스템 %s%%, 유휴 %s%%%s\n" "$USER_CPU" "$SYS_CPU" "$IDLE_CPU" "$CLEAR_EOL"
+  printf "${YELLOW}MEMORY:${NC} %s GB 총량 (사용: %s GB, %s%%)%s\n" "$TOTAL_MEM_GB" "$USED_MEMORY_GB" "$MEM_USAGE_PCT" "$CLEAR_EOL"
+  printf "${YELLOW}DISK:${NC} %s/%s (%s%% 사용)%s\n" "$DISK_USED" "$DISK_TOTAL" "$DISK_PERCENT" "$CLEAR_EOL"
 }
 
 # 단일 실행 모드
@@ -451,7 +449,7 @@ monitor_mode() {
       output_json
     else
       output_text
-      echo -e "\n${BLUE}모니터링 모드 - Ctrl+C를 눌러 종료${NC}${CLEAR_TO_EOL}"
+      printf "\n${BLUE}모니터링 모드 - Ctrl+C를 눌러 종료${NC}%s\n" "$CLEAR_EOL"
     fi
     
     # 화면 끝까지 지우기
