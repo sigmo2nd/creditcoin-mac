@@ -15,7 +15,7 @@ CLEAR_EOL=$'\033[K'  # 현재 커서 위치부터 줄 끝까지 지우기
 # 옵션 파싱
 MONITOR_MODE=false
 JSON_OUTPUT=false
-INTERVAL=1.0  # 모니터링 모드 기본 갱신 간격(초)
+INTERVAL=0.5  # 모니터링 모드 기본 갱신 간격(초)
 
 # 도움말 표시 함수
 show_help() {
@@ -505,13 +505,10 @@ monitor_mode() {
   # 커서 숨기기
   echo -en "\033[?25l"
   
-  # 디버그 메시지 표시 (문제 진단용)
-  echo "모니터링을 시작합니다. 간격: ${interval}초" >&2
-  
-  # 간단한 모니터링 루프
+  # 모니터링 루프
   while true; do
-    # 타임스탬프 (디버그용)
-    local timestamp=$(date +"%H:%M:%S")
+    # 루프 시작 시간 기록
+    local loop_start=$(date +%s.%N)
     
     # 커서를 화면 상단으로 이동 (화면 지우기 없이)
     echo -en "\033[H"
@@ -524,17 +521,25 @@ monitor_mode() {
       output_json
     else
       output_text
-      printf "\n${BLUE}모니터링 모드 - Ctrl+C를 눌러 종료 (업데이트 간격: ${interval}초, 현재 시간: ${timestamp})${NC}%s\n" "$CLEAR_EOL"
+      printf "\n${BLUE}모니터링 모드 - Ctrl+C를 눌러 종료${NC}%s\n" "$CLEAR_EOL"
     fi
     
     # 화면 끝까지 지우기
     echo -en "\033[J"
     
-    # 정확히 지정된 시간만큼 대기
-    sleep $interval
+    # 루프 실행 시간 계산
+    local loop_time=$(echo "$(date +%s.%N) - $loop_start" | bc)
+    
+    # 남은 대기 시간 계산 (음수가 되지 않도록)
+    local wait_time=$(echo "$interval - $loop_time" | bc)
+    
+    # 대기 시간이 양수인 경우에만 대기
+    if (( $(echo "$wait_time > 0" | bc -l) )); then
+      sleep $wait_time
+    fi
   done
   
-  # 터미널 설정 복원 (실행되지 않지만 완전성을 위해 포함)
+  # 터미널 설정 복원
   stty $old_tty_settings
   echo -en "\033[?25h"
 }
