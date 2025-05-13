@@ -83,6 +83,25 @@ format_bytes() {
   fi
 }
 
+# 스토리지 크기 단위 변환 및 표준화 함수
+format_storage_size() {
+  local size="$1"
+  
+  # 숫자 부분과 단위 부분 분리
+  local num=$(echo "$size" | sed 's/[^0-9.]//g')
+  local unit=$(echo "$size" | sed 's/[0-9.]//g')
+  
+  # 단위에 따른 변환
+  case "$unit" in
+    Ki|KiB|KB|K|kb) echo "${num}KB" ;;
+    Mi|MiB|MB|M|mb) echo "${num}MB" ;;
+    Gi|GiB|GB|G|gb) echo "${num}GB" ;;
+    Ti|TiB|TB|T|tb) echo "${num}TB" ;;
+    Pi|PiB|PB|P|pb) echo "${num}PB" ;;
+    *) echo "${num}${unit}" ;;  # 알 수 없는 단위는 그대로 반환
+  esac
+}
+
 # 시스템 정보 수집
 get_system_info() {
   # 모델 정보
@@ -140,10 +159,18 @@ get_dynamic_info() {
   
   # 디스크 정보
   DISK_INFO=$(df -h / 2>/dev/null | grep -v "Filesystem" | head -1)
-  DISK_TOTAL=$(echo "$DISK_INFO" | awk '{print $2}' | sed 's/Gi/GB/g')
-  DISK_USED=$(echo "$DISK_INFO" | awk '{print $3}' | sed 's/Gi/GB/g')
-  DISK_AVAIL=$(echo "$DISK_INFO" | awk '{print $4}' | sed 's/Gi/GB/g')
+  DISK_TOTAL=$(echo "$DISK_INFO" | awk '{print $2}')
+  DISK_USED=$(echo "$DISK_INFO" | awk '{print $3}')
+  DISK_AVAIL=$(echo "$DISK_INFO" | awk '{print $4}')
   DISK_PERCENT=$(echo "$DISK_INFO" | awk '{print $5}' | sed 's/%//')
+  
+  # 디스크 단위 표준화
+  DISK_TOTAL_FORMATTED=$(format_storage_size "$DISK_TOTAL")
+  DISK_USED_FORMATTED=$(format_storage_size "$DISK_USED")
+  DISK_AVAIL_FORMATTED=$(format_storage_size "$DISK_AVAIL")
+  
+  # 디스크 사용률 소수점 두 자리로 포맷팅
+  DISK_PERCENT_FORMATTED=$(format_decimal "$DISK_PERCENT")
   
   # Docker 정보
   if command -v docker &> /dev/null && docker info &> /dev/null; then
@@ -311,10 +338,10 @@ output_json() {
   echo "      \"percent\": $MEM_USAGE_PCT"
   echo "    },"
   echo "    \"disk\": {"
-  echo "      \"total\": \"$DISK_TOTAL\","
-  echo "      \"used\": \"$DISK_USED\","
-  echo "      \"available\": \"$DISK_AVAIL\","
-  echo "      \"percent\": $DISK_PERCENT"
+  echo "      \"total\": \"$DISK_TOTAL_FORMATTED\","
+  echo "      \"used\": \"$DISK_USED_FORMATTED\","
+  echo "      \"available\": \"$DISK_AVAIL_FORMATTED\","
+  echo "      \"percent\": $DISK_PERCENT_FORMATTED"
   echo "    }"
   echo "  },"
   
@@ -402,7 +429,7 @@ output_text() {
   printf "${YELLOW}CPU CORES:${NC} %s (%s Performance, %s Efficiency)%s\n" "$TOTAL_CORES" "$PERF_CORES" "$EFF_CORES" "$CLEAR_EOL"
   printf "${YELLOW}CPU USAGE:${NC} 사용자 %s%%, 시스템 %s%%, 유휴 %s%%%s\n" "$USER_CPU" "$SYS_CPU" "$IDLE_CPU" "$CLEAR_EOL"
   printf "${YELLOW}MEMORY:${NC} %s GB 총량 (사용: %s GB, %s%%)%s\n" "$TOTAL_MEM_GB" "$USED_MEMORY_GB" "$MEM_USAGE_PCT" "$CLEAR_EOL"
-  printf "${YELLOW}DISK:${NC} %s/%s (%s%% 사용)%s\n" "$DISK_USED" "$DISK_TOTAL" "$DISK_PERCENT" "$CLEAR_EOL"
+  printf "${YELLOW}DISK:${NC} %s/%s (사용: %s%%, 남음: %s)%s\n" "$DISK_USED_FORMATTED" "$DISK_TOTAL_FORMATTED" "$DISK_PERCENT_FORMATTED" "$DISK_AVAIL_FORMATTED" "$CLEAR_EOL"
 }
 
 # 단일 실행 모드
