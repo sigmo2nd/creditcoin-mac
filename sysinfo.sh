@@ -15,7 +15,7 @@ CLEAR_EOL=$'\033[K'  # 현재 커서 위치부터 줄 끝까지 지우기
 # 옵션 파싱
 MONITOR_MODE=false
 JSON_OUTPUT=false
-INTERVAL=0.5  # 모니터링 모드 기본 갱신 간격(초)
+INTERVAL=1.0  # 모니터링 모드 기본 갱신 간격(초)
 
 # 도움말 표시 함수
 show_help() {
