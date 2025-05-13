@@ -397,11 +397,8 @@ monitor_mode() {
     # 루프 시작 시간 기록
     local loop_start=$(date +%s.%N)
     
-    # 커서를 화면 상단으로 이동
+    # 커서를 화면 상단으로 이동 (화면 지우기 없이)
     echo -en "\033[H"
-    
-    # 화면 지우기 (깨끗한 출력을 위해)
-    echo -en "\033[2J"
     
     # 데이터 수집
     get_dynamic_info
@@ -430,10 +427,3 @@ monitor_mode() {
   stty $old_tty_settings
   echo -en "\033[?25h"
 }
-
-# 메인 실행
-if [ "$MONITOR_MODE" = true ]; then
-  monitor_mode "$INTERVAL"
-else
-  single_output
-fi
