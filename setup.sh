@@ -269,7 +269,6 @@ install_orbstack() {
     show_warning "Docker CLI를 PATH에 추가합니다..."
     
     if [ -f "/Applications/OrbStack.app/Contents/MacOS/xbin/docker" ]; then
-      echo 'export PATH="/Applications/OrbStack.app/Contents/MacOS/xbin:$PATH"' >> "$SHELL_PROFILE"
       export PATH="/Applications/OrbStack.app/Contents/MacOS/xbin:$PATH"
       show_success "Docker CLI 경로가 PATH에 추가되었습니다."
     else
@@ -307,6 +306,7 @@ $marker
 # Creditcoin Docker 설치 경로
 CREDITCOIN_DIR="$SCRIPT_DIR"
 CREDITCOIN_UTILS="\$CREDITCOIN_DIR/creditcoin-utils.sh"
+SYSINFO_SCRIPT="\$CREDITCOIN_DIR/sysinfo.sh"
 
 # OrbStack Docker CLI 경로 추가
 if [ -f "/Applications/OrbStack.app/Contents/MacOS/xbin/docker" ]; then
@@ -323,8 +323,16 @@ export DOCKER_CLI_NO_CREDENTIAL_STORE=1
 if [ -f "\$CREDITCOIN_UTILS" ]; then
     source "\$CREDITCOIN_UTILS"
 fi
+
+# sysinfo 명령어 등록
+if [ -f "\$SYSINFO_SCRIPT" ]; then
+    alias sysinfo="\$SYSINFO_SCRIPT"
+fi
 $endmarker
 EOT
+
+  # sysinfo.sh에 실행 권한 부여
+  chmod +x "$SCRIPT_DIR/sysinfo.sh"
 
   show_success "$SHELL_PROFILE에 유틸리티가 추가되었습니다."
 }
@@ -351,6 +359,7 @@ show_final_instructions() {
   echo -e "${BLUE}source $SHELL_PROFILE${NC}"
   
   echo -e "\n${YELLOW}다음으로 add3node.sh 또는 add2node.sh 스크립트를 사용하여 노드를 생성할 수 있습니다.${NC}"
+  echo -e "${YELLOW}시스템 모니터링은 'sysinfo' 명령어를 사용할 수 있습니다.${NC}"
   
   # SSH 세션인 경우 데스크톱 앱 설정 강조
   if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ]; then
@@ -366,10 +375,10 @@ main() {
   # 환경 확인
   check_environment
   
-  # 시간 서버 설정 확인 (새로 추가됨)
+  # 시간 서버 설정 확인
   check_time_server
   
-  # 전원 관리 설정 최적화 (새로 추가됨)
+  # 전원 관리 설정 최적화
   optimize_power_settings
   
   # 기본 도구 설치
