@@ -62,6 +62,27 @@ if [ "$MONITOR_MODE" = true ] && [ "$JSON_OUTPUT" = true ]; then
   exit 1
 fi
 
+# 터미널 제어 시퀀스 초기화
+init_term_sequences() {
+  # 커서 위치 이동 시퀀스
+  CURSOR_HOME=$(tput cup 0 0)
+  # 라인 끝까지 지우기
+  CLEAR_EOL=$(tput el)
+  # 화면 끝까지 지우기
+  CLEAR_EOS=$(tput ed)
+  # 커서 숨기기
+  CURSOR_INVISIBLE=$(tput civis)
+  # 커서 보이기
+  CURSOR_VISIBLE=$(tput cnorm)
+  # 대체 화면 버퍼 사용
+  ALT_SCREEN=$(tput smcup)
+  # 메인 화면 버퍼로 복귀
+  MAIN_SCREEN=$(tput rmcup)
+  # 터미널 크기
+  TERM_ROWS=$(tput lines)
+  TERM_COLS=$(tput cols)
+}
+
 # 시스템 정보 수집
 get_system_info() {
   # 모델 정보
@@ -242,6 +263,56 @@ get_dynamic_info() {
   fi
 }
 
+# 텍스트 형식의 출력을 생성하여 버퍼에 저장
+generate_text_output() {
+  output=""
+  
+  # 헤더 추가
+  output+="${BLUE}CREDITCOIN NODE RESOURCE MONITOR                                  $(date +"%Y-%m-%d %H:%M:%S")${NC}\n\n"
+  
+  # Docker가 실행 중이 아닌 경우
+  if [ "$DOCKER_RUNNING" != "true" ]; then
+    output+="${RED}Docker가 실행 중이 아니거나 액세스할 수 없습니다.${NC}\n\n"
+  else
+    # 테이블 헤더
+    output+=$(printf "%-10s %-8s %-10s %-13s %-8s %-15s\n" "NODE" "CPU%" "OF TOTAL%" "MEM USAGE" "MEM%" "NET RX/TX")
+    
+    # 노드별 데이터 출력
+    for i in $(seq 0 $((NODE_COUNT-1))); do
+      output+=$(printf "%-10s %-8s %-10s %-13s %-8s %-15s\n" \
+        "${NODE_NAMES[$i]}" \
+        "${NODE_CPU[$i]}%" \
+        "${NODE_CPU_TOTAL[$i]}%" \
+        "${NODE_MEM[$i]}" \
+        "${NODE_MEM_PCT[$i]}%" \
+        "${NODE_NET_RX[$i]}/${NODE_NET_TX[$i]}")
+    done
+    
+    # 구분선
+    output+=$(printf "%-10s %-8s %-10s %-13s %-8s %-15s\n" \
+      "----------" "--------" "----------" "-------------" "--------" "---------------")
+    
+    # 합계 출력
+    output+=$(printf "%-10s %-8s %-10s %-13s %-8s %-15s\n" \
+      "TOTAL" \
+      "${TOTAL_CPU}%" \
+      "${TOTAL_CPU_TOTAL}%" \
+      "${TOTAL_MEM_NODES_GB} GB" \
+      "${NODE_MEM_PCT_TOTAL}%" \
+      "${TOTAL_NET_RX_MB}MB/${TOTAL_NET_TX_MB}MB")
+  fi
+  
+  # 시스템 정보 출력
+  output+="\n${BLUE}SYSTEM INFORMATION:${NC}\n"
+  output+="${YELLOW}MODEL:${NC} $MODEL ($CHIP)\n"
+  output+="${YELLOW}CPU CORES:${NC} $TOTAL_CORES (${PERF_CORES} Performance, ${EFF_CORES} Efficiency)\n"
+  output+="${YELLOW}CPU USAGE:${NC} 사용자 ${USER_CPU}%, 시스템 ${SYS_CPU}%, 유휴 ${IDLE_CPU}%\n"
+  output+="${YELLOW}MEMORY:${NC} ${TOTAL_MEM_GB} GB 총량 (사용: ${USED_MEMORY_GB} GB, ${MEM_USAGE_PCT}%)\n"
+  output+="${YELLOW}DISK:${NC} ${DISK_USED}/${DISK_TOTAL} (${DISK_PERCENT}% 사용)\n"
+  
+  echo -e "$output"
+}
+
 # JSON 형식 출력
 output_json() {
   echo "{"
@@ -311,55 +382,6 @@ output_json() {
   echo "}"
 }
 
-# 일반 텍스트 출력
-output_text() {
-  # 헤더 출력
-  echo -e "${BLUE}CREDITCOIN NODE RESOURCE MONITOR                                  $(date +"%Y-%m-%d %H:%M:%S")${NC}"
-  echo ""
-  
-  # Docker가 실행 중이 아닌 경우
-  if [ "$DOCKER_RUNNING" != "true" ]; then
-    echo -e "${RED}Docker가 실행 중이 아니거나 액세스할 수 없습니다.${NC}"
-    echo ""
-  else
-    # 테이블 헤더
-    printf "%-10s %-8s %-10s %-13s %-8s %-15s\n" "NODE" "CPU%" "OF TOTAL%" "MEM USAGE" "MEM%" "NET RX/TX"
-    
-    # 노드별 데이터 출력
-    for i in $(seq 0 $((NODE_COUNT-1))); do
-      printf "%-10s %-8s %-10s %-13s %-8s %-15s\n" \
-        "${NODE_NAMES[$i]}" \
-        "${NODE_CPU[$i]}%" \
-        "${NODE_CPU_TOTAL[$i]}%" \
-        "${NODE_MEM[$i]}" \
-        "${NODE_MEM_PCT[$i]}%" \
-        "${NODE_NET_RX[$i]}/${NODE_NET_TX[$i]}"
-    done
-    
-    # 구분선
-    printf "%-10s %-8s %-10s %-13s %-8s %-15s\n" \
-      "----------" "--------" "----------" "-------------" "--------" "---------------"
-    
-    # 합계 출력
-    printf "%-10s %-8s %-10s %-13s %-8s %-15s\n" \
-      "TOTAL" \
-      "${TOTAL_CPU}%" \
-      "${TOTAL_CPU_TOTAL}%" \
-      "${TOTAL_MEM_NODES_GB} GB" \
-      "${NODE_MEM_PCT_TOTAL}%" \
-      "${TOTAL_NET_RX_MB}MB/${TOTAL_NET_TX_MB}MB"
-  fi
-  
-  # 시스템 정보 출력 - 고정 길이로 출력하여 글자 겹침 방지
-  echo ""
-  echo -e "${BLUE}SYSTEM INFORMATION:${NC}"
-  echo -e "${YELLOW}MODEL:${NC} $MODEL ($CHIP)"
-  echo -e "${YELLOW}CPU CORES:${NC} $TOTAL_CORES (${PERF_CORES} Performance, ${EFF_CORES} Efficiency)"
-  echo -e "${YELLOW}CPU USAGE:${NC} 사용자 ${USER_CPU}%, 시스템 ${SYS_CPU}%, 유휴 ${IDLE_CPU}%"
-  echo -e "${YELLOW}MEMORY:${NC} ${TOTAL_MEM_GB} GB 총량 (사용: ${USED_MEMORY_GB} GB, ${MEM_USAGE_PCT}%)"
-  echo -e "${YELLOW}DISK:${NC} ${DISK_USED}/${DISK_TOTAL} (${DISK_PERCENT}% 사용)"
-}
-
 # 단일 실행 모드
 single_output() {
   get_system_info
@@ -368,13 +390,16 @@ single_output() {
   if [ "$JSON_OUTPUT" = true ]; then
     output_json
   else
-    output_text
+    generate_text_output
   fi
 }
 
-# 모니터링 모드
+# 모니터링 모드 (개선된 버전)
 monitor_mode() {
   local interval=$1
+  
+  # 터미널 초기화
+  init_term_sequences
   
   # 시스템 정보 수집 (한 번만)
   get_system_info
@@ -383,56 +408,25 @@ monitor_mode() {
   local old_tty_settings
   old_tty_settings=$(stty -g)
   
-  # 화면 지우기 (처음 한 번만)
-  clear
-  
   # Ctrl+C 핸들러 설정
-  trap 'echo; echo "모니터링을 종료합니다."; stty $old_tty_settings; echo -en "\033[?25h"; exit 0' INT TERM
+  trap 'cleanup_terminal; exit 0' INT TERM
   
-  # 커서 숨기기
-  echo -en "\033[?25l"
-  
-  # 터미널 크기 구하기
-  TERM_ROWS=$(tput lines)
-  
-  # 빈 줄 출력 (화면을 채우기 위해)
-  for ((i=1; i<=$TERM_ROWS; i++)); do
-    echo ""
-  done
+  # 터미널 대체 버퍼로 전환 및 커서 숨기기
+  echo -en "$ALT_SCREEN$CURSOR_INVISIBLE"
   
   # 모니터링 루프
   while true; do
     # 루프 시작 시간 기록
     local loop_start=$(date +%s.%N)
     
-    # 커서를 화면 상단으로 이동 (화면 지우기 없이)
-    echo -en "\033[H"
-    
     # 데이터 수집
     get_dynamic_info
     
-    # 출력
-    if [ "$JSON_OUTPUT" = true ]; then
-      output_json
-    else
-      output_text
-      echo -e "\n${BLUE}모니터링 모드 - Ctrl+C를 눌러 종료${NC}"
-      
-      # 화면 나머지 부분을 빈 줄로 채우기 (이전 내용 지우기)
-      CURRENT_ROWS=$(tput lines)
-      LINES_USED=13  # 대략적인 출력 줄 수
-      if [ "$DOCKER_RUNNING" = true ]; then
-        LINES_USED=$((LINES_USED + NODE_COUNT + 3))  # 노드 수 + 헤더/푸터
-      fi
-      
-      # 남은 줄 지우기
-      for ((i=LINES_USED; i<CURRENT_ROWS; i++)); do
-        echo -e "\033[K"  # 현재 줄 지우기
-        if [ $i -lt $((CURRENT_ROWS-1)) ]; then
-          echo ""  # 빈 줄 출력 (다음 줄로 이동)
-        fi
-      done
-    fi
+    # 텍스트 출력 생성
+    local buffer=$(generate_text_output)
+    
+    # 화면 내용 업데이트 (더블 버퍼링 방식)
+    echo -en "$CURSOR_HOME$buffer"
     
     # 루프 실행 시간 계산
     local loop_time=$(echo "$(date +%s.%N) - $loop_start" | bc)
@@ -445,10 +439,13 @@ monitor_mode() {
       sleep $wait_time
     fi
   done
-  
-  # 터미널 설정 복원
-  stty $old_tty_settings
-  echo -en "\033[?25h"
+}
+
+# 터미널 정리 함수
+cleanup_terminal() {
+  echo -e "\n모니터링을 종료합니다."
+  echo -en "$CURSOR_VISIBLE$MAIN_SCREEN"
+  stty $(stty -g) # 원래 터미널 설정 복원
 }
 
 # 메인 실행
