@@ -508,7 +508,7 @@ payoutAllLegacy() {
 restartAll() {
   echo -e "${BLUE}모든 Creditcoin 노드 재시작 중...${NC}"
   
-  # 실행 중인 노드 검색
+  # 실행 중인 노드 검색 (개별 라인으로 저장)
   local nodes=$(docker ps --format "{{.Names}}" | grep -E "^(3node|node)[0-9]+")
   
   if [ -z "$nodes" ]; then
@@ -518,11 +518,11 @@ restartAll() {
   
   # 재시작 확인
   echo -e "${YELLOW}다음 노드들을 재시작합니다:${NC}"
-  for node in $nodes; do
+  echo "$nodes" | while read node; do
     echo -e "  ${GREEN}$node${NC}"
   done
   
-  # zsh 호환 방식으로 확인 (read -p 대신 echo 후 read)
+  # zsh 호환 방식으로 확인
   echo -e "${YELLOW}계속하시겠습니까? (y/N)${NC}"
   read response
   if [[ ! "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
@@ -531,10 +531,14 @@ restartAll() {
   fi
   
   # 노드 재시작
-  for node in $nodes; do
+  echo "$nodes" | while read node; do
     echo -e "${BLUE}$node 재시작 중...${NC}"
-    docker restart $node
-    echo -e "${GREEN}$node 재시작 완료${NC}"
+    if docker ps --format "{{.Names}}" | grep -q "^$node$"; then
+      docker restart $node
+      echo -e "${GREEN}$node 재시작 완료${NC}"
+    else
+      echo -e "${RED}노드 $node를 찾을 수 없습니다.${NC}"
+    fi
   done
   
   echo -e "${GREEN}모든 노드 재시작이 완료되었습니다.${NC}"
