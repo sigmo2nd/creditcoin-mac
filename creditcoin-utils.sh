@@ -1041,8 +1041,9 @@ restorekeys() {
   if [ -d "${TEMP_DIR}/network" ]; then
     echo -e "${BLUE}네트워크 파일 복원 중...${NC}"
     cp -r "${TEMP_DIR}/network/"* "${TARGET_NETWORK_DIR}/" 2>/dev/null
+  fi
 
-    # 파일 권한 설정
+  # 파일 권한 설정
   echo -e "${BLUE}파일 권한 설정 중...${NC}"
   chmod 700 "$TARGET_KEYSTORE_DIR" "$TARGET_NETWORK_DIR"
   find "$TARGET_KEYSTORE_DIR" -type f -exec chmod 600 {} \; 2>/dev/null
