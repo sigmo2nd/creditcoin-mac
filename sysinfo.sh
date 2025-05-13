@@ -90,6 +90,31 @@ get_system_info() {
   TOTAL_MEM_GB=$(awk "BEGIN {printf \"%.1f\", $TOTAL_MEM_BYTES / 1024 / 1024 / 1024}")
 }
 
+# 단위 변환 함수 - GiB/MiB를 GB/MB로 통일
+convert_to_decimal_unit() {
+  local value=$1
+  local binary_unit=$2
+  local decimal_unit=$3
+  
+  # 예: 1 GiB = 1.074 GB, 1 MiB = 1.048576 MB
+  local factor=0
+  if [ "$binary_unit" = "GiB" ] && [ "$decimal_unit" = "GB" ]; then
+    factor=1.074
+  elif [ "$binary_unit" = "MiB" ] && [ "$decimal_unit" = "MB" ]; then
+    factor=1.048576
+  elif [ "$binary_unit" = "GiB" ] && [ "$decimal_unit" = "MB" ]; then
+    factor=1099.511627776  # 1 GiB = 1099.511627776 MB
+  else
+    # 같은 단위거나 지원되지 않는 변환이면 그대로 반환
+    echo "$value"
+    return
+  fi
+  
+  # 변환 수행
+  local result=$(awk "BEGIN {printf \"%.2f\", $value * $factor}")
+  echo "$result"
+}
+
 # 동적 시스템 정보 수집
 get_dynamic_info() {
   # CPU 사용률 (top 명령을 한 번만 실행)
@@ -99,11 +124,30 @@ get_dynamic_info() {
   SYS_CPU=$(echo "$CPU_LINE" | awk '{print $5}' | sed 's/%//')
   IDLE_CPU=$(echo "$CPU_LINE" | awk '{print $7}' | sed 's/%//')
   
+  # VM 상태 정보 (메모리 사용량)
+  VM_STAT=$(vm_stat)
+  PAGE_SIZE=$(echo "$VM_STAT" | grep "page size" | awk '{print $8}')
+  PAGES_FREE=$(echo "$VM_STAT" | grep "Pages free" | awk '{print $3}' | sed 's/\.//')
+  PAGES_ACTIVE=$(echo "$VM_STAT" | grep "Pages active" | awk '{print $3}' | sed 's/\.//')
+  PAGES_INACTIVE=$(echo "$VM_STAT" | grep "Pages inactive" | awk '{print $3}' | sed 's/\.//')
+  PAGES_SPECULATIVE=$(echo "$VM_STAT" | grep "Pages speculative" | awk '{print $3}' | sed 's/\.//')
+  PAGES_WIRED=$(echo "$VM_STAT" | grep "Pages wired" | awk '{print $3}' | sed 's/\.//')
+  
+  # 메모리 사용량 계산 (GB)
+  WIRED_MEMORY_GB=$(awk "BEGIN {printf \"%.1f\", $PAGES_WIRED * $PAGE_SIZE / 1024 / 1024 / 1024}")
+  ACTIVE_MEMORY_GB=$(awk "BEGIN {printf \"%.1f\", $PAGES_ACTIVE * $PAGE_SIZE / 1024 / 1024 / 1024}")
+  INACTIVE_MEMORY_GB=$(awk "BEGIN {printf \"%.1f\", $PAGES_INACTIVE * $PAGE_SIZE / 1024 / 1024 / 1024}")
+  FREE_MEMORY_GB=$(awk "BEGIN {printf \"%.1f\", $PAGES_FREE * $PAGE_SIZE / 1024 / 1024 / 1024}")
+  USED_MEMORY_GB=$(awk "BEGIN {printf \"%.1f\", ($PAGES_WIRED + $PAGES_ACTIVE + $PAGES_INACTIVE) * $PAGE_SIZE / 1024 / 1024 / 1024}")
+  
+  # 메모리 사용률 계산
+  MEM_USAGE_PCT=$(awk "BEGIN {printf \"%.1f\", $USED_MEMORY_GB * 100 / $TOTAL_MEM_GB}")
+  
   # 디스크 정보
   DISK_INFO=$(df -h / 2>/dev/null | grep -v "Filesystem" | head -1)
-  DISK_TOTAL=$(echo "$DISK_INFO" | awk '{print $2}')
-  DISK_USED=$(echo "$DISK_INFO" | awk '{print $3}')
-  DISK_AVAIL=$(echo "$DISK_INFO" | awk '{print $4}')
+  DISK_TOTAL=$(echo "$DISK_INFO" | awk '{print $2}' | sed 's/Gi/GB/g')
+  DISK_USED=$(echo "$DISK_INFO" | awk '{print $3}' | sed 's/Gi/GB/g')
+  DISK_AVAIL=$(echo "$DISK_INFO" | awk '{print $4}' | sed 's/Gi/GB/g')
   DISK_PERCENT=$(echo "$DISK_INFO" | awk '{print $5}' | sed 's/%//')
   
   # Docker 정보
@@ -125,7 +169,7 @@ get_dynamic_info() {
     # 총계 초기화
     TOTAL_CPU=0
     TOTAL_CPU_TOTAL=0
-    TOTAL_MEM_MIB=0
+    TOTAL_MEM_GB=0
     TOTAL_NET_RX_MB=0
     TOTAL_NET_TX_MB=0
     
@@ -146,25 +190,43 @@ get_dynamic_info() {
       TOTAL_CPU=$(awk "BEGIN {printf \"%.2f\", $TOTAL_CPU + $cpu_clean}")
       TOTAL_CPU_TOTAL=$(awk "BEGIN {printf \"%.2f\", $TOTAL_CPU_TOTAL + $cpu_total}")
       
-      # 메모리 정보 처리
-      NODE_MEM+=("$mem")
+      # 메모리 정보 처리 - GiB를 GB로 변환
+      # 메모리 문자열 분리 (예: "4.854GiB / 58.81GiB")
+      mem_used=$(echo "$mem" | awk '{print $1}')
+      mem_used_num=$(echo "$mem_used" | sed 's/[A-Za-z]*//')
+      mem_used_unit=$(echo "$mem_used" | sed 's/[0-9.]*//')
+      
+      # GiB를 GB로 변환
+      if [[ "$mem_used_unit" == "GiB" ]]; then
+        mem_used_gb=$(convert_to_decimal_unit "$mem_used_num" "GiB" "GB")
+        mem_display="${mem_used_gb}GB"
+      elif [[ "$mem_used_unit" == "MiB" ]]; then
+        mem_used_mb=$(convert_to_decimal_unit "$mem_used_num" "MiB" "MB")
+        mem_display="${mem_used_mb}MB"
+      else
+        mem_display="$mem_used"
+      fi
+      
+      NODE_MEM+=("$mem_display")
       NODE_MEM_PCT+=("$(echo "$mem_pct" | sed 's/%//')")
       
-      # 메모리 MiB 단위로 변환하여 합산
-      mem_value=$(echo "$mem" | awk '{print $1}')
-      mem_unit=$(echo "$mem" | awk '{print $2}')
-      
-      if [[ "$mem_unit" == "GiB" ]]; then
-        mem_mib=$(awk "BEGIN {printf \"%.1f\", $mem_value * 1024}")
-      else
-        mem_mib=$mem_value
+      # 메모리 GB 단위로 변환하여 합산
+      if [[ "$mem_used_unit" == "GiB" ]]; then
+        # GiB를 GB로 변환
+        mem_used_gb=$(convert_to_decimal_unit "$mem_used_num" "GiB" "GB")
+        TOTAL_MEM_GB=$(awk "BEGIN {printf \"%.2f\", $TOTAL_MEM_GB + $mem_used_gb}")
+      elif [[ "$mem_used_unit" == "MiB" ]]; then
+        # MiB를 GB로 변환
+        mem_used_gb=$(awk "BEGIN {printf \"%.2f\", $mem_used_num / 1024 * 1.048576}")
+        TOTAL_MEM_GB=$(awk "BEGIN {printf \"%.2f\", $TOTAL_MEM_GB + $mem_used_gb}")
       fi
-      TOTAL_MEM_MIB=$(awk "BEGIN {printf \"%.1f\", $TOTAL_MEM_MIB + $mem_mib}")
       
-      # 네트워크 정보 처리
+      # 네트워크 정보 처리 - 모든 단위를 통일
       network=$(echo "$net" | tr '/' ' ')
       rx=$(echo "$network" | awk '{print $1}')
       tx=$(echo "$network" | awk '{print $2}')
+      
+      # 이미 단위가 포함된 경우
       NODE_NET_RX+=("$rx")
       NODE_NET_TX+=("$tx")
       
@@ -199,11 +261,8 @@ get_dynamic_info() {
     # 총 노드 수
     NODE_COUNT=${#NODE_NAMES[@]}
     
-    # 총 메모리 GiB 변환
-    TOTAL_MEM_GIB=$(awk "BEGIN {printf \"%.1f\", $TOTAL_MEM_MIB / 1024}")
-    
     # 총 메모리 비율 계산
-    MEM_PCT=$(awk "BEGIN {printf \"%.1f\", $TOTAL_MEM_MIB * 100 / ($TOTAL_MEM_GB * 1024)}")
+    NODE_MEM_PCT_TOTAL=$(awk "BEGIN {printf \"%.1f\", $TOTAL_MEM_GB * 100 / $TOTAL_MEM_GB}")
   else
     DOCKER_RUNNING=false
   fi
@@ -226,7 +285,14 @@ output_json() {
   echo "      \"system\": $SYS_CPU,"
   echo "      \"idle\": $IDLE_CPU"
   echo "    },"
-  echo "    \"memory\": \"$TOTAL_MEM_GB GiB\","
+  echo "    \"memory\": {"
+  echo "      \"total\": \"$TOTAL_MEM_GB GB\","
+  echo "      \"used\": \"$USED_MEMORY_GB GB\","
+  echo "      \"percent\": $MEM_USAGE_PCT,"
+  echo "      \"active\": \"$ACTIVE_MEMORY_GB GB\","
+  echo "      \"wired\": \"$WIRED_MEMORY_GB GB\","
+  echo "      \"free\": \"$FREE_MEMORY_GB GB\""
+  echo "    },"
   echo "    \"disk\": {"
   echo "      \"total\": \"$DISK_TOTAL\","
   echo "      \"used\": \"$DISK_USED\","
@@ -256,8 +322,8 @@ output_json() {
     echo "  \"totals\": {"
     echo "    \"cpu\": $TOTAL_CPU,"
     echo "    \"cpu_total\": $TOTAL_CPU_TOTAL,"
-    echo "    \"mem\": \"$TOTAL_MEM_GIB GiB\","
-    echo "    \"mem_pct\": $MEM_PCT,"
+    echo "    \"mem\": \"$TOTAL_MEM_GB GB\","
+    echo "    \"mem_pct\": $NODE_MEM_PCT_TOTAL,"
     echo "    \"net_rx\": \"$TOTAL_NET_RX_MB MB\","
     echo "    \"net_tx\": \"$TOTAL_NET_TX_MB MB\""
     echo "  }"
@@ -305,18 +371,18 @@ output_text() {
       "TOTAL" \
       "${TOTAL_CPU}%" \
       "${TOTAL_CPU_TOTAL}%" \
-      "${TOTAL_MEM_GIB} GiB" \
-      "${MEM_PCT}%" \
+      "${TOTAL_MEM_GB} GB" \
+      "${NODE_MEM_PCT_TOTAL}%" \
       "${TOTAL_NET_RX_MB}MB/${TOTAL_NET_TX_MB}MB"
   fi
   
-  # 시스템 정보 출력
+  # 시스템 정보 출력 - 고정 길이로 출력하여 글자 겹침 방지
   echo ""
   echo -e "${BLUE}SYSTEM INFORMATION:${NC}"
   echo -e "- ${YELLOW}MODEL:${NC} $MODEL ($CHIP)"
   echo -e "- ${YELLOW}CPU CORES:${NC} $TOTAL_CORES (${PERF_CORES} Performance, ${EFF_CORES} Efficiency)"
-  echo -e "- ${YELLOW}CPU USAGE:${NC} 사용자 ${USER_CPU}%, 시스템 ${SYS_CPU}%, 유휴 ${IDLE_CPU}%"
-  echo -e "- ${YELLOW}MEMORY:${NC} ${TOTAL_MEM_GB} GiB 총량"
+  printf "- ${YELLOW}CPU USAGE:${NC} 사용자 %-5s%% 시스템 %-5s%% 유휴 %-5s%%\n" "$USER_CPU" "$SYS_CPU" "$IDLE_CPU"
+  printf "- ${YELLOW}MEMORY:${NC} ${TOTAL_MEM_GB} GB 총량 (사용: ${USED_MEMORY_GB} GB, ${MEM_USAGE_PCT}%%)\n"
   echo -e "- ${YELLOW}DISK:${NC} ${DISK_USED}/${DISK_TOTAL} (${DISK_PERCENT}% 사용)"
 }
 
