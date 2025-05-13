@@ -105,15 +105,14 @@ get_dynamic_info() {
   PAGES_FREE=$(echo "$VM_STAT" | grep "Pages free" | awk '{print $3}' | sed 's/\.//')
   PAGES_ACTIVE=$(echo "$VM_STAT" | grep "Pages active" | awk '{print $3}' | sed 's/\.//')
   PAGES_INACTIVE=$(echo "$VM_STAT" | grep "Pages inactive" | awk '{print $3}' | sed 's/\.//')
-  PAGES_SPECULATIVE=$(echo "$VM_STAT" | grep "Pages speculative" | awk '{print $3}' | sed 's/\.//')
   PAGES_WIRED=$(echo "$VM_STAT" | grep "Pages wired down" | awk '{print $4}' | sed 's/\.//')
   
   # 메모리 사용량 계산 (GB)
-  WIRED_MEMORY_GB=$(echo "scale=1; ($PAGES_WIRED * $PAGE_SIZE) / 1024 / 1024 / 1024" | bc)
-  ACTIVE_MEMORY_GB=$(echo "scale=1; ($PAGES_ACTIVE * $PAGE_SIZE) / 1024 / 1024 / 1024" | bc)
-  INACTIVE_MEMORY_GB=$(echo "scale=1; ($PAGES_INACTIVE * $PAGE_SIZE) / 1024 / 1024 / 1024" | bc)
-  FREE_MEMORY_GB=$(echo "scale=1; ($PAGES_FREE * $PAGE_SIZE) / 1024 / 1024 / 1024" | bc)
-  USED_MEMORY_GB=$(echo "scale=1; ($PAGES_WIRED + $PAGES_ACTIVE + $PAGES_INACTIVE) * $PAGE_SIZE / 1024 / 1024 / 1024" | bc)
+  WIRED_MEMORY_GB=$(echo "scale=1; $PAGES_WIRED * $PAGE_SIZE / 1024 / 1024 / 1024" | bc)
+  ACTIVE_MEMORY_GB=$(echo "scale=1; $PAGES_ACTIVE * $PAGE_SIZE / 1024 / 1024 / 1024" | bc)
+  INACTIVE_MEMORY_GB=$(echo "scale=1; $PAGES_INACTIVE * $PAGE_SIZE / 1024 / 1024 / 1024" | bc)
+  FREE_MEMORY_GB=$(echo "scale=1; $PAGES_FREE * $PAGE_SIZE / 1024 / 1024 / 1024" | bc)
+  USED_MEMORY_GB=$(echo "scale=1; ($WIRED_MEMORY_GB + $ACTIVE_MEMORY_GB + $INACTIVE_MEMORY_GB)" | bc)
   
   # 메모리 사용률 계산
   MEM_USAGE_PCT=$(echo "scale=1; $USED_MEMORY_GB * 100 / $TOTAL_MEM_GB" | bc)
@@ -166,42 +165,36 @@ get_dynamic_info() {
       TOTAL_CPU_TOTAL=$(echo "scale=2; $TOTAL_CPU_TOTAL + $cpu_total" | bc)
       
       # 메모리 정보 처리 - GiB를 GB로 변환
-      # 메모리 문자열 분리 (예: "4.854GiB / 58.81GiB")
-      mem_used=$(echo "$mem" | awk '{print $1}')
-      mem_used_num=$(echo "$mem_used" | sed 's/[A-Za-z]*//')
-      mem_used_unit=$(echo "$mem_used" | sed 's/[0-9.]*//')
+      mem_parts=($mem)
+      mem_used=${mem_parts[0]}
+      mem_used_num=$(echo "$mem_used" | sed 's/[A-Za-z]*//g')
+      mem_used_unit=$(echo "$mem_used" | sed 's/[0-9.]*//g')
       
       # GiB를 GB로 변환
       if [[ "$mem_used_unit" == "GiB" ]]; then
-        mem_used_gb=$(echo "scale=2; $mem_used_num * 1.074" | bc)
-        mem_display="${mem_used_gb}GB"
+        temp=$(echo "scale=2; $mem_used_num * 1.074" | bc)
+        mem_display="${temp}GB"
+        mem_used_gb=$temp
       elif [[ "$mem_used_unit" == "MiB" ]]; then
-        mem_used_mb=$(echo "scale=2; $mem_used_num * 1.048576" | bc)
-        mem_display="${mem_used_mb}MB"
+        temp=$(echo "scale=2; $mem_used_num * 1.048576 / 1024" | bc)
+        mem_display="${temp}GB"
+        mem_used_gb=$temp
       else
         mem_display="$mem_used"
+        mem_used_gb="0"
       fi
       
       NODE_MEM+=("$mem_display")
       NODE_MEM_PCT+=("$(echo "$mem_pct" | sed 's/%//')")
       
-      # 메모리 GB 단위로 변환하여 합산
-      if [[ "$mem_used_unit" == "GiB" ]]; then
-        # GiB를 GB로 변환
-        mem_used_gb=$(echo "scale=2; $mem_used_num * 1.074" | bc)
-        TOTAL_MEM_NODES_GB=$(echo "scale=2; $TOTAL_MEM_NODES_GB + $mem_used_gb" | bc)
-      elif [[ "$mem_used_unit" == "MiB" ]]; then
-        # MiB를 GB로 변환
-        mem_used_gb=$(echo "scale=2; ($mem_used_num * 1.048576) / 1024" | bc)
-        TOTAL_MEM_NODES_GB=$(echo "scale=2; $TOTAL_MEM_NODES_GB + $mem_used_gb" | bc)
-      fi
+      # 총 메모리 합산
+      TOTAL_MEM_NODES_GB=$(echo "scale=2; $TOTAL_MEM_NODES_GB + $mem_used_gb" | bc)
       
-      # 네트워크 정보 처리 - 모든 단위를 통일
-      network=$(echo "$net" | tr '/' ' ')
-      rx=$(echo "$network" | awk '{print $1}')
-      tx=$(echo "$network" | awk '{print $2}')
+      # 네트워크 정보 처리
+      net_parts=(${net//\// })
+      rx=${net_parts[0]}
+      tx=${net_parts[1]}
       
-      # 이미 단위가 포함된 경우
       NODE_NET_RX+=("$rx")
       NODE_NET_TX+=("$tx")
       
