@@ -522,7 +522,9 @@ restartAll() {
     echo -e "  ${GREEN}$node${NC}"
   done
   
-  read -p "계속하시겠습니까? (y/N) " response
+  # zsh 호환 방식으로 확인 (read -p 대신 echo 후 read)
+  echo -e "${YELLOW}계속하시겠습니까? (y/N)${NC}"
+  read response
   if [[ ! "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
     echo -e "${RED}작업이 취소되었습니다.${NC}"
     return 1
@@ -556,7 +558,9 @@ stopAll() {
     echo -e "  ${GREEN}$node${NC}"
   done
   
-  read -p "계속하시겠습니까? (y/N) " response
+  # zsh 호환 방식으로 확인
+  echo -e "${YELLOW}계속하시겠습니까? (y/N)${NC}"
+  read response
   if [[ ! "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
     echo -e "${RED}작업이 취소되었습니다.${NC}"
     return 1
@@ -590,7 +594,9 @@ startAll() {
     echo -e "  ${GREEN}$node${NC}"
   done
   
-  read -p "계속하시겠습니까? (y/N) " response
+  # zsh 호환 방식으로 확인
+  echo -e "${YELLOW}계속하시겠습니까? (y/N)${NC}"
+  read response
   if [[ ! "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
     echo -e "${RED}작업이 취소되었습니다.${NC}"
     return 1
@@ -639,7 +645,10 @@ dkill() {
   echo ""
   echo -e "${RED}이 작업은 되돌릴 수 없습니다.${NC}"
   echo ""
-  read -p "정말로 '$node'를 완전히 삭제하시겠습니까? (y/N) " response
+  
+  # zsh 호환 방식으로 확인
+  echo -e "${YELLOW}정말로 '$node'를 완전히 삭제하시겠습니까? (y/N)${NC}"
+  read response
   
   if [[ ! "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
     echo -e "${BLUE}작업이 취소되었습니다.${NC}"
@@ -797,7 +806,7 @@ backupkeys() {
   # 노드 실행 중인지 확인
   if docker ps | grep -q "${NODE_NAME}"; then
     echo -e "${YELLOW}세션키를 복사하기 위해 서버를 중지합니다. (y/N)${NC}"
-    read -p "" STOP_CONFIRM
+    read STOP_CONFIRM
     if [[ ! "$STOP_CONFIRM" =~ ^([yY][eE][sS]|[yY])$ ]]; then
       echo -e "${RED}작업이 취소되었습니다.${NC}"
       return 1
@@ -924,7 +933,7 @@ restorekeys() {
   # 노드 실행 중인지 확인
   if docker ps | grep -q "${TARGET_NODE}"; then
     echo -e "${YELLOW}세션키를 복원하기 위해 서버를 중지합니다. 이 작업은 복구할 수 없습니다. (y/N)${NC}"
-    read -p "" STOP_CONFIRM
+    read STOP_CONFIRM
     if [[ ! "$STOP_CONFIRM" =~ ^([yY][eE][sS]|[yY])$ ]]; then
       echo -e "${RED}작업이 취소되었습니다.${NC}"
       return 1
@@ -1032,9 +1041,8 @@ restorekeys() {
   if [ -d "${TEMP_DIR}/network" ]; then
     echo -e "${BLUE}네트워크 파일 복원 중...${NC}"
     cp -r "${TEMP_DIR}/network/"* "${TARGET_NETWORK_DIR}/" 2>/dev/null
-  fi
 
-  # 파일 권한 설정
+    # 파일 권한 설정
   echo -e "${BLUE}파일 권한 설정 중...${NC}"
   chmod 700 "$TARGET_KEYSTORE_DIR" "$TARGET_NETWORK_DIR"
   find "$TARGET_KEYSTORE_DIR" -type f -exec chmod 600 {} \; 2>/dev/null
@@ -1047,8 +1055,8 @@ restorekeys() {
   echo -e "${YELLOW}주의: 동일한 세션키를 가진 두 노드를 동시에 실행하면 슬래싱(처벌)이 발생할 수 있습니다.${NC}"
 
   # 노드 재시작
-  echo -e "${BLUE}노드를 다시 시작하시겠습니까? (y/N)${NC}"
-  read -p "" RESTART_CONFIRM
+  echo -e "${YELLOW}노드를 다시 시작하시겠습니까? (y/N)${NC}"
+  read RESTART_CONFIRM
   if [[ "$RESTART_CONFIRM" =~ ^([yY][eE][sS]|[yY])$ ]]; then
     echo -e "${BLUE}노드 시작 중...${NC}"
     docker start ${TARGET_NODE}
@@ -1056,4 +1064,293 @@ restorekeys() {
   else
     echo -e "${YELLOW}노드는 중지된 상태로 유지됩니다.${NC}"
   fi
+}
+
+# 시간 동기화 상태 확인 및 강제 동기화
+checktimeserver() {
+  echo -e "${BLUE}시스템 시간 서버 확인 중...${NC}"
+  
+  # 현재 시간 서버 확인
+  current_server=$(sudo systemsetup -getnetworktimeserver 2>/dev/null | awk -F ': ' '{print $2}')
+  network_time_enabled=$(sudo systemsetup -getusingnetworktime 2>/dev/null | grep -q "On" && echo "yes" || echo "no")
+  
+  if [[ "$current_server" == "(null)" || "$current_server" == "" ]]; then
+    echo -e "${RED}⚠️ 경고: 시간 서버가 설정되어 있지 않습니다!${NC}"
+    echo -e "${YELLOW}블록체인 노드 운영에는 정확한 시간 동기화가 필수적입니다.${NC}"
+    
+    echo -e "${YELLOW}자동으로 시간 서버를 설정하시겠습니까? (Y/n)${NC}"
+    read response
+    if [[ ! "$response" =~ ^([nN][oO]|[nN])$ ]]; then
+      sudo systemsetup -setnetworktimeserver time.apple.com
+      sudo systemsetup -setusingnetworktime on
+      
+      echo -e "${YELLOW}시간 서비스 재시작 중...${NC}"
+      sudo launchctl unload -w /System/Library/LaunchDaemons/com.apple.timed.plist 2>/dev/null
+      sleep 5
+      sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.timed.plist
+      
+      echo -e "${YELLOW}시간 강제 동기화 중...${NC}"
+      sudo sntp -sS time.apple.com
+      
+      echo -e "${GREEN}시간 서버가 time.apple.com(자동 지역 감지)으로 설정되었습니다.${NC}"
+    else
+      echo -e "${RED}시간 서버를 설정하지 않았습니다. 블록체인 노드 운영에 문제가 발생할 수 있습니다.${NC}"
+    fi
+  elif [[ "$network_time_enabled" != "yes" ]]; then
+    echo -e "${RED}⚠️ 경고: 네트워크 시간 동기화가 비활성화되어 있습니다!${NC}"
+    echo -e "${YELLOW}네트워크 시간 동기화를 활성화하시겠습니까? (Y/n)${NC}"
+    read response
+    if [[ ! "$response" =~ ^([nN][oO]|[nN])$ ]]; then
+      sudo systemsetup -setusingnetworktime on
+      
+      echo -e "${YELLOW}시간 서비스 재시작 중...${NC}"
+      sudo launchctl unload -w /System/Library/LaunchDaemons/com.apple.timed.plist 2>/dev/null
+      sleep 5
+      sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.timed.plist
+      
+      echo -e "${YELLOW}시간 강제 동기화 중...${NC}"
+      sudo sntp -sS "$current_server"
+      
+      echo -e "${GREEN}네트워크 시간 동기화가 활성화되었습니다.${NC}"
+    else
+      echo -e "${RED}네트워크 시간 동기화가 비활성화된 상태로 유지됩니다. 블록체인 노드 운영에 문제가 발생할 수 있습니다.${NC}"
+    fi
+  else
+    echo -e "${GREEN}시간 서버: $current_server${NC}"
+    echo -e "${GREEN}네트워크 시간 동기화: 활성화됨${NC}"
+    
+    # 강제 시간 동기화 제안
+    echo -e "${YELLOW}시간을 강제로 동기화하시겠습니까? (Y/n)${NC}"
+    read sync_response
+    if [[ ! "$sync_response" =~ ^([nN][oO]|[nN])$ ]]; then
+      echo -e "${YELLOW}시간 강제 동기화 중...${NC}"
+      sudo sntp -sS "$current_server"
+      echo -e "${GREEN}시간이 강제로 동기화되었습니다.${NC}"
+    fi
+  fi
+  
+  # 현재 시간 표시
+  echo -e "${GREEN}현재 시스템 시간: $(date)${NC}"
+  echo -e "${GREEN}현재 UTC 시간: $(date -u)${NC}"
+}
+
+# 전원 관리 설정 최적화
+optimizepower() {
+  echo -e "${BLUE}전원 관리 설정 최적화${NC}"
+  
+  # 현재 설정 확인
+  echo -e "${YELLOW}현재 전원 관리 설정:${NC}"
+  pmset -g
+  
+  # 최적화 여부 물어보기
+  echo -e "${YELLOW}블록체인 노드 운영에 최적화된 전원 설정을 적용하시겠습니까? (Y/n)${NC}"
+  read response
+  if [[ ! "$response" =~ ^([nN][oO]|[nN])$ ]]; then
+    echo -e "${YELLOW}최적화된 전원 설정을 적용합니다...${NC}"
+    
+    # 전원 관리 설정 (즉시 적용)
+    sudo pmset -a displaysleep 10  # 디스플레이만 10분 후 절전
+    sudo pmset -a sleep 0          # 시스템 절전 비활성화
+    sudo pmset -a disksleep 0      # 디스크 절전 비활성화
+    sudo pmset -a standby 0        # 대기 모드 비활성화
+    sudo pmset -a autopoweroff 0   # 자동 전원 끄기 비활성화
+    sudo pmset -a powernap 0       # PowerNap 비활성화
+    sudo pmset -a ttyskeepawake 1  # SSH 세션 활성화 시 깨어있음
+    sudo pmset -a tcpkeepalive 1   # TCP 연결 유지
+    sudo pmset -a networkoversleep 0  # 네트워크 연결 유지
+    
+    echo -e "${GREEN}전원 관리 설정이 최적화되었습니다.${NC}"
+    echo -e "${YELLOW}새 설정:${NC}"
+    pmset -g
+  else
+    echo -e "${YELLOW}전원 관리 설정 최적화를 건너뛰었습니다.${NC}"
+    echo -e "${YELLOW}블록체인 노드를 24/7 운영하려면 전원 관리 설정 최적화를 권장합니다.${NC}"
+  fi
+}
+
+# 노드 로그 모니터링 함수
+monitorlog() {
+  if [ -z "$1" ]; then
+    echo -e "${YELLOW}사용법: monitorlog <노드명> [키워드]${NC}"
+    echo -e "${YELLOW}예시: monitorlog 3node0${NC}"
+    echo -e "${YELLOW}예시: monitorlog 3node0 \"too far\"${NC}"
+    return 1
+  fi
+  
+  local node=$1
+  local keyword=$2
+  
+  # 노드 존재 확인
+  if ! docker ps -a | grep -q "$node"; then
+    echo -e "${RED}오류: $node 노드가 존재하지 않습니다.${NC}"
+    return 1
+  fi
+  
+  echo -e "${BLUE}$node 노드 로그 모니터링 중...${NC}"
+  
+  if [ -z "$keyword" ]; then
+    # 키워드 없이 전체 로그 실시간 모니터링
+    docker logs -f $node
+  else
+    # 키워드 포함된 로그만 실시간 모니터링
+    echo -e "${YELLOW}키워드 \"$keyword\"가 포함된 로그만 표시합니다.${NC}"
+    docker logs -f $node | grep -i "$keyword"
+  fi
+}
+
+# 모든 노드 건강 상태 모니터링
+monitorhealth() {
+  echo -e "${BLUE}모든 노드의 건강 상태 모니터링 중...${NC}"
+  echo -e "${YELLOW}종료하려면 Ctrl+C를 누르세요${NC}"
+  
+  while true; do
+    clear
+    echo -e "${BLUE}===== $(date) =====${NC}"
+    
+    # 실행 중인 노드 검색
+    local nodes=$(docker ps --format "{{.Names}}" | grep -E "^(3node|node)[0-9]+" | sort)
+    
+    if [ -z "$nodes" ]; then
+      echo -e "${RED}실행 중인 Creditcoin 노드가 없습니다.${NC}"
+    else
+      for node in $nodes; do
+        echo -e "${GREEN}===== $node 건강 상태 =====${NC}"
+        
+        # 노드 타입 확인
+        if [[ $node == 3node* ]]; then
+          local num=$(echo $node | sed 's/3node//g')
+          local port=$((33980 + $num))
+        elif [[ $node == node* ]]; then
+          local num=$(echo $node | sed 's/node//g')
+          local port=$((33970 + $num))
+        fi
+        
+        # 건강 상태 확인
+        docker exec $node bash -c 'curl -s -H "Content-Type: application/json" -d '"'"'{"id":1, "jsonrpc":"2.0", "method": "system_health", "params":[]}'"'"' http://localhost:'$port'/' | jq 2>/dev/null || echo "응답 없음"
+        
+        echo ""
+      done
+    fi
+    
+    sleep 30  # 30초마다 새로고침
+  done
+}
+
+# 시스템 성능 요약 표시
+sysinfo() {
+  echo -e "${BLUE}===== 시스템 성능 요약 =====${NC}"
+  
+  echo -e "${YELLOW}CPU 사용량:${NC}"
+  top -l 1 | grep -E "^CPU" | head -1
+  
+  echo -e "${YELLOW}메모리 사용량:${NC}"
+  vm_stat | grep "Pages free:" | awk '{print "Free memory: " $3 " pages (" $3 * 4096 / 1048576 " MB)"}'
+  vm_stat | grep "Pages active:" | awk '{print "Active memory: " $3 " pages (" $3 * 4096 / 1048576 " MB)"}'
+  
+  echo -e "${YELLOW}디스크 사용량:${NC}"
+  df -h . | grep -v "Filesystem"
+  
+  echo -e "${YELLOW}Docker 컨테이너 리소스 사용량:${NC}"
+  docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
+  
+  echo -e "${YELLOW}네트워크 연결:${NC}"
+  netstat -an | grep -E "ESTABLISHED|LISTEN" | wc -l | awk '{print $1 " active connections"}'
+  
+  echo -e "${YELLOW}현재 시간 설정:${NC}"
+  echo "시스템 시간: $(date)"
+  echo "UTC 시간: $(date -u)"
+  echo "시간 서버: $(sudo systemsetup -getnetworktimeserver 2>/dev/null || echo "확인 불가")"
+  echo "네트워크 시간 동기화: $(sudo systemsetup -getusingnetworktime 2>/dev/null || echo "확인 불가")"
+  
+  echo -e "${YELLOW}전원 관리 설정:${NC}"
+  pmset -g | grep -E "displaysleep|sleep|disksleep|standby|autopoweroff"
+}
+
+# 전체 시스템 및 노드 최적화
+optimize() {
+  echo -e "${BLUE}===== 시스템 및 노드 최적화 =====${NC}"
+  
+  # 시간 서버 확인 및 설정
+  checktimeserver
+  
+  # 전원 관리 설정
+  optimizepower
+  
+  # Docker 시스템 프루닝
+  echo -e "${YELLOW}Docker 시스템 프루닝을 실행하시겠습니까? (불필요한 이미지, 컨테이너, 볼륨 정리) (Y/n)${NC}"
+  read response
+  if [[ ! "$response" =~ ^([nN][oO]|[nN])$ ]]; then
+    echo -e "${YELLOW}Docker 시스템 프루닝 중...${NC}"
+    docker system prune -f
+    echo -e "${GREEN}Docker 시스템 프루닝 완료${NC}"
+  fi
+  
+  # 로그 정리
+  echo -e "${YELLOW}Docker 컨테이너 로그 파일을 정리하시겠습니까? (Y/n)${NC}"
+  read response
+  if [[ ! "$response" =~ ^([nN][oO]|[nN])$ ]]; then
+    echo -e "${YELLOW}Docker 컨테이너 로그 정리 중...${NC}"
+    for CONTAINER_ID in $(docker ps -a -q); do
+      CONTAINER_NAME=$(docker inspect --format '{{.Name}}' $CONTAINER_ID | sed 's/\///')
+      echo -e "${YELLOW}컨테이너 $CONTAINER_NAME 로그 정리 중...${NC}"
+      if [ -f "$(docker inspect --format='{{.LogPath}}' $CONTAINER_ID)" ]; then
+        cat /dev/null > $(docker inspect --format='{{.LogPath}}' $CONTAINER_ID)
+        echo -e "${GREEN}로그 정리 완료: $CONTAINER_NAME${NC}"
+      else
+        echo -e "${YELLOW}로그 파일을 찾을 수 없습니다: $CONTAINER_NAME${NC}"
+      fi
+    done
+    echo -e "${GREEN}모든 컨테이너 로그 정리 완료${NC}"
+  fi
+  
+  # 피어 차단 목록 초기화
+  echo -e "${YELLOW}모든 노드의 피어 차단 목록을 초기화하시겠습니까? (Y/n)${NC}"
+  read response
+  if [[ ! "$response" =~ ^([nN][oO]|[nN])$ ]]; then
+    echo -e "${YELLOW}피어 차단 목록 초기화 중...${NC}"
+    
+    # 실행 중인 노드 검색
+    local nodes=$(docker ps --format "{{.Names}}" | grep -E "^(3node|node)[0-9]+")
+    
+    if [ -z "$nodes" ]; then
+      echo -e "${RED}실행 중인 Creditcoin 노드가 없습니다.${NC}"
+    else
+      for node in $nodes; do
+        echo -e "${YELLOW}노드 $node 중지 중...${NC}"
+        docker stop $node
+        
+        # 노드 타입 확인
+        if [[ $node == 3node* ]]; then
+          echo -e "${YELLOW}Creditcoin 3.0 노드 피어 데이터베이스 초기화 중: $node${NC}"
+          # 백업 디렉토리 생성
+          mkdir -p "./$node/data/chains/creditcoin3/network/backup_$(date +%Y%m%d)"
+          # 파일 백업
+          cp -r "./$node/data/chains/creditcoin3/network/"* "./$node/data/chains/creditcoin3/network/backup_$(date +%Y%m%d)/" 2>/dev/null
+          # 피어 파일 삭제
+          rm -f "./$node/data/chains/creditcoin3/network/peers" "./$node/data/chains/creditcoin3/network/not_connected_peers"
+        elif [[ $node == node* ]]; then
+          echo -e "${YELLOW}Creditcoin 2.0 노드 피어 데이터베이스 초기화 중: $node${NC}"
+          # 백업 디렉토리 생성
+          mkdir -p "./$node/data/chains/creditcoin/network/backup_$(date +%Y%m%d)"
+          # 파일 백업
+          cp -r "./$node/data/chains/creditcoin/network/"* "./$node/data/chains/creditcoin/network/backup_$(date +%Y%m%d)/" 2>/dev/null
+          # 피어 파일 삭제
+          rm -f "./$node/data/chains/creditcoin/network/peers" "./$node/data/chains/creditcoin/network/not_connected_peers"
+        fi
+        
+        echo -e "${GREEN}피어 데이터베이스 초기화 완료: $node${NC}"
+      done
+      
+      # 모든 노드 재시작
+      echo -e "${YELLOW}모든 노드 재시작 중...${NC}"
+      for node in $nodes; do
+        echo -e "${YELLOW}노드 시작 중: $node${NC}"
+        docker start $node
+      done
+      echo -e "${GREEN}모든 노드 재시작 완료${NC}"
+    fi
+  fi
+  
+  echo -e "${GREEN}최적화가 완료되었습니다!${NC}"
+  echo -e "${YELLOW}최적의 성능을 위해 시스템을 재부팅하는 것이 좋습니다.${NC}"
 }
