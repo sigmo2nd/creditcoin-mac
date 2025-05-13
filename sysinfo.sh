@@ -366,23 +366,53 @@ single_output() {
 # 모니터링 모드
 monitor_mode() {
   local INTERVAL=$1
+  
+  # 터미널 설정 백업
+  local old_tty_settings
+  old_tty_settings=$(stty -g)
+  
+  # 화면 지우기
+  clear
+  
+  # 화면 고정을 위한 설정
   echo -e "${BLUE}모니터링 모드 (${INTERVAL}초마다 갱신) - 종료하려면 Ctrl+C를 누르세요${NC}"
+  
+  # Ctrl+C 시그널 핸들러 설정
+  trap 'echo; echo "모니터링을 종료합니다."; stty $old_tty_settings; exit 0' INT
+  
+  # 커서 숨기기
+  echo -en "\033[?25l"
   
   # 무한 루프 (Ctrl+C로 종료 가능)
   while true; do
-    clear  # 화면 지우기
+    # 커서를 화면 상단으로 이동 (깜빡임 방지)
+    echo -en "\033[H"
+    
+    # 내용 출력 (화면 지우기 없이)
     local DATA=$(collect_data)
     
     if [ "$JSON_OUTPUT" = true ]; then
       echo "$DATA"
     else
+      echo -e "${BLUE}CREDITCOIN NODE RESOURCE MONITOR                                  $(date +"%Y-%m-%d %H:%M:%S")${NC}\n"
       format_output "$DATA"
-      echo ""
+      
+      # 맨 아래에 안내 메시지
+      rows=$(tput lines)
+      cols=$(tput cols)
+      
+      # 커서를 마지막 줄로 이동
+      echo -en "\033[${rows};0H"
       echo -e "${BLUE}모니터링 모드 (${INTERVAL}초마다 갱신) - 종료하려면 Ctrl+C를 누르세요${NC}"
     fi
     
+    # 대기
     sleep "$INTERVAL"
   done
+  
+  # 정상 종료되지 않은 경우를 대비한 리셋
+  stty $old_tty_settings
+  echo -en "\033[?25h" # 커서 표시
 }
 
 # 메인 함수
