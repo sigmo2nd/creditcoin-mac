@@ -62,11 +62,6 @@ if [ "$MONITOR_MODE" = true ] && [ "$JSON_OUTPUT" = true ]; then
   exit 1
 fi
 
-# 숫자 계산 - awk 대신 bc 사용
-calc() {
-  echo "scale=2; $1" | bc -l
-}
-
 # 시스템 정보 수집
 get_system_info() {
   # 모델 정보
@@ -92,32 +87,7 @@ get_system_info() {
   
   # 메모리 크기
   TOTAL_MEM_BYTES=$(sysctl -n hw.memsize 2>/dev/null || echo "0")
-  TOTAL_MEM_GB=$(calc "$TOTAL_MEM_BYTES / 1024 / 1024 / 1024")
-}
-
-# 단위 변환 함수 - GiB/MiB를 GB/MB로 통일
-convert_to_decimal_unit() {
-  local value=$1
-  local binary_unit=$2
-  local decimal_unit=$3
-  
-  # 예: 1 GiB = 1.074 GB, 1 MiB = 1.048576 MB
-  local factor=0
-  if [ "$binary_unit" = "GiB" ] && [ "$decimal_unit" = "GB" ]; then
-    factor=1.074
-  elif [ "$binary_unit" = "MiB" ] && [ "$decimal_unit" = "MB" ]; then
-    factor=1.048576
-  elif [ "$binary_unit" = "GiB" ] && [ "$decimal_unit" = "MB" ]; then
-    factor=1099.511627776  # 1 GiB = 1099.511627776 MB
-  else
-    # 같은 단위거나 지원되지 않는 변환이면 그대로 반환
-    echo "$value"
-    return
-  fi
-  
-  # 변환 수행
-  local result=$(calc "$value * $factor")
-  echo "$result"
+  TOTAL_MEM_GB=$(echo "scale=1; $TOTAL_MEM_BYTES / 1024 / 1024 / 1024" | bc)
 }
 
 # 동적 시스템 정보 수집
@@ -139,14 +109,14 @@ get_dynamic_info() {
   PAGES_WIRED=$(echo "$VM_STAT" | grep "Pages wired down" | awk '{print $4}' | sed 's/\.//')
   
   # 메모리 사용량 계산 (GB)
-  WIRED_MEMORY_GB=$(calc "($PAGES_WIRED * $PAGE_SIZE) / 1024 / 1024 / 1024")
-  ACTIVE_MEMORY_GB=$(calc "($PAGES_ACTIVE * $PAGE_SIZE) / 1024 / 1024 / 1024")
-  INACTIVE_MEMORY_GB=$(calc "($PAGES_INACTIVE * $PAGE_SIZE) / 1024 / 1024 / 1024")
-  FREE_MEMORY_GB=$(calc "($PAGES_FREE * $PAGE_SIZE) / 1024 / 1024 / 1024")
-  USED_MEMORY_GB=$(calc "($PAGES_WIRED + $PAGES_ACTIVE + $PAGES_INACTIVE) * $PAGE_SIZE / 1024 / 1024 / 1024")
+  WIRED_MEMORY_GB=$(echo "scale=1; ($PAGES_WIRED * $PAGE_SIZE) / 1024 / 1024 / 1024" | bc)
+  ACTIVE_MEMORY_GB=$(echo "scale=1; ($PAGES_ACTIVE * $PAGE_SIZE) / 1024 / 1024 / 1024" | bc)
+  INACTIVE_MEMORY_GB=$(echo "scale=1; ($PAGES_INACTIVE * $PAGE_SIZE) / 1024 / 1024 / 1024" | bc)
+  FREE_MEMORY_GB=$(echo "scale=1; ($PAGES_FREE * $PAGE_SIZE) / 1024 / 1024 / 1024" | bc)
+  USED_MEMORY_GB=$(echo "scale=1; ($PAGES_WIRED + $PAGES_ACTIVE + $PAGES_INACTIVE) * $PAGE_SIZE / 1024 / 1024 / 1024" | bc)
   
   # 메모리 사용률 계산
-  MEM_USAGE_PCT=$(calc "$USED_MEMORY_GB * 100 / $TOTAL_MEM_GB")
+  MEM_USAGE_PCT=$(echo "scale=1; $USED_MEMORY_GB * 100 / $TOTAL_MEM_GB" | bc)
   
   # 디스크 정보
   DISK_INFO=$(df -h / 2>/dev/null | grep -v "Filesystem" | head -1)
@@ -188,12 +158,12 @@ get_dynamic_info() {
       NODE_CPU+=("$cpu_clean")
       
       # CPU 총량 대비 사용률 계산
-      cpu_total=$(calc "$cpu_clean / $TOTAL_CORES")
+      cpu_total=$(echo "scale=2; $cpu_clean / $TOTAL_CORES" | bc)
       NODE_CPU_TOTAL+=("$cpu_total")
       
       # 총 CPU 사용량 합산
-      TOTAL_CPU=$(calc "$TOTAL_CPU + $cpu_clean")
-      TOTAL_CPU_TOTAL=$(calc "$TOTAL_CPU_TOTAL + $cpu_total")
+      TOTAL_CPU=$(echo "scale=2; $TOTAL_CPU + $cpu_clean" | bc)
+      TOTAL_CPU_TOTAL=$(echo "scale=2; $TOTAL_CPU_TOTAL + $cpu_total" | bc)
       
       # 메모리 정보 처리 - GiB를 GB로 변환
       # 메모리 문자열 분리 (예: "4.854GiB / 58.81GiB")
@@ -203,10 +173,10 @@ get_dynamic_info() {
       
       # GiB를 GB로 변환
       if [[ "$mem_used_unit" == "GiB" ]]; then
-        mem_used_gb=$(calc "$mem_used_num * 1.074")
+        mem_used_gb=$(echo "scale=2; $mem_used_num * 1.074" | bc)
         mem_display="${mem_used_gb}GB"
       elif [[ "$mem_used_unit" == "MiB" ]]; then
-        mem_used_mb=$(calc "$mem_used_num * 1.048576")
+        mem_used_mb=$(echo "scale=2; $mem_used_num * 1.048576" | bc)
         mem_display="${mem_used_mb}MB"
       else
         mem_display="$mem_used"
@@ -218,12 +188,12 @@ get_dynamic_info() {
       # 메모리 GB 단위로 변환하여 합산
       if [[ "$mem_used_unit" == "GiB" ]]; then
         # GiB를 GB로 변환
-        mem_used_gb=$(calc "$mem_used_num * 1.074")
-        TOTAL_MEM_NODES_GB=$(calc "$TOTAL_MEM_NODES_GB + $mem_used_gb")
+        mem_used_gb=$(echo "scale=2; $mem_used_num * 1.074" | bc)
+        TOTAL_MEM_NODES_GB=$(echo "scale=2; $TOTAL_MEM_NODES_GB + $mem_used_gb" | bc)
       elif [[ "$mem_used_unit" == "MiB" ]]; then
         # MiB를 GB로 변환
-        mem_used_gb=$(calc "($mem_used_num * 1.048576) / 1024")
-        TOTAL_MEM_NODES_GB=$(calc "$TOTAL_MEM_NODES_GB + $mem_used_gb")
+        mem_used_gb=$(echo "scale=2; ($mem_used_num * 1.048576) / 1024" | bc)
+        TOTAL_MEM_NODES_GB=$(echo "scale=2; $TOTAL_MEM_NODES_GB + $mem_used_gb" | bc)
       fi
       
       # 네트워크 정보 처리 - 모든 단위를 통일
@@ -244,28 +214,28 @@ get_dynamic_info() {
       
       # 단위별로 MB로 변환
       if [[ "$rx_unit" == "kB" ]]; then
-        rx_mb=$(calc "$rx_value / 1024")
+        rx_mb=$(echo "scale=1; $rx_value / 1024" | bc)
       elif [[ "$rx_unit" == "MB" ]]; then
         rx_mb=$rx_value
       elif [[ "$rx_unit" == "GB" ]]; then
-        rx_mb=$(calc "$rx_value * 1024")
+        rx_mb=$(echo "scale=1; $rx_value * 1024" | bc)
       else
         rx_mb=0
       fi
       
       if [[ "$tx_unit" == "kB" ]]; then
-        tx_mb=$(calc "$tx_value / 1024")
+        tx_mb=$(echo "scale=1; $tx_value / 1024" | bc)
       elif [[ "$tx_unit" == "MB" ]]; then
         tx_mb=$tx_value
       elif [[ "$tx_unit" == "GB" ]]; then
-        tx_mb=$(calc "$tx_value * 1024")
+        tx_mb=$(echo "scale=1; $tx_value * 1024" | bc)
       else
         tx_mb=0
       fi
       
       # 총 네트워크 트래픽 합산
-      TOTAL_NET_RX_MB=$(calc "$TOTAL_NET_RX_MB + $rx_mb")
-      TOTAL_NET_TX_MB=$(calc "$TOTAL_NET_TX_MB + $tx_mb")
+      TOTAL_NET_RX_MB=$(echo "scale=1; $TOTAL_NET_RX_MB + $rx_mb" | bc)
+      TOTAL_NET_TX_MB=$(echo "scale=1; $TOTAL_NET_TX_MB + $tx_mb" | bc)
       
     done <<< "$DOCKER_STATS"
     
@@ -273,7 +243,7 @@ get_dynamic_info() {
     NODE_COUNT=${#NODE_NAMES[@]}
     
     # 총 메모리 비율 계산
-    NODE_MEM_PCT_TOTAL=$(calc "$TOTAL_MEM_NODES_GB * 100 / $TOTAL_MEM_GB")
+    NODE_MEM_PCT_TOTAL=$(echo "scale=1; $TOTAL_MEM_NODES_GB * 100 / $TOTAL_MEM_GB" | bc)
   else
     DOCKER_RUNNING=false
   fi
@@ -390,11 +360,11 @@ output_text() {
   # 시스템 정보 출력 - 고정 길이로 출력하여 글자 겹침 방지
   echo ""
   echo -e "${BLUE}SYSTEM INFORMATION:${NC}"
-  echo -e "- ${YELLOW}MODEL:${NC} $MODEL ($CHIP)"
-  echo -e "- ${YELLOW}CPU CORES:${NC} $TOTAL_CORES (${PERF_CORES} Performance, ${EFF_CORES} Efficiency)"
-  printf "- ${YELLOW}CPU USAGE:${NC} 사용자 %-5s%% 시스템 %-5s%% 유휴 %-5s%%\n" "$USER_CPU" "$SYS_CPU" "$IDLE_CPU"
-  printf "- ${YELLOW}MEMORY:${NC} ${TOTAL_MEM_GB} GB 총량 (사용: ${USED_MEMORY_GB} GB, ${MEM_USAGE_PCT}%%)\n"
-  echo -e "- ${YELLOW}DISK:${NC} ${DISK_USED}/${DISK_TOTAL} (${DISK_PERCENT}% 사용)"
+  echo -e "${YELLOW}MODEL:${NC} $MODEL ($CHIP)"
+  echo -e "${YELLOW}CPU CORES:${NC} $TOTAL_CORES (${PERF_CORES} Performance, ${EFF_CORES} Efficiency)"
+  echo -e "${YELLOW}CPU USAGE:${NC} 사용자 ${USER_CPU}%, 시스템 ${SYS_CPU}%, 유휴 ${IDLE_CPU}%"
+  echo -e "${YELLOW}MEMORY:${NC} ${TOTAL_MEM_GB} GB 총량 (사용: ${USED_MEMORY_GB} GB, ${MEM_USAGE_PCT}%)"
+  echo -e "${YELLOW}DISK:${NC} ${DISK_USED}/${DISK_TOTAL} (${DISK_PERCENT}% 사용)"
 }
 
 # 단일 실행 모드
