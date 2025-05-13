@@ -72,6 +72,17 @@ format_decimal() {
   printf "%.${decimals}f" "$num"
 }
 
+# 바이트 단위 변환 함수 (MB/GB 자동 변환)
+format_bytes() {
+  local bytes=$1
+  if (( $(echo "$bytes > 1024" | bc -l) )); then
+    local gb=$(echo "scale=2; $bytes / 1024" | bc)
+    echo "${gb}GB"
+  else
+    echo "${bytes}MB"
+  fi
+}
+
 # 시스템 정보 수집
 get_system_info() {
   # 모델 정보
@@ -268,6 +279,10 @@ get_dynamic_info() {
     
     # 총 메모리 사용량의 퍼센티지 계산 (평균이 아닌 총 시스템 메모리 대비 비율)
     NODE_MEM_PCT_TOTAL=$(format_decimal "$(echo "scale=2; $TOTAL_MEM_NODES_GB * 100 / $TOTAL_MEM_GB" | bc)")
+    
+    # 네트워크 트래픽 단위 변환 (MB -> GB)
+    TOTAL_NET_RX_FORMATTED=$(format_bytes $TOTAL_NET_RX_MB)
+    TOTAL_NET_TX_FORMATTED=$(format_bytes $TOTAL_NET_TX_MB)
   else
     DOCKER_RUNNING=false
   fi
@@ -326,8 +341,8 @@ output_json() {
     echo "    \"cpu_total\": $TOTAL_CPU_TOTAL,"
     echo "    \"mem\": \"$TOTAL_MEM_NODES_GB GB\","
     echo "    \"mem_pct\": $NODE_MEM_PCT_TOTAL,"
-    echo "    \"net_rx\": \"$TOTAL_NET_RX_MB MB\","
-    echo "    \"net_tx\": \"$TOTAL_NET_TX_MB MB\""
+    echo "    \"net_rx\": \"$TOTAL_NET_RX_FORMATTED\","
+    echo "    \"net_tx\": \"$TOTAL_NET_TX_FORMATTED\""
     echo "  }"
   else
     echo "  \"docker\": {"
@@ -376,7 +391,7 @@ output_text() {
       "${TOTAL_CPU_TOTAL}%" \
       "${TOTAL_MEM_NODES_GB} GB" \
       "${NODE_MEM_PCT_TOTAL}%" \
-      "${TOTAL_NET_RX_MB}MB/${TOTAL_NET_TX_MB}MB" \
+      "${TOTAL_NET_RX_FORMATTED}/${TOTAL_NET_TX_FORMATTED}" \
       "$CLEAR_EOL"
   fi
   
