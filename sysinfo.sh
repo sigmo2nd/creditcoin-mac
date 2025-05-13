@@ -125,9 +125,23 @@ get_system_info() {
     EFF_CORES=0
   fi
   
-  # 메모리 크기
+  # 시스템 메모리 크기
   TOTAL_MEM_BYTES=$(sysctl -n hw.memsize 2>/dev/null || echo "0")
   TOTAL_MEM_GB=$(format_decimal "$(echo "scale=2; $TOTAL_MEM_BYTES / 1024 / 1024 / 1024" | bc)")
+  
+  # Docker 정보를 가져오고 Docker에서 사용 가능한 메모리 계산
+  if command -v docker &> /dev/null && docker info &> /dev/null; then
+    # Docker 정보 가져오기
+    DOCKER_INFO=$(docker info --format "{{.MemTotal}}" 2>/dev/null)
+    if [ -n "$DOCKER_INFO" ]; then
+      # Docker 메모리 계산 (바이트에서 GB로 변환)
+      DOCKER_MEM_TOTAL=$(format_decimal "$(echo "scale=2; $DOCKER_INFO / 1024 / 1024 / 1024" | bc)")
+      # Docker 메모리가 유효한 값이면 사용
+      if (( $(echo "$DOCKER_MEM_TOTAL > 0" | bc -l) )); then
+        TOTAL_MEM_GB=$DOCKER_MEM_TOTAL
+      fi
+    fi
+  fi
 }
 
 # 동적 시스템 정보 수집
@@ -227,7 +241,7 @@ get_dynamic_info() {
         mem_limit_num=$(echo "$mem_limit" | sed 's/[A-Za-z]*//g')
         mem_limit_unit=$(echo "$mem_limit" | sed 's/[0-9.]*//g')
       else
-        # 제한값이 없으면, 전체 시스템 메모리로 대체
+        # 제한값이 없으면, Docker에서 사용 가능한 메모리로 대체
         mem_limit_num=$TOTAL_MEM_GB
         mem_limit_unit="GB"
       fi
