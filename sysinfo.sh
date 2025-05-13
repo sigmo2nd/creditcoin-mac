@@ -125,9 +125,9 @@ get_system_info() {
     EFF_CORES=0
   fi
   
-  # 시스템 메모리 크기
-  TOTAL_MEM_BYTES=$(sysctl -n hw.memsize 2>/dev/null || echo "0")
-  TOTAL_MEM_GB=$(format_decimal "$(echo "scale=2; $TOTAL_MEM_BYTES / 1024 / 1024 / 1024" | bc)")
+  # 시스템 메모리 크기 (실제 물리적 메모리)
+  PHYSICAL_MEM_BYTES=$(sysctl -n hw.memsize 2>/dev/null || echo "0")
+  PHYSICAL_MEM_GB=$(format_decimal "$(echo "scale=2; $PHYSICAL_MEM_BYTES / 1024 / 1024 / 1024" | bc)")
   
   # Docker 정보를 가져오고 Docker에서 사용 가능한 메모리 계산
   if command -v docker &> /dev/null && docker info &> /dev/null; then
@@ -135,12 +135,21 @@ get_system_info() {
     DOCKER_INFO=$(docker info --format "{{.MemTotal}}" 2>/dev/null)
     if [ -n "$DOCKER_INFO" ]; then
       # Docker 메모리 계산 (바이트에서 GB로 변환)
-      DOCKER_MEM_TOTAL=$(format_decimal "$(echo "scale=2; $DOCKER_INFO / 1024 / 1024 / 1024" | bc)")
+      DOCKER_MEM_TOTAL_GB=$(format_decimal "$(echo "scale=2; $DOCKER_INFO / 1024 / 1024 / 1024" | bc)")
       # Docker 메모리가 유효한 값이면 사용
-      if (( $(echo "$DOCKER_MEM_TOTAL > 0" | bc -l) )); then
-        TOTAL_MEM_GB=$DOCKER_MEM_TOTAL
+      if (( $(echo "$DOCKER_MEM_TOTAL_GB > 0" | bc -l) )); then
+        DOCKER_AVAILABLE=true
+      else
+        DOCKER_AVAILABLE=false
+        DOCKER_MEM_TOTAL_GB=0
       fi
+    else
+      DOCKER_AVAILABLE=false
+      DOCKER_MEM_TOTAL_GB=0
     fi
+  else
+    DOCKER_AVAILABLE=false
+    DOCKER_MEM_TOTAL_GB=0
   fi
 }
 
@@ -166,10 +175,12 @@ get_dynamic_info() {
   ACTIVE_MEMORY_GB=$(format_decimal "$(echo "scale=3; $PAGES_ACTIVE * $PAGE_SIZE / 1024 / 1024 / 1024" | bc)")
   INACTIVE_MEMORY_GB=$(format_decimal "$(echo "scale=3; $PAGES_INACTIVE * $PAGE_SIZE / 1024 / 1024 / 1024" | bc)")
   FREE_MEMORY_GB=$(format_decimal "$(echo "scale=3; $PAGES_FREE * $PAGE_SIZE / 1024 / 1024 / 1024" | bc)")
-  USED_MEMORY_GB=$(format_decimal "$(echo "scale=3; $WIRED_MEMORY_GB + $ACTIVE_MEMORY_GB + $INACTIVE_MEMORY_GB" | bc)")
   
-  # 메모리 사용률 계산
-  MEM_USAGE_PCT=$(format_decimal "$(echo "scale=2; $USED_MEMORY_GB * 100 / $TOTAL_MEM_GB" | bc)")
+  # 시스템 메모리 사용량 계산 (Docker 포함) - 모든 프로세스가 사용 중인 메모리
+  SYS_USED_MEMORY_GB=$(format_decimal "$(echo "scale=3; $WIRED_MEMORY_GB + $ACTIVE_MEMORY_GB + $INACTIVE_MEMORY_GB" | bc)")
+  
+  # 시스템 메모리 사용률 계산
+  SYS_MEM_USAGE_PCT=$(format_decimal "$(echo "scale=2; $SYS_USED_MEMORY_GB * 100 / $PHYSICAL_MEM_GB" | bc)")
   
   # 디스크 정보
   DISK_INFO=$(df -h / 2>/dev/null | grep -v "Filesystem" | head -1)
@@ -187,9 +198,7 @@ get_dynamic_info() {
   DISK_PERCENT_FORMATTED=$(format_decimal "$DISK_PERCENT")
   
   # Docker 정보
-  if command -v docker &> /dev/null && docker info &> /dev/null; then
-    DOCKER_RUNNING=true
-    
+  if [ "$DOCKER_AVAILABLE" = true ]; then
     # Docker 컨테이너 정보 수집
     DOCKER_STATS=$(docker stats --no-stream --format "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}" 2>/dev/null | grep -E "node|3node")
     
@@ -242,7 +251,7 @@ get_dynamic_info() {
         mem_limit_unit=$(echo "$mem_limit" | sed 's/[0-9.]*//g')
       else
         # 제한값이 없으면, Docker에서 사용 가능한 메모리로 대체
-        mem_limit_num=$TOTAL_MEM_GB
+        mem_limit_num=$DOCKER_MEM_TOTAL_GB
         mem_limit_unit="GB"
       fi
       
@@ -318,10 +327,10 @@ get_dynamic_info() {
     # 총 노드 수
     NODE_COUNT=${#NODE_NAMES[@]}
     
-    # 총 메모리 사용량의 퍼센티지 계산 (평균이 아닌 총 시스템 메모리 대비 비율)
-    NODE_MEM_PCT_TOTAL=$(format_decimal "$(echo "scale=2; $TOTAL_MEM_NODES_GB * 100 / $TOTAL_MEM_GB" | bc)")
+    # 노드 메모리 사용률 계산 (Docker 메모리 총량 대비)
+    NODE_MEM_PCT_TOTAL=$(format_decimal "$(echo "scale=2; $TOTAL_MEM_NODES_GB * 100 / $DOCKER_MEM_TOTAL_GB" | bc)")
     
-    # 네트워크 트래픽 단위 변환 (MB -> GB)
+    # 네트워크 트래픽 단위 변환 (MB -> GB if needed)
     TOTAL_NET_RX_FORMATTED=$(format_bytes $TOTAL_NET_RX_MB)
     TOTAL_NET_TX_FORMATTED=$(format_bytes $TOTAL_NET_TX_MB)
   else
@@ -347,10 +356,19 @@ output_json() {
   echo "      \"idle\": $IDLE_CPU"
   echo "    },"
   echo "    \"memory\": {"
-  echo "      \"total\": \"$TOTAL_MEM_GB GB\","
-  echo "      \"used\": \"$USED_MEMORY_GB GB\","
-  echo "      \"percent\": $MEM_USAGE_PCT"
+  echo "      \"total\": \"$PHYSICAL_MEM_GB GB\","
+  echo "      \"used\": \"$SYS_USED_MEMORY_GB GB\","
+  echo "      \"percent\": $SYS_MEM_USAGE_PCT"
   echo "    },"
+  
+  if [ "$DOCKER_AVAILABLE" = true ]; then
+    echo "    \"docker\": {"
+    echo "      \"allocated\": \"$DOCKER_MEM_TOTAL_GB GB\","
+    echo "      \"nodes_used\": \"$TOTAL_MEM_NODES_GB GB\","
+    echo "      \"nodes_percent\": $NODE_MEM_PCT_TOTAL"
+    echo "    },"
+  fi
+  
   echo "    \"disk\": {"
   echo "      \"total\": \"$DISK_TOTAL_FORMATTED\","
   echo "      \"used\": \"$DISK_USED_FORMATTED\","
@@ -359,7 +377,7 @@ output_json() {
   echo "    }"
   echo "  },"
   
-  if [ "$DOCKER_RUNNING" = true ]; then
+  if [ "$DOCKER_AVAILABLE" = true ]; then
     echo "  \"nodes\": ["
     for i in $(seq 0 $((NODE_COUNT-1))); do
       echo "    {"
@@ -402,7 +420,7 @@ output_text() {
   printf "%s\n" "$CLEAR_EOL"
   
   # Docker가 실행 중이 아닌 경우
-  if [ "$DOCKER_RUNNING" != "true" ]; then
+  if [ "$DOCKER_AVAILABLE" != true ]; then
     printf "${RED}Docker가 실행 중이 아니거나 액세스할 수 없습니다.${NC}%s\n" "$CLEAR_EOL"
     printf "%s\n" "$CLEAR_EOL"
   else
@@ -430,7 +448,7 @@ output_text() {
       "TOTAL" \
       "${TOTAL_CPU}%" \
       "${TOTAL_CPU_TOTAL}%" \
-      "${TOTAL_MEM_NODES_GB} GB" \
+      "${TOTAL_MEM_NODES_GB} GB / ${DOCKER_MEM_TOTAL_GB} GB" \
       "${NODE_MEM_PCT_TOTAL}%" \
       "${TOTAL_NET_RX_FORMATTED}/${TOTAL_NET_TX_FORMATTED}" \
       "$CLEAR_EOL"
@@ -442,7 +460,16 @@ output_text() {
   printf "${YELLOW}MODEL:${NC} %s (%s)%s\n" "$MODEL" "$CHIP" "$CLEAR_EOL"
   printf "${YELLOW}CPU CORES:${NC} %s (%s Performance, %s Efficiency)%s\n" "$TOTAL_CORES" "$PERF_CORES" "$EFF_CORES" "$CLEAR_EOL"
   printf "${YELLOW}CPU USAGE:${NC} 사용자 %s%%, 시스템 %s%%, 유휴 %s%%%s\n" "$USER_CPU" "$SYS_CPU" "$IDLE_CPU" "$CLEAR_EOL"
-  printf "${YELLOW}MEMORY:${NC} %s GB 총량 (사용: %s GB, %s%%)%s\n" "$TOTAL_MEM_GB" "$USED_MEMORY_GB" "$MEM_USAGE_PCT" "$CLEAR_EOL"
+  
+  # 메모리 정보
+  printf "${YELLOW}MEMORY:${NC} %s GB 총량 (시스템 사용: %s GB, %s%%)%s\n" "$PHYSICAL_MEM_GB" "$SYS_USED_MEMORY_GB" "$SYS_MEM_USAGE_PCT" "$CLEAR_EOL"
+  
+  # Docker 메모리 정보
+  if [ "$DOCKER_AVAILABLE" = true ]; then
+    printf "${YELLOW}DOCKER:${NC} %s GB 할당됨 (노드 사용: %s GB, %s%%)%s\n" "$DOCKER_MEM_TOTAL_GB" "$TOTAL_MEM_NODES_GB" "$NODE_MEM_PCT_TOTAL" "$CLEAR_EOL"
+  fi
+  
+  # 디스크 정보
   printf "${YELLOW}DISK:${NC} %s/%s (사용: %s%%, 남음: %s)%s\n" "$DISK_USED_FORMATTED" "$DISK_TOTAL_FORMATTED" "$DISK_PERCENT_FORMATTED" "$DISK_AVAIL_FORMATTED" "$CLEAR_EOL"
 }
 
