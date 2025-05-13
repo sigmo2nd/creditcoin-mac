@@ -12,20 +12,20 @@ NC='\033[0m' # No Color
 # 옵션 파싱
 MONITOR_MODE=false
 JSON_OUTPUT=false
-INTERVAL=2  # 모니터링 모드 기본 갱신 간격(초)
+INTERVAL=0.5  # 모니터링 모드 기본 갱신 간격(초)
 
 # 도움말 표시 함수
 show_help() {
   echo "사용법: sysinfo [옵션]"
   echo ""
   echo "옵션:"
-  echo "  -m, --monitor [초]   모니터링 모드로 실행 (기본 간격: 2초)"
+  echo "  -m, --monitor [초]   모니터링 모드로 실행 (기본 간격: 0.5초)"
   echo "  -j, --json           JSON 형식으로 출력 (API/스크립트용)"
   echo "  -h, --help           이 도움말 표시"
   echo ""
   echo "예시:"
   echo "  sysinfo              현재 시스템 상태 한 번 표시"
-  echo "  sysinfo -m           2초마다 업데이트되는 모니터링 모드"
+  echo "  sysinfo -m           0.5초마다 업데이트되는 모니터링 모드"
   echo "  sysinfo -m 5         5초마다 업데이트되는 모니터링 모드"
   echo "  sysinfo -j           JSON 형식으로 출력 (API/스크립트용)"
 }
@@ -35,7 +35,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -m|--monitor)
       MONITOR_MODE=true
-      if [[ "$2" =~ ^[0-9]+$ ]]; then
+      if [[ "$2" =~ ^[0-9.]+$ ]]; then
         INTERVAL="$2"
         shift
       fi
@@ -62,17 +62,16 @@ if [ "$MONITOR_MODE" = true ] && [ "$JSON_OUTPUT" = true ]; then
   exit 1
 fi
 
-# 시스템 정보 캐싱 (한 번만 수집)
+# 시스템 정보 수집
 get_system_info() {
   # 모델 정보
   MODEL=$(sysctl hw.model 2>/dev/null | awk -F ": " '{print $2}' || echo "Unknown")
   
   # 칩 정보 (Apple Silicon인 경우)
-  if [[ "$MODEL" == *"Mac"* ]]; then
-    CHIP=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown")
+  if [[ "$(uname -m)" == "arm64" ]]; then
+    CHIP=$(system_profiler SPHardwareDataType 2>/dev/null | grep "Chip" | awk -F ": " '{print $2}' || echo "Apple Silicon")
   else
-    # system_profiler는 실행 시간이 오래 걸리므로 Apple Silicon에만 사용
-    CHIP=$(uname -p 2>/dev/null || echo "Unknown")
+    CHIP=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Intel")
   fi
   
   # 코어 정보
@@ -81,7 +80,7 @@ get_system_info() {
   EFF_CORES=$(sysctl -n hw.perflevel1.logicalcpu 2>/dev/null || echo "0")
   
   # 코어 정보가 검색되지 않는 경우 (인텔 Mac)
-  if [ "$PERF_CORES" = "0" ] || [ "$EFF_CORES" = "0" ]; then
+  if [ "$PERF_CORES" = "0" ] && [ "$EFF_CORES" = "0" ]; then
     PERF_CORES=$TOTAL_CORES
     EFF_CORES=0
   fi
@@ -91,30 +90,30 @@ get_system_info() {
   TOTAL_MEM_GB=$(awk "BEGIN {printf \"%.1f\", $TOTAL_MEM_BYTES / 1024 / 1024 / 1024}")
 }
 
-# 동적 시스템 정보 수집 (매 갱신마다)
+# 동적 시스템 정보 수집
 get_dynamic_info() {
   # CPU 사용률 (top 명령을 한 번만 실행)
   TOP_INFO=$(top -l 1 -n 0)
   CPU_LINE=$(echo "$TOP_INFO" | grep -E "^CPU")
-  USER_CPU=$(echo "$CPU_LINE" | awk '{gsub(/%/, "", $3); print $3}')
-  SYS_CPU=$(echo "$CPU_LINE" | awk '{gsub(/%/, "", $5); print $5}')
-  IDLE_CPU=$(echo "$CPU_LINE" | awk '{gsub(/%/, "", $7); print $7}')
+  USER_CPU=$(echo "$CPU_LINE" | awk '{print $3}' | sed 's/%//')
+  SYS_CPU=$(echo "$CPU_LINE" | awk '{print $5}' | sed 's/%//')
+  IDLE_CPU=$(echo "$CPU_LINE" | awk '{print $7}' | sed 's/%//')
   
   # 디스크 정보
   DISK_INFO=$(df -h / 2>/dev/null | grep -v "Filesystem" | head -1)
   DISK_TOTAL=$(echo "$DISK_INFO" | awk '{print $2}')
   DISK_USED=$(echo "$DISK_INFO" | awk '{print $3}')
   DISK_AVAIL=$(echo "$DISK_INFO" | awk '{print $4}')
-  DISK_PERCENT=$(echo "$DISK_INFO" | awk '{gsub(/%/, "", $5); print $5}')
+  DISK_PERCENT=$(echo "$DISK_INFO" | awk '{print $5}' | sed 's/%//')
   
-  # Docker 정보 (간소화된 형식)
+  # Docker 정보
   if command -v docker &> /dev/null && docker info &> /dev/null; then
     DOCKER_RUNNING=true
     
-    # 효율적인 Docker stats 형식 (필요한 정보만 가져옴)
+    # Docker 컨테이너 정보 수집
     DOCKER_STATS=$(docker stats --no-stream --format "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}" 2>/dev/null | grep -E "node|3node")
     
-    # 빠른 파싱을 위해 노드 정보 배열 생성
+    # 정보 저장용 배열
     NODE_NAMES=()
     NODE_CPU=()
     NODE_CPU_TOTAL=()
@@ -127,94 +126,90 @@ get_dynamic_info() {
     TOTAL_CPU=0
     TOTAL_CPU_TOTAL=0
     TOTAL_MEM_MIB=0
-    TOTAL_MEM_GIB=0
-    TOTAL_NET_RX=0
-    TOTAL_NET_TX=0
+    TOTAL_NET_RX_MB=0
+    TOTAL_NET_TX_MB=0
     
-    # 행 단위로 파싱
+    # 컨테이너별 정보 파싱
     while IFS=$'\t' read -r name cpu mem mem_pct net; do
-      # 이름 저장
+      # 배열에 이름 추가
       NODE_NAMES+=("$name")
       
-      # CPU 정보 파싱
-      cpu_value=${cpu/\%/}
-      NODE_CPU+=("$cpu_value")
-      cpu_total=$(awk "BEGIN {printf \"%.2f\", $cpu_value / $TOTAL_CORES}")
+      # CPU 정보 처리
+      cpu_clean=$(echo "$cpu" | sed 's/%//')
+      NODE_CPU+=("$cpu_clean")
+      
+      # CPU 총량 대비 사용률 계산
+      cpu_total=$(awk "BEGIN {printf \"%.2f\", $cpu_clean / $TOTAL_CORES}")
       NODE_CPU_TOTAL+=("$cpu_total")
-      TOTAL_CPU=$(awk "BEGIN {printf \"%.2f\", $TOTAL_CPU + $cpu_value}")
+      
+      # 총 CPU 사용량 합산
+      TOTAL_CPU=$(awk "BEGIN {printf \"%.2f\", $TOTAL_CPU + $cpu_clean}")
       TOTAL_CPU_TOTAL=$(awk "BEGIN {printf \"%.2f\", $TOTAL_CPU_TOTAL + $cpu_total}")
       
-      # 메모리 정보 파싱
-      mem_value=$(echo "$mem" | awk '{split($1,a,"iB"); gsub(/[^0-9.]/, "", a[1]); print a[1]}')
-      mem_unit=$(echo "$mem" | awk '{split($1,a,"iB"); print a[2]}')
-      NODE_MEM+=("$mem_value$mem_unit")
+      # 메모리 정보 처리
+      NODE_MEM+=("$mem")
+      NODE_MEM_PCT+=("$(echo "$mem_pct" | sed 's/%//')")
       
-      # MiB로 변환하여 합산
-      if [[ "$mem_unit" == "G" ]]; then
+      # 메모리 MiB 단위로 변환하여 합산
+      mem_value=$(echo "$mem" | awk '{print $1}')
+      mem_unit=$(echo "$mem" | awk '{print $2}')
+      
+      if [[ "$mem_unit" == "GiB" ]]; then
         mem_mib=$(awk "BEGIN {printf \"%.1f\", $mem_value * 1024}")
       else
         mem_mib=$mem_value
       fi
       TOTAL_MEM_MIB=$(awk "BEGIN {printf \"%.1f\", $TOTAL_MEM_MIB + $mem_mib}")
       
-      # 메모리 퍼센트
-      NODE_MEM_PCT+=("${mem_pct/\%/}")
-      
-      # 네트워크 정보 파싱
-      rx_tx=(${net//\// })
-      rx=${rx_tx[0]}
-      tx=${rx_tx[1]}
-      
-      # 단위 처리
-      rx_value=$(echo "$rx" | awk '{gsub(/[^0-9.]/, "", $0); print $0}')
-      rx_unit=$(echo "$rx" | awk '{gsub(/[0-9.]/, "", $0); print $0}')
-      
-      tx_value=$(echo "$tx" | awk '{gsub(/[^0-9.]/, "", $0); print $0}')
-      tx_unit=$(echo "$tx" | awk '{gsub(/[0-9.]/, "", $0); print $0}')
-      
-      # MB로 변환
-      if [[ "$rx_unit" == "kB" ]]; then
-        rx_mb=$(awk "BEGIN {printf \"%.1f\", $rx_value / 1024}")
-      elif [[ "$rx_unit" == "MB" ]]; then
-        rx_mb=$rx_value
-      elif [[ "$rx_unit" == "GB" ]]; then
-        rx_mb=$(awk "BEGIN {printf \"%.1f\", $rx_value * 1024}")
-      else
-        rx_mb="0"
-      fi
-      
-      if [[ "$tx_unit" == "kB" ]]; then
-        tx_mb=$(awk "BEGIN {printf \"%.1f\", $tx_value / 1024}")
-      elif [[ "$tx_unit" == "MB" ]]; then
-        tx_mb=$tx_value
-      elif [[ "$tx_unit" == "GB" ]]; then
-        tx_mb=$(awk "BEGIN {printf \"%.1f\", $tx_value * 1024}")
-      else
-        tx_mb="0"
-      fi
-      
+      # 네트워크 정보 처리
+      network=$(echo "$net" | tr '/' ' ')
+      rx=$(echo "$network" | awk '{print $1}')
+      tx=$(echo "$network" | awk '{print $2}')
       NODE_NET_RX+=("$rx")
       NODE_NET_TX+=("$tx")
       
-      TOTAL_NET_RX=$(awk "BEGIN {printf \"%.1f\", $TOTAL_NET_RX + $rx_mb}")
-      TOTAL_NET_TX=$(awk "BEGIN {printf \"%.1f\", $TOTAL_NET_TX + $tx_mb}")
+      # 네트워크 MB 단위로 통일해서 합산
+      rx_value=$(echo "$rx" | sed 's/[^0-9.]//g')
+      rx_unit=$(echo "$rx" | sed 's/[0-9.]//g')
+      
+      tx_value=$(echo "$tx" | sed 's/[^0-9.]//g')
+      tx_unit=$(echo "$tx" | sed 's/[0-9.]//g')
+      
+      # 단위별로 MB로 변환
+      case "$rx_unit" in
+        "kB") rx_mb=$(awk "BEGIN {printf \"%.1f\", $rx_value / 1024}") ;;
+        "MB") rx_mb=$rx_value ;;
+        "GB") rx_mb=$(awk "BEGIN {printf \"%.1f\", $rx_value * 1024}") ;;
+        *) rx_mb=0 ;;
+      esac
+      
+      case "$tx_unit" in
+        "kB") tx_mb=$(awk "BEGIN {printf \"%.1f\", $tx_value / 1024}") ;;
+        "MB") tx_mb=$tx_value ;;
+        "GB") tx_mb=$(awk "BEGIN {printf \"%.1f\", $tx_value * 1024}") ;;
+        *) tx_mb=0 ;;
+      esac
+      
+      # 총 네트워크 트래픽 합산
+      TOTAL_NET_RX_MB=$(awk "BEGIN {printf \"%.1f\", $TOTAL_NET_RX_MB + $rx_mb}")
+      TOTAL_NET_TX_MB=$(awk "BEGIN {printf \"%.1f\", $TOTAL_NET_TX_MB + $tx_mb}")
       
     done <<< "$DOCKER_STATS"
     
-    # 총 노드 수 저장
+    # 총 노드 수
     NODE_COUNT=${#NODE_NAMES[@]}
     
-    # 메모리 합계를 GiB로 변환
+    # 총 메모리 GiB 변환
     TOTAL_MEM_GIB=$(awk "BEGIN {printf \"%.1f\", $TOTAL_MEM_MIB / 1024}")
     
-    # 시스템 메모리 대비 사용률
+    # 총 메모리 비율 계산
     MEM_PCT=$(awk "BEGIN {printf \"%.1f\", $TOTAL_MEM_MIB * 100 / ($TOTAL_MEM_GB * 1024)}")
   else
     DOCKER_RUNNING=false
   fi
 }
 
-# JSON 형식으로 출력
+# JSON 형식 출력
 output_json() {
   echo "{"
   echo "  \"timestamp\": \"$(date +"%Y-%m-%d %H:%M:%S")\"," 
@@ -263,8 +258,8 @@ output_json() {
     echo "    \"cpu_total\": $TOTAL_CPU_TOTAL,"
     echo "    \"mem\": \"$TOTAL_MEM_GIB GiB\","
     echo "    \"mem_pct\": $MEM_PCT,"
-    echo "    \"net_rx\": \"$TOTAL_NET_RX MB\","
-    echo "    \"net_tx\": \"$TOTAL_NET_TX MB\""
+    echo "    \"net_rx\": \"$TOTAL_NET_RX_MB MB\","
+    echo "    \"net_tx\": \"$TOTAL_NET_TX_MB MB\""
     echo "  }"
   else
     echo "  \"docker\": {"
@@ -276,9 +271,9 @@ output_json() {
   echo "}"
 }
 
-# 텍스트 형식으로 출력
+# 일반 텍스트 출력
 output_text() {
-  # 출력 헤더
+  # 헤더 출력
   echo -e "${BLUE}CREDITCOIN NODE RESOURCE MONITOR                                  $(date +"%Y-%m-%d %H:%M:%S")${NC}"
   echo ""
   
@@ -287,10 +282,10 @@ output_text() {
     echo -e "${RED}Docker가 실행 중이 아니거나 액세스할 수 없습니다.${NC}"
     echo ""
   else
-    # 헤더 출력
+    # 테이블 헤더
     printf "%-10s %-8s %-10s %-13s %-8s %-15s\n" "NODE" "CPU%" "OF TOTAL%" "MEM USAGE" "MEM%" "NET RX/TX"
     
-    # 노드 데이터 출력
+    # 노드별 데이터 출력
     for i in $(seq 0 $((NODE_COUNT-1))); do
       printf "%-10s %-8s %-10s %-13s %-8s %-15s\n" \
         "${NODE_NAMES[$i]}" \
@@ -305,14 +300,14 @@ output_text() {
     printf "%-10s %-8s %-10s %-13s %-8s %-15s\n" \
       "----------" "--------" "----------" "-------------" "--------" "---------------"
     
-    # 총계 출력
+    # 합계 출력
     printf "%-10s %-8s %-10s %-13s %-8s %-15s\n" \
       "TOTAL" \
-      "$TOTAL_CPU%" \
-      "$TOTAL_CPU_TOTAL%" \
-      "$TOTAL_MEM_GIB GiB" \
-      "$MEM_PCT%" \
-      "${TOTAL_NET_RX}MB/${TOTAL_NET_TX}MB"
+      "${TOTAL_CPU}%" \
+      "${TOTAL_CPU_TOTAL}%" \
+      "${TOTAL_MEM_GIB} GiB" \
+      "${MEM_PCT}%" \
+      "${TOTAL_NET_RX_MB}MB/${TOTAL_NET_TX_MB}MB"
   fi
   
   # 시스템 정보 출력
@@ -325,15 +320,11 @@ output_text() {
   echo -e "- ${YELLOW}DISK:${NC} ${DISK_USED}/${DISK_TOTAL} (${DISK_PERCENT}% 사용)"
 }
 
-# 단일 출력 모드
+# 단일 실행 모드
 single_output() {
-  # 시스템 정보 수집 (한 번만 실행)
   get_system_info
-  
-  # 동적 정보 수집
   get_dynamic_info
   
-  # 출력 형식에 따라 표시
   if [ "$JSON_OUTPUT" = true ]; then
     output_json
   else
@@ -341,54 +332,63 @@ single_output() {
   fi
 }
 
-# 모니터링 모드 (dstats 스타일)
+# 모니터링 모드
 monitor_mode() {
-  local INTERVAL=$1
+  local interval=$1
   
   # 시스템 정보 수집 (한 번만)
   get_system_info
   
-  # 터미널 설정 백업
+  # 터미널 설정 저장
   local old_tty_settings
   old_tty_settings=$(stty -g)
   
   # 화면 지우기
   clear
   
-  # Ctrl+C 시그널 핸들러 설정
+  # Ctrl+C 핸들러 설정
   trap 'echo; echo "모니터링을 종료합니다."; stty $old_tty_settings; echo -en "\033[?25h"; exit 0' INT TERM
   
   # 커서 숨기기
   echo -en "\033[?25l"
   
-  # dstats 스타일로 커서 위치를 고정해서 업데이트
+  # 모니터링 루프
   while true; do
-    # 커서를 화면 상단으로 이동 (깜빡임 방지)
+    # 루프 시작 시간 기록
+    local loop_start=$(date +%s.%N)
+    
+    # 커서를 화면 상단으로 이동
     echo -en "\033[H"
     
-    # 동적 정보 수집
+    # 데이터 수집
     get_dynamic_info
     
-    # 출력 (화면 지우기 없이)
+    # 출력
     if [ "$JSON_OUTPUT" = true ]; then
       output_json
     else
       output_text
-      # 모니터링 메시지는 마지막에 한 번만 표시
-      echo ""
-      echo -e "${BLUE}모니터링 모드 (${INTERVAL}초마다 갱신) - 종료하려면 Ctrl+C를 누르세요${NC}"
+      echo -e "\n${BLUE}모니터링 모드 - Ctrl+C를 눌러 종료${NC}"
     fi
     
-    # 대기
-    sleep "$INTERVAL"
+    # 루프 실행 시간 계산
+    local loop_time=$(echo "$(date +%s.%N) - $loop_start" | bc)
+    
+    # 남은 대기 시간 계산 (음수가 되지 않도록)
+    local wait_time=$(echo "$interval - $loop_time" | bc)
+    
+    # 대기 시간이 양수인 경우에만 대기
+    if (( $(echo "$wait_time > 0" | bc -l) )); then
+      sleep $wait_time
+    fi
   done
   
-  # 정상 종료되지 않은 경우를 대비한 리셋
+  # 터미널 설정 복원
   stty $old_tty_settings
-  echo -en "\033[?25h" # 커서 표시
+  echo -en "\033[?25h"
 }
 
-# 메인 실행 코드
+# 메인 실행
 if [ "$MONITOR_MODE" = true ]; then
   monitor_mode "$INTERVAL"
 else
