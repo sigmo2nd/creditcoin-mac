@@ -266,19 +266,8 @@ get_dynamic_info() {
     # 총 노드 수
     NODE_COUNT=${#NODE_NAMES[@]}
     
-    # 총 메모리 비율 계산 (총 메모리 대비 비율이 아닌, 도커 노드들의 메모리 사용률 평균)
-    if [ "$NODE_COUNT" -gt 0 ]; then
-      # 메모리 사용률 합계 계산
-      SUM_MEM_PCT=0
-      for pct in "${NODE_MEM_PCT[@]}"; do
-        SUM_MEM_PCT=$(echo "scale=2; $SUM_MEM_PCT + $pct" | bc)
-      done
-      
-      # 평균 메모리 사용률
-      NODE_MEM_PCT_TOTAL=$(format_decimal "$(echo "scale=2; $SUM_MEM_PCT / $NODE_COUNT" | bc)")
-    else
-      NODE_MEM_PCT_TOTAL="0.00"
-    fi
+    # 총 메모리 사용량의 퍼센티지 계산 (평균이 아닌 총 시스템 메모리 대비 비율)
+    NODE_MEM_PCT_TOTAL=$(format_decimal "$(echo "scale=2; $TOTAL_MEM_NODES_GB * 100 / $TOTAL_MEM_GB" | bc)")
   else
     DOCKER_RUNNING=false
   fi
