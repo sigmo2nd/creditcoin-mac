@@ -7,6 +7,7 @@ TOKEN_FILE="$HOME/.node_metrics_token"
 TEMP_DIR="/tmp/creditcoin_metrics"
 METRICS_FILE="$TEMP_DIR/metrics.json"
 HTML_FILE="$TEMP_DIR/index.html"
+COLLECTOR_SCRIPT="$TEMP_DIR/collect.sh"
 
 # 색상 정의
 GREEN='\033[0;32m'
@@ -30,6 +31,14 @@ API_TOKEN=$(cat "$TOKEN_FILE")
 echo -e "${GREEN}API 토큰: $API_TOKEN${NC}"
 echo -e "${YELLOW}이 토큰을 중앙 서버 구성에 추가하세요${NC}"
 
+# 메트릭 수집 스크립트 생성
+cat > "$COLLECTOR_SCRIPT" << 'EOF'
+#!/bin/bash
+
+# 설정
+TEMP_DIR="/tmp/creditcoin_metrics"
+METRICS_FILE="$TEMP_DIR/metrics.json"
+
 # 시스템 메트릭 수집 함수
 collect_metrics() {
   echo "시스템 메트릭 수집 중..." >&2
@@ -51,10 +60,6 @@ collect_metrics() {
   user_cpu=$(echo "$cpu_info" | awk '{print $3}' | sed 's/%//')
   sys_cpu=$(echo "$cpu_info" | awk '{print $5}' | sed 's/%//')
   idle_cpu=$(echo "$cpu_info" | awk '{print $7}' | sed 's/%//')
-  
-  # 메모리 정보
-  mem_info=$(vm_stat | grep "Pages")
-  page_size=$(vm_stat | grep "page size" | awk '{print $8}')
   
   # 디스크 정보
   disk_info=$(df -h / | grep -v "Filesystem" | head -1)
@@ -97,11 +102,6 @@ collect_metrics() {
       
       # CPU 정보 처리
       cpu_clean=$(echo "$cpu" | sed 's/%//')
-      
-      # 메모리 정보 처리
-      mem_parts=(${mem//\// })
-      mem_used=${mem_parts[0]}
-      mem_limit=${mem_parts[1]}
       
       # 네트워크 정보 처리
       net_parts=(${net//\// })
@@ -153,7 +153,14 @@ collect_metrics() {
   echo "메트릭 수집 완료" >&2
 }
 
-# HTML 파일 생성 (Python 바이트 리터럴 문제 해결)
+# 메트릭 수집 실행
+collect_metrics
+EOF
+
+# 실행 권한 부여
+chmod +x "$COLLECTOR_SCRIPT"
+
+# HTML 파일 생성
 cat > "$HTML_FILE" << EOF
 <!DOCTYPE html>
 <html>
@@ -182,9 +189,9 @@ echo -e "${BLUE}크레딧코인 노드 메트릭 HTTP 서버 시작 중...${NC}"
 echo -e "${YELLOW}포트: $PORT${NC}"
 
 # 메트릭 첫 수집
-collect_metrics
+"$COLLECTOR_SCRIPT"
 
-# Python으로 HTTP 서버 시작 (수정된 코드)
+# Python으로 HTTP 서버 시작
 python3 -c "
 import http.server
 import socketserver
@@ -197,6 +204,7 @@ PORT = $PORT
 TOKEN = '$API_TOKEN'
 METRICS_FILE = '$METRICS_FILE'
 HTML_FILE = '$HTML_FILE'
+COLLECTOR_SCRIPT = '$COLLECTOR_SCRIPT'
 
 class MetricsHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
@@ -244,7 +252,8 @@ class MetricsHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_response(500)
                 self.send_header('Content-type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({'error': str(e)}).encode())
+                error_msg = {'error': str(e)}
+                self.wfile.write(json.dumps(error_msg).encode())
         
         # 그 외 경로는 404
         else:
@@ -260,17 +269,12 @@ class MetricsHandler(http.server.SimpleHTTPRequestHandler):
 # 백그라운드에서 주기적으로 메트릭 수집
 def collect_metrics_periodically():
     while True:
-        os.system('$TEMP_DIR/metrics_collector.sh')
+        try:
+            os.system(COLLECTOR_SCRIPT)
+            print(f'\\033[32m메트릭 수집 완료 - {time.asctime()}\\033[0m')
+        except Exception as e:
+            print(f'\\033[31m메트릭 수집 실패: {e}\\033[0m')
         time.sleep(10)  # 10초마다 갱신
-
-# 메트릭 수집 스크립트 생성
-with open('$TEMP_DIR/metrics_collector.sh', 'w') as f:
-    f.write('#!/bin/bash\\n')
-    f.write('cd \"$(dirname \"$0\")\"\\n')
-    f.write('source \"$0\"\\n')
-    f.write('collect_metrics\\n')
-
-os.chmod('$TEMP_DIR/metrics_collector.sh', 0o755)
 
 # 메트릭 수집 쓰레드 시작
 collector_thread = threading.Thread(target=collect_metrics_periodically)
