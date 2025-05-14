@@ -6,6 +6,7 @@ PORT=8080
 TOKEN_FILE="$HOME/.node_metrics_token"
 TEMP_DIR="/tmp/creditcoin_metrics"
 METRICS_FILE="$TEMP_DIR/metrics.json"
+HTML_FILE="$TEMP_DIR/index.html"
 
 # 색상 정의
 GREEN='\033[0;32m'
@@ -152,6 +153,30 @@ collect_metrics() {
   echo "메트릭 수집 완료" >&2
 }
 
+# HTML 파일 생성 (Python 바이트 리터럴 문제 해결)
+cat > "$HTML_FILE" << EOF
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Creditcoin Node Metrics</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { color: #333; }
+        .info { background: #f8f9fa; padding: 15px; border-radius: 5px; }
+        code { background: #eee; padding: 2px 5px; border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <h1>Creditcoin Node Metrics Server</h1>
+    <div class='info'>
+        <p>API 엔드포인트: <code>/metrics</code></p>
+        <p>인증 헤더: <code>Authorization: Bearer YOUR_TOKEN</code></p>
+        <p>또는 쿼리 파라미터: <code>/metrics?token=YOUR_TOKEN</code></p>
+    </div>
+</body>
+</html>
+EOF
+
 # 시작 안내
 echo -e "${BLUE}크레딧코인 노드 메트릭 HTTP 서버 시작 중...${NC}"
 echo -e "${YELLOW}포트: $PORT${NC}"
@@ -159,7 +184,7 @@ echo -e "${YELLOW}포트: $PORT${NC}"
 # 메트릭 첫 수집
 collect_metrics
 
-# Python으로 HTTP 서버 시작
+# Python으로 HTTP 서버 시작 (수정된 코드)
 python3 -c "
 import http.server
 import socketserver
@@ -171,6 +196,7 @@ import threading
 PORT = $PORT
 TOKEN = '$API_TOKEN'
 METRICS_FILE = '$METRICS_FILE'
+HTML_FILE = '$HTML_FILE'
 
 class MetricsHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
@@ -192,26 +218,10 @@ class MetricsHandler(http.server.SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-type', 'text/html')
             self.end_headers()
-            self.wfile.write(b'''<!DOCTYPE html>
-<html>
-<head>
-    <title>Creditcoin Node Metrics</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        h1 { color: #333; }
-        .info { background: #f8f9fa; padding: 15px; border-radius: 5px; }
-        code { background: #eee; padding: 2px 5px; border-radius: 3px; }
-    </style>
-</head>
-<body>
-    <h1>Creditcoin Node Metrics Server</h1>
-    <div class='info'>
-        <p>API 엔드포인트: <code>/metrics</code></p>
-        <p>인증 헤더: <code>Authorization: Bearer YOUR_TOKEN</code></p>
-        <p>또는 쿼리 파라미터: <code>/metrics?token=YOUR_TOKEN</code></p>
-    </div>
-</body>
-</html>''')
+            
+            # HTML 파일을 읽어서 응답
+            with open(HTML_FILE, 'rb') as f:
+                self.wfile.write(f.read())
             
         # 메트릭 엔드포인트
         elif self.path.startswith('/metrics'):
@@ -250,8 +260,17 @@ class MetricsHandler(http.server.SimpleHTTPRequestHandler):
 # 백그라운드에서 주기적으로 메트릭 수집
 def collect_metrics_periodically():
     while True:
-        os.system('bash -c \"{}\"'.format('collect_metrics'))
+        os.system('$TEMP_DIR/metrics_collector.sh')
         time.sleep(10)  # 10초마다 갱신
+
+# 메트릭 수집 스크립트 생성
+with open('$TEMP_DIR/metrics_collector.sh', 'w') as f:
+    f.write('#!/bin/bash\\n')
+    f.write('cd \"$(dirname \"$0\")\"\\n')
+    f.write('source \"$0\"\\n')
+    f.write('collect_metrics\\n')
+
+os.chmod('$TEMP_DIR/metrics_collector.sh', 0o755)
 
 # 메트릭 수집 쓰레드 시작
 collector_thread = threading.Thread(target=collect_metrics_periodically)
