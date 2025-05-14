@@ -1,7 +1,7 @@
 #!/bin/bash
 # node_metrics.sh - 크레딧코인 노드 메트릭 HTTP 서버
 
-# 설정
+# 기본 설정
 PORT=8080
 TOKEN_FILE="$HOME/.node_metrics_token"
 TEMP_DIR="/tmp/creditcoin_metrics"
@@ -16,8 +16,37 @@ BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# 인자 처리
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p|--port)
+      PORT="$2"
+      shift 2
+      ;;
+    -h|--help)
+      echo "사용법: $0 [옵션]"
+      echo "옵션:"
+      echo "  -p, --port 포트번호    사용할 포트 번호 (기본값: 8080)"
+      echo "  -h, --help             이 도움말 표시"
+      exit 0
+      ;;
+    *)
+      echo "알 수 없는 옵션: $1"
+      echo "도움말을 보려면 '$0 --help'를 실행하세요."
+      exit 1
+      ;;
+  esac
+done
+
 # 임시 디렉토리 생성
 mkdir -p "$TEMP_DIR"
+
+# 포트 사용 가능 여부 확인
+if lsof -i ":$PORT" &> /dev/null; then
+  echo -e "${RED}오류: 포트 $PORT가 이미 사용 중입니다.${NC}"
+  echo -e "${YELLOW}다른 포트를 사용하려면 '-p 포트번호' 옵션을 사용하세요.${NC}"
+  exit 1
+fi
 
 # 토큰 생성 (없는 경우)
 if [ ! -f "$TOKEN_FILE" ]; then
@@ -199,6 +228,7 @@ import os
 import json
 import time
 import threading
+import sys
 
 PORT = $PORT
 TOKEN = '$API_TOKEN'
@@ -282,9 +312,20 @@ collector_thread.daemon = True
 collector_thread.start()
 
 # HTTP 서버 시작
-with socketserver.TCPServer(('0.0.0.0', PORT), MetricsHandler) as httpd:
-    print(f'\\033[32m서버가 http://0.0.0.0:{PORT}에서 시작되었습니다\\033[0m')
-    print(f'\\033[33m메트릭 엔드포인트: http://0.0.0.0:{PORT}/metrics\\033[0m')
-    print(f'\\033[33m인증 토큰: {TOKEN}\\033[0m')
-    httpd.serve_forever()
+try:
+    with socketserver.TCPServer(('0.0.0.0', PORT), MetricsHandler) as httpd:
+        print(f'\\033[32m서버가 http://0.0.0.0:{PORT}에서 시작되었습니다\\033[0m')
+        print(f'\\033[33m메트릭 엔드포인트: http://0.0.0.0:{PORT}/metrics\\033[0m')
+        print(f'\\033[33m인증 토큰: {TOKEN}\\033[0m')
+        httpd.serve_forever()
+except OSError as e:
+    if e.errno == 48:  # Address already in use
+        print(f'\\033[31m오류: 포트 {PORT}가 이미 사용 중입니다.\\033[0m')
+        print(f'\\033[33m다른 포트를 사용하려면 -p 옵션을 사용하세요. 예: {sys.argv[0]} -p 8081\\033[0m')
+    else:
+        print(f'\\033[31m오류: {e}\\033[0m')
+    sys.exit(1)
+except KeyboardInterrupt:
+    print('\\033[33m사용자에 의해 서버가 종료되었습니다.\\033[0m')
+    sys.exit(0)
 "
