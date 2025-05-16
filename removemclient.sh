@@ -112,17 +112,17 @@ if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
     fi
     
     # 마커 문자열 설정
-    local marker="# === Creditcoin Monitor Client Utils ==="
-    local endmarker="# === End Creditcoin Monitor Client Utils ==="
+    MARKER="# === Creditcoin Monitor Client Utils ==="
+    ENDMARKER="# === End Creditcoin Monitor Client Utils ==="
     
     # 쉘 프로필에서 모니터링 유틸리티 함수 제거
     if [ -f "$SHELL_PROFILE" ]; then
-        if grep -q "$marker" "$SHELL_PROFILE"; then
+        if grep -q "$MARKER" "$SHELL_PROFILE"; then
             # 백업 생성
             cp "$SHELL_PROFILE" "${SHELL_PROFILE}.bak.$(date +%Y%m%d%H%M%S)"
             
             # 모니터링 유틸리티 함수 제거
-            sed -i.tmp "/$marker/,/$endmarker/d" "$SHELL_PROFILE"
+            sed -i.tmp "/$MARKER/,/$ENDMARKER/d" "$SHELL_PROFILE"
             rm -f "${SHELL_PROFILE}.tmp"
             
             echo -e "${GREEN}쉘 프로필에서 모니터링 유틸리티 함수 제거 완료${NC}"
