@@ -104,18 +104,34 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# 타임존 설정
-ENV TZ=Asia/Seoul
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
-
-# 필요한 패키지 설치
+# 시스템 패키지 설치 (빌드 도구 포함) - --no-install-recommends 옵션 제거, 설치 확인 추가
 RUN apt-get update && apt-get install -y \
     curl \
     procps \
     iproute2 \
     iputils-ping \
     net-tools \
+    gcc \
+    g++ \
+    python3-dev \
+    build-essential \
+    tzdata \
+    && apt-get clean \
+    && which gcc \
+    && gcc --version \
     && rm -rf /var/lib/apt/lists/*
+
+# 타임존은 /etc/localtime 볼륨 마운트를 통해 호스트 시스템의 타임존을 사용합니다
+
+# pip 업그레이드 및 wheel 패키지 설치
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# 파이썬 패키지 설치 - psutil을 사전에 설치
+RUN pip install --no-cache-dir psutil==5.9.6
+
+# 나머지 요구사항 파일 복사 및 설치
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r requirements.txt
 
 # 파이썬 패키지 설치
 COPY requirements.txt /app/
@@ -150,10 +166,9 @@ EOF
   
   # requirements.txt 생성
   cat > ./mclient/requirements.txt << 'EOF'
+websockets==12.0
 pydantic==2.5.2
 pydantic-settings==2.1.0
-websockets==12.0
-psutil==5.9.6
 python-dotenv==1.0.0
 aiohttp==3.9.1
 EOF
