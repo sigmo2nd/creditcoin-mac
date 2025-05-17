@@ -145,31 +145,31 @@ parse_args() {
 
 # 실행 중인 Docker 노드 자동 감지
 detect_nodes() {
-  echo -e "${BLUE}실행 중인 Creditcoin 노드 감지 중...${NC}"
+  echo -e "${BLUE}실행 중인 Creditcoin 노드 감지 중...${NC}" >&2
   
   # Docker 컨테이너 목록에서 node 또는 3node로 시작하는 컨테이너 찾기
   local nodes=""
   nodes=$(docker ps --format "{{.Names}}" | grep -E '^(node|3node)' | tr '\n' ',' | sed 's/,$//')
   
   if [ -z "$nodes" ]; then
-    echo -e "${YELLOW}실행 중인 Creditcoin 노드를 찾을 수 없습니다. 기본값을 사용합니다.${NC}"
+    echo -e "${YELLOW}실행 중인 Creditcoin 노드를 찾을 수 없습니다. 기본값을 사용합니다.${NC}" >&2
     echo "node,3node"
     return
   fi
   
-  echo -e "${GREEN}감지된 노드: $nodes${NC}"
+  echo -e "${GREEN}감지된 노드: $nodes${NC}" >&2
   echo "$nodes"
 }
 
 # 서버 호스트 자동 감지
 detect_server_host() {
-  echo -e "${BLUE}서버 호스트 감지 중...${NC}"
+  echo -e "${BLUE}서버 호스트 감지 중...${NC}" >&2
   
   local default_host=""
   
   # 환경변수가 이미 설정되어 있는지 확인
   if [ ! -z "${SERVER_HOST}" ]; then
-    echo -e "${GREEN}환경변수에서 설정된 호스트: ${SERVER_HOST}${NC}"
+    echo -e "${GREEN}환경변수에서 설정된 호스트: ${SERVER_HOST}${NC}" >&2
     echo "${SERVER_HOST}"
     return
   fi
@@ -177,19 +177,19 @@ detect_server_host() {
   # 기본 서버 호스트 (로컬호스트)
   default_host="localhost"
   
-  echo -e "${GREEN}서버 호스트 감지 완료: ${default_host}${NC}"
+  echo -e "${GREEN}서버 호스트 감지 완료: ${default_host}${NC}" >&2
   echo "${default_host}"
 }
 
 # Docker 소켓 경로 찾기
 find_docker_sock_path() {
-  echo -e "${BLUE}Docker 소켓 경로 감지 중...${NC}"
+  echo -e "${BLUE}Docker 소켓 경로 감지 중...${NC}" >&2
   
   # 기본 OrbStack Docker 소켓 경로
   local docker_sock_path="$HOME/.orbstack/run/docker.sock"
   
   if [ -S "$docker_sock_path" ]; then
-    echo -e "${GREEN}Docker 소켓 발견: $docker_sock_path${NC}"
+    echo -e "${GREEN}Docker 소켓 발견: $docker_sock_path${NC}" >&2
     echo "$docker_sock_path"
     return
   fi
@@ -203,13 +203,13 @@ find_docker_sock_path() {
   
   for path in "${possible_paths[@]}"; do
     if [ -S "$path" ]; then
-      echo -e "${GREEN}Docker 소켓 발견: $path${NC}"
+      echo -e "${GREEN}Docker 소켓 발견: $path${NC}" >&2
       echo "$path"
       return
     fi
   done
   
-  echo -e "${YELLOW}Docker 소켓을 찾을 수 없습니다. 기본 경로를 사용합니다.${NC}"
+  echo -e "${YELLOW}Docker 소켓을 찾을 수 없습니다. 기본 경로를 사용합니다.${NC}" >&2
   echo "/var/run/docker.sock"
 }
 
@@ -401,7 +401,7 @@ update_docker_compose() {
   cp docker-compose.yml docker-compose.yml.bak.$(date +%Y%m%d%H%M%S)
   echo -e "${GREEN}docker-compose.yml 파일이 백업되었습니다.${NC}"
   
-  # Docker 소켓 경로 찾기
+  # Docker 소켓 경로 찾기 (메시지 출력 없음)
   DOCKER_SOCK_PATH=$(find_docker_sock_path)
   
   # mclient 서비스가 이미 있는지 확인
@@ -546,13 +546,32 @@ run_interactive_mode() {
       MODE="server"
       # 연결 설정
       echo -e "${YELLOW}연결 설정 방식을 선택하세요:${NC}"
-      echo "1) URL 직접 지정 - WebSocket URL을 직접 입력"
-      echo "2) 호스트 지정 - 서버 호스트 주소만 입력 (URL은 자동 구성)"
+      echo "1) 전체 URL 직접 지정 - 프로토콜, 호스트, 포트, 경로를 포함한 전체 URL 입력"
+      echo "   예: wss://monitor.example.com:8443/ws"
+      echo "2) 호스트만 지정 - 서버의 호스트 이름이나 IP만 입력 (포트와 경로는 자동 구성)"
+      echo "   예: monitor.example.com 또는 192.168.1.100"
       read -p "선택 (1-2) [기본값: 2]: " conn_choice
       
       case $conn_choice in
         1)
-          read -p "WebSocket URL을 입력하세요 (예: wss://monitor.example.com/ws): " SERVER_URL
+          read -p "WebSocket URL을 입력하세요 (예: wss://monitor.example.com/ws): " input_url
+          # URL 형식 확인 및 수정
+          if [[ ! "$input_url" =~ ^(ws|wss):// ]]; then
+            # 프로토콜이 없는 경우, 기본값으로 ws:// 추가
+            input_url="ws://$input_url"
+            echo -e "${YELLOW}프로토콜이 지정되지 않아 'ws://'를 기본값으로 추가했습니다.${NC}"
+          fi
+          # 경로가 없는 경우 /ws 추가
+          if [[ ! "$input_url" =~ /[^/]+$ ]]; then
+            # URL 끝에 슬래시가 없으면 추가
+            if [[ ! "$input_url" =~ /$ ]]; then
+              input_url="$input_url/"
+            fi
+            input_url="${input_url}ws"
+            echo -e "${YELLOW}경로가 지정되지 않아 '/ws'를 기본값으로 추가했습니다.${NC}"
+          fi
+          SERVER_URL="$input_url"
+          echo -e "${GREEN}설정된 WebSocket URL: $SERVER_URL${NC}"
           ;;
         *)
           # 기본 호스트 감지
@@ -563,7 +582,7 @@ run_interactive_mode() {
       esac
       
       # SSL 검증 설정
-      read -p "SSL 인증서 검증을 비활성화하시겠습니까? (y/n) [기본값: n]: " ssl_choice
+      read -p "SSL 인증서 검증을 비활성화하시겠습니까? (Y/n) [기본값: N]: " ssl_choice
       if [[ "$ssl_choice" =~ ^[Yy]$ ]]; then
         NO_SSL_VERIFY=true
         echo -e "${GREEN}SSL 인증서 검증이 비활성화되었습니다.${NC}"
@@ -573,7 +592,7 @@ run_interactive_mode() {
       fi
       
       # 디버그 모드 설정
-      read -p "디버그 모드를 활성화하시겠습니까? (y/n) [기본값: n]: " debug_choice
+      read -p "디버그 모드를 활성화하시겠습니까? (Y/n) [기본값: N]: " debug_choice
       if [[ "$debug_choice" =~ ^[Yy]$ ]]; then
         DEBUG_MODE=true
         echo -e "${GREEN}디버그 모드가 활성화되었습니다.${NC}"
@@ -658,7 +677,7 @@ main() {
   
   # 컨테이너 시작 여부 확인
   read -p "모니터링 클라이언트를 지금 시작하시겠습니까? (Y/n): " start_now
-  if [[ -z "$start_now" || "$start_now" =~ ^[Yy]$ ]]; then
+  if [[ -z "$start_now" || ! "$start_now" =~ ^[Nn]$ ]]; then
     echo -e "${BLUE}이전 mclient 컨테이너 확인 및 제거 중...${NC}"
     # 기존 mclient 컨테이너 제거
     if docker ps -a --format "{{.Names}}" | grep -q "mclient$"; then
