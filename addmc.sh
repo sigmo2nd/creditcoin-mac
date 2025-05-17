@@ -420,7 +420,76 @@ EOF
   echo -e "${GREEN}.env 파일이 생성되었습니다.${NC}"
 }
 
-# docker-compose.yml 파일 업데이트 - 수정된 버전
+# 파일 정리 함수 (기존 파일이 이상할 때 사용)
+cleanup_docker_compose() {
+  echo -e "${BLUE}docker-compose.yml 파일 구조 정리 중...${NC}"
+  
+  # docker-compose.yml 파일 확인
+  if [ ! -f "docker-compose.yml" ]; then
+    echo -e "${RED}오류: docker-compose.yml 파일이 없습니다.${NC}"
+    return 1
+  fi
+  
+  # 백업 파일 생성
+  BACKUP_FILE="docker-compose.yml.cleanup.$(date +%Y%m%d%H%M%S)"
+  cp docker-compose.yml "$BACKUP_FILE"
+  echo -e "${GREEN}docker-compose.yml 파일이 $BACKUP_FILE으로 백업되었습니다.${NC}"
+  
+  # 임시 파일 생성
+  TEMP_FILE=$(mktemp)
+  
+  # 상단 기본 설정 (x-node-defaults) 찾기
+  if grep -q "^x-node-defaults:" docker-compose.yml; then
+    # x-node-defaults 섹션 추출
+    echo -e "${YELLOW}기본 설정 섹션 추출 중...${NC}"
+    grep -B 10 "^services:" docker-compose.yml | grep -v "^services:" > "$TEMP_FILE"
+    echo "services:" >> "$TEMP_FILE"
+  else
+    # 기본 설정이 없으면 services 섹션만 시작
+    echo -e "${YELLOW}서비스 섹션만 시작...${NC}"
+    echo "services:" > "$TEMP_FILE"
+  fi
+  
+  # 3node 서비스 복사
+  echo -e "${YELLOW}3node 서비스 복사 중...${NC}"
+  for node in 3node0 3node1 3node2 3node3; do
+    if grep -q "  $node:" docker-compose.yml; then
+      echo -e "${GREEN}${node} 서비스 발견, 복사 중...${NC}"
+      
+      # 서비스 시작 라인
+      grep -A 1 "  $node:" docker-compose.yml >> "$TEMP_FILE"
+      
+      # 서비스 내용 복사 (다음 서비스 또는 networks 전까지)
+      grep -A 100 "  $node:" docker-compose.yml | grep -v "  $node:" | \
+        sed -n '/^  [a-zA-Z0-9_-]\+:/q;p' | \
+        grep -v "^networks:" >> "$TEMP_FILE"
+    fi
+  done
+  
+  # networks 섹션 재구성
+  echo -e "${YELLOW}networks 섹션 재구성 중...${NC}"
+  echo "" >> "$TEMP_FILE"  # 빈 줄 추가
+  
+  if grep -q "driver: bridge" docker-compose.yml; then
+    # 기존 networks 섹션에서 일부 정보 추출
+    echo "networks:" >> "$TEMP_FILE"
+    echo "  creditnet:" >> "$TEMP_FILE"
+    echo "    driver: bridge" >> "$TEMP_FILE"
+  else
+    # 기본 networks 정의 추가
+    echo "networks:" >> "$TEMP_FILE"
+    echo "  creditnet:" >> "$TEMP_FILE"
+    echo "    driver: bridge" >> "$TEMP_FILE"
+  fi
+  
+  # 원본 파일 대체
+  mv "$TEMP_FILE" docker-compose.yml
+  
+  echo -e "${GREEN}docker-compose.yml 파일이 정리되었습니다. 이제 mclient를 추가할 수 있습니다.${NC}"
+  return 0
+}
+
+# docker-compose.yml 파일 업데이트 (완전 재작성 버전)
 update_docker_compose() {
   echo -e "${BLUE}docker-compose.yml 파일 업데이트 중...${NC}"
   
@@ -439,92 +508,174 @@ update_docker_compose() {
   # Docker 소켓 경로 찾기 (메시지 출력 없음)
   DOCKER_SOCK_PATH=$(find_docker_sock_path)
   
-  # 환경 변수 설정
-  mclient_environment="      - SERVER_ID=${SERVER_ID}\n"
-  mclient_environment+="      - NODE_NAMES=${NODE_NAMES}\n"
-  mclient_environment+="      - MONITOR_INTERVAL=${MONITOR_INTERVAL}\n"
-  
-  # 모드별 환경 변수
-  if [ "$MODE" = "local" ]; then
-    mclient_environment+="      - LOCAL_MODE=true\n"
-  else
-    if [ ! -z "$SERVER_URL" ]; then
-      mclient_environment+="      - SERVER_URL=${SERVER_URL}\n"
-    fi
-    
-    if [ ! -z "$SERVER_HOST" ]; then
-      mclient_environment+="      - WS_SERVER_HOST=${SERVER_HOST}\n"
-    fi
-  fi
-  
-  # SSL 검증 비활성화 설정
-  if [ "$NO_SSL_VERIFY" = true ]; then
-    mclient_environment+="      - NO_SSL_VERIFY=true\n"
-  fi
-  
-  # 디버그 모드 설정
-  if [ "$DEBUG_MODE" = true ]; then
-    mclient_environment+="      - DEBUG_MODE=true\n"
-  fi
-  
-  # 공통 환경 변수
-  mclient_environment+="      # Docker 접근을 위한 환경 변수\n"
-  mclient_environment+="      - DOCKER_HOST=unix:///var/run/docker.sock\n"
-  mclient_environment+="      # 호스트 시스템 정보 접근을 위한 환경 변수\n"
-  mclient_environment+="      - HOST_PROC=/host/proc\n"
-  mclient_environment+="      - HOST_SYS=/host/sys\n"
-  
-  # mclient 서비스 블록을 임시 파일에 저장
-  MCLIENT_TEMPLATE_FILE=$(mktemp)
-  cat > "$MCLIENT_TEMPLATE_FILE" << EOF
-  mclient:
-    build:
-      context: ./mclient
-      dockerfile: Dockerfile
-    container_name: mclient
-    # 호스트 프로세스 네임스페이스 공유
-    pid: "host"
-    # 호스트 네트워크 모드 사용
-    network_mode: "host"
-    volumes:
-      # Docker 소켓 마운트
-      - ${DOCKER_SOCK_PATH}:/var/run/docker.sock:ro
-      # 호스트 시간대 정보
-      - /etc/localtime:/etc/localtime:ro
-      # 호스트 시스템 정보 접근
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      # mclient 디렉토리 마운트
-      - ./mclient:/app
-    environment:
-${mclient_environment}
-EOF
-  
   # 임시 파일 생성
   TEMP_FILE=$(mktemp)
   
-  # 1단계: mclient 서비스 제거
-  grep -v "^  mclient:" docker-compose.yml > "$TEMP_FILE"
+  # 먼저, mclient 서비스가 있는지 확인
+  if grep -q "  mclient:" docker-compose.yml; then
+    echo -e "${YELLOW}기존 mclient 서비스를 제거하고 새로 추가합니다.${NC}"
+    
+    # 기존 mclient 서비스를 제거 (방법 1: sed 사용)
+    sed '/^  mclient:/,/^  [a-zA-Z0-9_-]\+:/{ /^  [a-zA-Z0-9_-]\+:/!d; /^  mclient:/d; }' docker-compose.yml > "$TEMP_FILE"
+    
+    # 임시 파일 확인
+    if [ ! -s "$TEMP_FILE" ]; then
+      echo -e "${YELLOW}mclient 서비스 제거 중 문제가 발생했습니다. 파일 정리를 시도합니다.${NC}"
+      cleanup_docker_compose
+      cp docker-compose.yml "$TEMP_FILE"
+    fi
+  else
+    # mclient 서비스가 없으면 전체 복사
+    cp docker-compose.yml "$TEMP_FILE"
+  fi
   
-  # 2단계: 네트워크 섹션 직전에 mclient 서비스 추가
+  # networks 섹션 위치 확인
   NETWORK_LINE=$(grep -n "^networks:" "$TEMP_FILE" | head -1 | cut -d: -f1)
   
   if [ -z "$NETWORK_LINE" ]; then
     # networks 섹션이 없으면 파일 끝에 추가
-    cat "$TEMP_FILE" > docker-compose.yml
-    echo "" >> docker-compose.yml # 빈 줄 추가
-    cat "$MCLIENT_TEMPLATE_FILE" >> docker-compose.yml
+    echo -e "${YELLOW}networks 섹션을 찾을 수 없습니다. 파일 끝에 mclient와 networks 섹션을 추가합니다.${NC}"
+    
+    # mclient 서비스 추가
+    echo "" >> "$TEMP_FILE"  # 빈 줄 추가
+    echo "  mclient:" >> "$TEMP_FILE"
+    echo "    build:" >> "$TEMP_FILE"
+    echo "      context: ./mclient" >> "$TEMP_FILE"
+    echo "      dockerfile: Dockerfile" >> "$TEMP_FILE"
+    echo "    container_name: mclient" >> "$TEMP_FILE"
+    echo "    # 호스트 프로세스 네임스페이스 공유" >> "$TEMP_FILE"
+    echo "    pid: \"host\"" >> "$TEMP_FILE"
+    echo "    # 호스트 네트워크 모드 사용" >> "$TEMP_FILE"
+    echo "    network_mode: \"host\"" >> "$TEMP_FILE"
+    echo "    volumes:" >> "$TEMP_FILE"
+    echo "      # Docker 소켓 마운트" >> "$TEMP_FILE"
+    echo "      - ${DOCKER_SOCK_PATH}:/var/run/docker.sock:ro" >> "$TEMP_FILE"
+    echo "      # 호스트 시간대 정보" >> "$TEMP_FILE"
+    echo "      - /etc/localtime:/etc/localtime:ro" >> "$TEMP_FILE"
+    echo "      # 호스트 시스템 정보 접근" >> "$TEMP_FILE"
+    echo "      - /proc:/host/proc:ro" >> "$TEMP_FILE"
+    echo "      - /sys:/host/sys:ro" >> "$TEMP_FILE"
+    echo "      # mclient 디렉토리 마운트" >> "$TEMP_FILE"
+    echo "      - ./mclient:/app" >> "$TEMP_FILE"
+    echo "    environment:" >> "$TEMP_FILE"
+    echo "      - SERVER_ID=${SERVER_ID}" >> "$TEMP_FILE"
+    echo "      - NODE_NAMES=${NODE_NAMES}" >> "$TEMP_FILE"
+    echo "      - MONITOR_INTERVAL=${MONITOR_INTERVAL}" >> "$TEMP_FILE"
+    
+    # 모드별 환경 변수
+    if [ "$MODE" = "local" ]; then
+      echo "      - LOCAL_MODE=true" >> "$TEMP_FILE"
+    else
+      if [ ! -z "$SERVER_URL" ]; then
+        echo "      - SERVER_URL=${SERVER_URL}" >> "$TEMP_FILE"
+      fi
+      
+      if [ ! -z "$SERVER_HOST" ]; then
+        echo "      - WS_SERVER_HOST=${SERVER_HOST}" >> "$TEMP_FILE"
+      fi
+    fi
+    
+    # SSL 검증 비활성화 설정
+    if [ "$NO_SSL_VERIFY" = true ]; then
+      echo "      - NO_SSL_VERIFY=true" >> "$TEMP_FILE"
+    fi
+    
+    # 디버그 모드 설정
+    if [ "$DEBUG_MODE" = true ]; then
+      echo "      - DEBUG_MODE=true" >> "$TEMP_FILE"
+    fi
+    
+    # 공통 환경 변수
+    echo "      # Docker 접근을 위한 환경 변수" >> "$TEMP_FILE"
+    echo "      - DOCKER_HOST=unix:///var/run/docker.sock" >> "$TEMP_FILE"
+    echo "      # 호스트 시스템 정보 접근을 위한 환경 변수" >> "$TEMP_FILE"
+    echo "      - HOST_PROC=/host/proc" >> "$TEMP_FILE"
+    echo "      - HOST_SYS=/host/sys" >> "$TEMP_FILE"
+    
+    # networks 섹션 추가
+    echo "" >> "$TEMP_FILE"  # 빈 줄 추가
+    echo "networks:" >> "$TEMP_FILE"
+    echo "  creditnet:" >> "$TEMP_FILE"
+    echo "    driver: bridge" >> "$TEMP_FILE"
   else
-    # networks 섹션 앞에 추가
-    head -n $((NETWORK_LINE-1)) "$TEMP_FILE" > docker-compose.yml
-    echo "" >> docker-compose.yml # 빈 줄 추가
-    cat "$MCLIENT_TEMPLATE_FILE" >> docker-compose.yml
-    echo "" >> docker-compose.yml # 빈 줄 추가
-    tail -n +$NETWORK_LINE "$TEMP_FILE" >> docker-compose.yml
+    # networks 섹션 앞에 mclient 서비스 추가
+    NEW_TEMP_FILE=$(mktemp)
+    head -n $((NETWORK_LINE-1)) "$TEMP_FILE" > "$NEW_TEMP_FILE"
+    
+    # mclient 서비스 추가
+    echo "" >> "$NEW_TEMP_FILE"  # 빈 줄 추가
+    echo "  mclient:" >> "$NEW_TEMP_FILE"
+    echo "    build:" >> "$NEW_TEMP_FILE"
+    echo "      context: ./mclient" >> "$NEW_TEMP_FILE"
+    echo "      dockerfile: Dockerfile" >> "$NEW_TEMP_FILE"
+    echo "    container_name: mclient" >> "$NEW_TEMP_FILE"
+    echo "    # 호스트 프로세스 네임스페이스 공유" >> "$NEW_TEMP_FILE"
+    echo "    pid: \"host\"" >> "$NEW_TEMP_FILE"
+    echo "    # 호스트 네트워크 모드 사용" >> "$NEW_TEMP_FILE"
+    echo "    network_mode: \"host\"" >> "$NEW_TEMP_FILE"
+    echo "    volumes:" >> "$NEW_TEMP_FILE"
+    echo "      # Docker 소켓 마운트" >> "$NEW_TEMP_FILE"
+    echo "      - ${DOCKER_SOCK_PATH}:/var/run/docker.sock:ro" >> "$NEW_TEMP_FILE"
+    echo "      # 호스트 시간대 정보" >> "$NEW_TEMP_FILE"
+    echo "      - /etc/localtime:/etc/localtime:ro" >> "$NEW_TEMP_FILE"
+    echo "      # 호스트 시스템 정보 접근" >> "$NEW_TEMP_FILE"
+    echo "      - /proc:/host/proc:ro" >> "$NEW_TEMP_FILE"
+    echo "      - /sys:/host/sys:ro" >> "$NEW_TEMP_FILE"
+    echo "      # mclient 디렉토리 마운트" >> "$NEW_TEMP_FILE"
+    echo "      - ./mclient:/app" >> "$NEW_TEMP_FILE"
+    echo "    environment:" >> "$NEW_TEMP_FILE"
+    echo "      - SERVER_ID=${SERVER_ID}" >> "$NEW_TEMP_FILE"
+    echo "      - NODE_NAMES=${NODE_NAMES}" >> "$NEW_TEMP_FILE"
+    echo "      - MONITOR_INTERVAL=${MONITOR_INTERVAL}" >> "$NEW_TEMP_FILE"
+    
+    # 모드별 환경 변수
+    if [ "$MODE" = "local" ]; then
+      echo "      - LOCAL_MODE=true" >> "$NEW_TEMP_FILE"
+    else
+      if [ ! -z "$SERVER_URL" ]; then
+        echo "      - SERVER_URL=${SERVER_URL}" >> "$NEW_TEMP_FILE"
+      fi
+      
+      if [ ! -z "$SERVER_HOST" ]; then
+        echo "      - WS_SERVER_HOST=${SERVER_HOST}" >> "$NEW_TEMP_FILE"
+      fi
+    fi
+    
+    # SSL 검증 비활성화 설정
+    if [ "$NO_SSL_VERIFY" = true ]; then
+      echo "      - NO_SSL_VERIFY=true" >> "$NEW_TEMP_FILE"
+    fi
+    
+    # 디버그 모드 설정
+    if [ "$DEBUG_MODE" = true ]; then
+      echo "      - DEBUG_MODE=true" >> "$NEW_TEMP_FILE"
+    fi
+    
+    # 공통 환경 변수
+    echo "      # Docker 접근을 위한 환경 변수" >> "$NEW_TEMP_FILE"
+    echo "      - DOCKER_HOST=unix:///var/run/docker.sock" >> "$NEW_TEMP_FILE"
+    echo "      # 호스트 시스템 정보 접근을 위한 환경 변수" >> "$NEW_TEMP_FILE"
+    echo "      - HOST_PROC=/host/proc" >> "$NEW_TEMP_FILE"
+    echo "      - HOST_SYS=/host/sys" >> "$NEW_TEMP_FILE"
+    
+    # networks 섹션 추가
+    echo "" >> "$NEW_TEMP_FILE"  # 빈 줄 추가
+    tail -n +$NETWORK_LINE "$TEMP_FILE" >> "$NEW_TEMP_FILE"
+    
+    # 임시 파일 교체
+    mv "$NEW_TEMP_FILE" "$TEMP_FILE"
   fi
   
-  # 임시 파일 삭제
-  rm -f "$TEMP_FILE" "$MCLIENT_TEMPLATE_FILE"
+  # 결과 확인
+  if [ ! -s "$TEMP_FILE" ]; then
+    echo -e "${RED}오류: docker-compose.yml 파일 처리 중 문제가 발생했습니다.${NC}"
+    echo -e "${YELLOW}백업 파일($BACKUP_FILE)을 확인하세요.${NC}"
+    rm -f "$TEMP_FILE"
+    exit 1
+  fi
+  
+  # 원본 파일 대체
+  mv "$TEMP_FILE" docker-compose.yml
   
   # 성공 메시지
   echo -e "${GREEN}mclient 서비스가 docker-compose.yml에 성공적으로 추가되었습니다.${NC}"
@@ -690,6 +841,12 @@ main() {
   
   # .env 파일 생성
   create_env_file
+  
+  # docker-compose.yml 파일이 이상하면 정리 먼저 시도
+  if grep -q "creditnet:" docker-compose.yml && ! grep -q "networks:" docker-compose.yml; then
+    echo -e "${YELLOW}docker-compose.yml 파일이 잘못된 형식입니다. 정리 시도...${NC}"
+    cleanup_docker_compose
+  fi
   
   # docker-compose.yml 파일 업데이트
   update_docker_compose
