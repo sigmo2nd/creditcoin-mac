@@ -534,13 +534,13 @@ run_interactive_mode() {
   NODE_NAMES=$(detect_nodes)
   
   # 서버 ID 입력 (선택 사항)
-  read -p "서버 ID를 입력하세요 (기본값: $SERVER_ID): " input
+  read -p "서버 ID를 입력하세요 ($SERVER_ID): " input
   if [ ! -z "$input" ]; then
     SERVER_ID="$input"
   fi
   
   # 모니터링 간격 입력 (선택 사항)
-  read -p "모니터링 간격(초)을 입력하세요 (기본값: $MONITOR_INTERVAL): " input
+  read -p "모니터링 간격(초)을 입력하세요 ($MONITOR_INTERVAL): " input
   if [ ! -z "$input" ]; then
     MONITOR_INTERVAL="$input"
   fi
@@ -590,14 +590,14 @@ run_interactive_mode() {
         *)
           # 기본 호스트 감지
           default_host=$(detect_server_host)
-          read -p "서버 호스트를 입력하세요 (기본값: $default_host): " input
+          read -p "서버 호스트를 입력하세요 ($default_host): " input
           SERVER_HOST=${input:-$default_host}
           ;;
       esac
       
-      # SSL 검증 설정 (기본값은 활성화 = No)
-      read -p "SSL 인증서 검증을 비활성화하시겠습니까? (y/N): " ssl_choice
-      if [[ "$ssl_choice" =~ ^[Yy]$ ]]; then
+      # SSL 검증 설정 (기본값은 활성화 = Yes)
+      read -p "SSL 인증서 검증을 활성화하시겠습니까? (Y/n): " ssl_choice
+      if [[ "$ssl_choice" =~ ^[Nn]$ ]]; then
         NO_SSL_VERIFY=true
         echo -e "${GREEN}SSL 인증서 검증이 비활성화되었습니다.${NC}"
       else
