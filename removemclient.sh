@@ -17,6 +17,7 @@ echo -e " - 쉘 프로필에서 mclient 유틸리티 함수"
 echo ""
 echo -e "${RED}이 작업은 되돌릴 수 없습니다.${NC}"
 echo -e "${YELLOW}Creditcoin 노드 관련 파일 및 컨테이너는 영향받지 않습니다.${NC}"
+echo -e "${YELLOW}모니터링 클라이언트를 다시 설치하려면 addmclient.sh를 실행하세요.${NC}"
 echo ""
 read -p "계속 진행하시겠습니까? (y/N) " response
 
@@ -71,7 +72,10 @@ if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
     
     # mclient 이미지 삭제
     echo -e "${YELLOW}mclient 이미지 삭제...${NC}"
-    if docker images | grep -q 'mclient'; then
+    if docker images | grep -q 'creditcoin3_mclient'; then
+        docker rmi $(docker images -q creditcoin3_mclient)
+        echo -e "${GREEN}mclient 이미지 삭제 완료${NC}"
+    elif docker images | grep -q 'mclient'; then
         docker rmi $(docker images -q mclient)
         echo -e "${GREEN}mclient 이미지 삭제 완료${NC}"
     else
@@ -94,8 +98,8 @@ if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
         # 백업 생성
         cp .env .env.bak.$(date +%Y%m%d%H%M%S)
         
-        # M_ 접두사로 시작하는 변수 제거
-        grep -v "^M_" .env > .env.new
+        # 모니터링 관련 변수 제거
+        grep -v "^SERVER_ID=\|^NODE_NAMES=\|^MONITOR_INTERVAL=\|^WS_MODE=\|^WS_SERVER_URL=\|^CREDITCOIN_DIR=" .env > .env.new
         mv .env.new .env
         
         echo -e "${GREEN}.env 파일 업데이트 완료${NC}"
@@ -126,6 +130,8 @@ if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
             rm -f "${SHELL_PROFILE}.tmp"
             
             echo -e "${GREEN}쉘 프로필에서 모니터링 유틸리티 함수 제거 완료${NC}"
+            echo -e "${YELLOW}변경사항이 적용되려면 쉘을 다시 시작하거나 다음 명령어를 실행하세요:${NC}"
+            echo -e "${GREEN}source $SHELL_PROFILE${NC}"
         else
             echo -e "${GREEN}쉘 프로필에 모니터링 유틸리티 함수가 없습니다.${NC}"
         fi
@@ -133,10 +139,17 @@ if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
         echo -e "${GREEN}쉘 프로필 파일이 없습니다.${NC}"
     fi
     
+    # 네트워크 설정 확인 (호스트 네트워크 모드 사용 시)
+    echo -e "${YELLOW}호스트 네트워크 설정 확인 중...${NC}"
+    if [ -f "/etc/hosts" ] && grep -q "mclient" /etc/hosts; then
+        echo -e "${YELLOW}/etc/hosts 파일에 mclient 관련 설정이 있을 수 있습니다. 수동으로 확인하세요.${NC}"
+    else
+        echo -e "${GREEN}호스트 네트워크 설정에 문제가 없습니다.${NC}"
+    fi
+    
     echo -e "${BLUE}===== 정리 완료 =====${NC}"
     echo -e "${GREEN}Creditcoin 모니터링 클라이언트 관련 파일 및 설정이 모두 제거되었습니다.${NC}"
-    echo -e "${YELLOW}주의: 변경사항이 쉘 프로필에 반영되려면 다음 명령어를 실행하세요:${NC}"
-    echo -e "${GREEN}source $SHELL_PROFILE${NC}"
+    echo -e "${YELLOW}모니터링 클라이언트를 다시 설치하려면 addmclient.sh를 실행하세요.${NC}"
 else
     echo -e "${BLUE}작업이 취소되었습니다.${NC}"
 fi
