@@ -225,6 +225,16 @@ prepare_client_files() {
     echo -e "${BLUE}기존 mclient 디렉토리를 사용합니다.${NC}"
   fi
   
+  # 소스 디렉토리 (mclient_org)
+  local SRC_DIR="${CURRENT_DIR}/mclient_org"
+  
+  # 소스 디렉토리 존재 확인
+  if [ ! -d "$SRC_DIR" ]; then
+    echo -e "${RED}오류: mclient_org 디렉토리를 찾을 수 없습니다.${NC}"
+    echo -e "${YELLOW}현재 디렉토리: $(pwd)${NC}"
+    exit 1
+  fi
+  
   # 필요한 파일들 목록
   local files=(
     "main.py" 
@@ -233,19 +243,17 @@ prepare_client_files() {
     "requirements.txt"
   )
   
-  # 각 파일 준비
+  # 각 파일 복사
   for file in "${files[@]}"; do
-    # 원본 파일 경로
-    local src_file="${CURRENT_DIR}/${file}"
-    local dest_file="${MCLIENT_DIR}/${file}"
+    local src_file="${SRC_DIR}/${file}"
     
-    # 파일이 존재하는지 확인
+    # 파일 존재 확인
     if [ -f "$src_file" ]; then
       echo -e "${YELLOW}복사 중: ${file}${NC}"
-      cp "$src_file" "$dest_file"
+      cp "$src_file" "${MCLIENT_DIR}/${file}"
       echo -e "${GREEN}${file} 복사 완료${NC}"
     else
-      echo -e "${RED}오류: ${file} 파일을 찾을 수 없습니다.${NC}"
+      echo -e "${RED}오류: ${SRC_DIR}/${file} 파일을 찾을 수 없습니다.${NC}"
       exit 1
     fi
   done
