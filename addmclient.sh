@@ -1,7 +1,7 @@
 #!/bin/bash
 # addmclient.sh - Creditcoin 모니터링 클라이언트 추가 스크립트
 
-# 색상 정의
+# 색상
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
