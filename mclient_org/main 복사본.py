@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# main.py - Creditcoin 파이썬 모니터링 클라이언트 (통합 버전)
+# main.py
 import asyncio
 import logging
 import argparse
@@ -7,12 +7,17 @@ import sys
 import signal
 import time
 import os
-import json
-import platform
-import psutil
-from typing import Dict, List, Any, Optional
-import subprocess
-from pathlib import Path
+from typing import List, Dict, Any
+
+from config import settings, get_websocket_url
+from docker_stats_client import DockerStatsClient
+from websocket_client import WebSocketClient
+
+# 환경변수에서 SSL 검증 비활성화 옵션 읽어서 명령행 인자로 변환
+if os.environ.get('NO_SSL_VERIFY', '').lower() in ('true', '1', 'yes'):
+    if '--no-ssl-verify' not in sys.argv:
+        sys.argv.append('--no-ssl-verify')
+        print("환경변수 NO_SSL_VERIFY=true가 감지되어 --no-ssl-verify 옵션을 추가했습니다.")
 
 # 로깅 설정
 logging.basicConfig(
@@ -20,12 +25,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# WebSocket 라이브러리 로깅 레벨 상향 조정 (DEBUG -> WARNING)
-logging.getLogger('websockets').setLevel(logging.WARNING)
-logging.getLogger('websockets.client').setLevel(logging.WARNING)
-logging.getLogger('websockets.server').setLevel(logging.WARNING)
-logging.getLogger('websockets.protocol').setLevel(logging.WARNING)
 
 # ANSI 색상 코드
 CLEAR_SCREEN = "\x1B[2J\x1B[1;1H"
@@ -38,204 +37,7 @@ COLOR_WHITE = "\x1B[37m"
 COLOR_BLUE = "\x1B[34m"
 STYLE_BOLD = "\x1B[1m"
 
-#################################################
-# 설정 관리 (기존 config.py 통합)
-#################################################
-
-# .env 파일 로드
-def load_dotenv():
-    """환경 변수 설정 파일(.env) 로드"""
-    env_file = Path('.env')
-    if not env_file.exists():
-        logger.debug(".env 파일이 존재하지 않습니다. 기본값을 사용합니다.")
-        return False
-    
-    try:
-        with open(env_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                    
-                key, value = line.split('=', 1)
-                key = key.strip()
-                value = value.strip()
-                
-                # 이미 환경변수에 설정되어 있지 않은 경우에만 설정
-                if key not in os.environ:
-                    os.environ[key] = value
-                    logger.debug(f".env에서 로드: {key}={value}")
-        
-        logger.debug(".env 파일 로드 완료")
-        return True
-    except Exception as e:
-        logger.warning(f".env 파일 로드 중 오류: {e}")
-        return False
-
-# 설정 클래스
-class Settings:
-    """애플리케이션 설정 클래스"""
-    
-    def __init__(self, args=None):
-        # 환경변수 로드 (.env)
-        load_dotenv()
-        
-        # 기본 설정
-        self.SERVER_ID = os.environ.get("SERVER_ID", "server1")
-        self.NODE_NAMES = os.environ.get("NODE_NAMES", "node,3node")
-        self.MONITOR_INTERVAL = int(os.environ.get("MONITOR_INTERVAL", "5"))
-        
-        # WebSocket 설정
-        self.SERVER_URL = os.environ.get("SERVER_URL")
-        self.WS_MODE = os.environ.get("WS_MODE", "auto")  # auto, ws, wss, custom
-        self.WS_SERVER_HOST = os.environ.get("WS_SERVER_HOST", "192.168.0.24")
-        self.WS_PORT_WS = int(os.environ.get("WS_PORT_WS", "8080"))
-        self.WS_PORT_WSS = int(os.environ.get("WS_PORT_WSS", "8443"))
-        
-        # Docker 설정
-        self.CREDITCOIN_DIR = os.environ.get("CREDITCOIN_DIR", os.path.expanduser("~/creditcoin-mac"))
-        
-        # 실행 모드 설정
-        self.LOCAL_MODE = os.environ.get("LOCAL_MODE", "").lower() in ('true', '1', 'yes')
-        self.DEBUG_MODE = os.environ.get("DEBUG_MODE", "").lower() in ('true', '1', 'yes')
-        self.NO_DOCKER = os.environ.get("NO_DOCKER", "").lower() in ('true', '1', 'yes')
-        self.NO_SSL_VERIFY = os.environ.get("NO_SSL_VERIFY", "").lower() in ('true', '1', 'yes')
-        self.MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "0"))
-        self.RETRY_INTERVAL = int(os.environ.get("RETRY_INTERVAL", "10"))
-        
-        # 명령행 인자 적용 (있는 경우)
-        if args:
-            # 필수값 오버라이딩
-            if args.server_id:
-                self.SERVER_ID = args.server_id
-            if args.nodes:
-                self.NODE_NAMES = args.nodes
-            if args.interval:
-                self.MONITOR_INTERVAL = args.interval
-            if args.ws_mode:
-                self.WS_MODE = args.ws_mode
-            if args.ws_url:
-                self.SERVER_URL = args.ws_url
-            
-            # 플래그 설정
-            if args.local:
-                self.LOCAL_MODE = True
-            if args.debug:
-                self.DEBUG_MODE = True
-            if args.no_docker:
-                self.NO_DOCKER = True
-            if args.no_ssl_verify:
-                self.NO_SSL_VERIFY = True
-            if args.max_retries is not None:
-                self.MAX_RETRIES = args.max_retries
-            if args.retry_interval:
-                self.RETRY_INTERVAL = args.retry_interval
-        
-        # 디버그 모드면 로그 레벨 설정
-        if self.DEBUG_MODE:
-            logging.getLogger().setLevel(logging.DEBUG)
-            logger.debug("디버그 모드가 활성화되었습니다.")
-    
-    def print_settings(self):
-        """현재 설정 출력"""
-        logger.info("=== 현재 설정 ===")
-        logger.info(f"서버 ID: {self.SERVER_ID}")
-        logger.info(f"노드 이름: {self.NODE_NAMES}")
-        logger.info(f"모니터링 간격: {self.MONITOR_INTERVAL}초")
-        
-        # 로컬 모드인 경우
-        if self.LOCAL_MODE:
-            logger.info("모드: 로컬 모드 (데이터 전송 없음)")
-        else:
-            logger.info("모드: 서버 연결 모드")
-            
-            # WebSocket 설정
-            if self.SERVER_URL:
-                logger.info(f"WebSocket URL: {self.SERVER_URL} (커스텀)")
-            else:
-                logger.info(f"WebSocket 모드: {self.WS_MODE}")
-                logger.info(f"WebSocket 호스트: {self.WS_SERVER_HOST}")
-                logger.info(f"WebSocket 포트(WS): {self.WS_PORT_WS}")
-                logger.info(f"WebSocket 포트(WSS): {self.WS_PORT_WSS}")
-            
-            logger.info(f"SSL 검증: {'비활성화' if self.NO_SSL_VERIFY else '활성화'}")
-            logger.info(f"연결 재시도: {self.MAX_RETRIES if self.MAX_RETRIES > 0 else '무제한'} 회")
-            logger.info(f"재시도 간격: {self.RETRY_INTERVAL}초")
-        
-        logger.info(f"Docker 모니터링: {'비활성화' if self.NO_DOCKER else '활성화'}")
-        logger.info(f"Creditcoin 디렉토리: {self.CREDITCOIN_DIR}")
-        logger.info(f"디버그 모드: {'활성화' if self.DEBUG_MODE else '비활성화'}")
-        logger.info("================")
-
-def get_websocket_url(settings):
-    """설정에 따라 WebSocket URL 결정"""
-    # 1. 커스텀 URL이 직접 설정된 경우
-    if settings.SERVER_URL:
-        return settings.SERVER_URL
-    
-    # 2. 기본 URL 설정 (설정값으로부터 동적 생성)
-    base_urls = {
-        "ws": f"ws://{settings.WS_SERVER_HOST}:{settings.WS_PORT_WS}/ws",
-        "wss": f"wss://{settings.WS_SERVER_HOST}:{settings.WS_PORT_WSS}/ws",
-        "wss_internal": f"wss://{settings.WS_SERVER_HOST}:{settings.WS_PORT_WSS}/ws"
-    }
-    
-    # 3. auto 모드인 경우 자동 연결 로직 사용
-    if settings.WS_MODE == "auto":
-        return "auto"  # 자동 연결 로직은 websocket_client에서 구현
-    
-    # 4. 모드에 해당하는 URL 반환 (없으면 ws 모드 기본값 사용)
-    url = base_urls.get(settings.WS_MODE, base_urls["ws"])
-    return url
-
-# 실행 환경 감지
-def detect_environment():
-    """현재 실행 환경 감지 (macOS, Linux, 컨테이너 등)"""
-    if os.path.exists('/.dockerenv'):
-        return "container"
-    elif platform.system() == "Darwin":
-        return "macos"
-    elif platform.system() == "Linux":
-        return "linux"
-    else:
-        return "unknown"
-
-# 연결 설정 구성
-def configure_connection(settings):
-    """설정에 따른 연결 구성 생성"""
-    # 로컬 모드인 경우
-    if settings.LOCAL_MODE:
-        return {"mode": "local", "use_websocket": False}
-    
-    # 서버 모드인 경우
-    environment = detect_environment()
-    
-    # 커스텀 URL이 있는 경우 그대로 사용
-    if settings.SERVER_URL:
-        return {
-            "mode": "server",
-            "url": settings.SERVER_URL,
-            "verify_ssl": not settings.NO_SSL_VERIFY
-        }
-    
-    # URL 기반으로 구성
-    ws_url = get_websocket_url(settings)
-    use_ssl = settings.WS_MODE in ["wss", "wss_internal"] or ws_url.startswith("wss://")
-    
-    return {
-        "mode": "server",
-        "url": ws_url,
-        "server_id": settings.SERVER_ID,
-        "use_ssl": use_ssl,
-        "verify_ssl": not settings.NO_SSL_VERIFY,
-        "max_retries": settings.MAX_RETRIES,
-        "retry_interval": settings.RETRY_INTERVAL
-    }
-
-#################################################
-# 시스템 정보 수집 클래스
-#################################################
-
+# 시스템 인포 클래스
 class SystemInfo:
     def __init__(self):
         self.hostname = ""
@@ -260,6 +62,9 @@ class SystemInfo:
         # 캐시 유효 시간 내에 있으면 이전 값 반환
         if current_time - self._last_collect_time < self._cache_duration:
             return self.to_dict()
+        
+        import platform
+        import psutil
         
         # 수집 시간 갱신
         self._last_collect_time = current_time
@@ -309,10 +114,7 @@ class SystemInfo:
             "disk_used": self.disk_used
         }
 
-#################################################
 # 전송 통계 클래스
-#################################################
-
 class TransmissionStats:
     def __init__(self):
         self.total_sent = 0
@@ -347,9 +149,23 @@ class TransmissionStats:
         if len(self.processing_times) > self.max_times_stored:
             self.processing_times.pop(0)
 
-#################################################
-# 유틸리티 함수
-#################################################
+# 커맨드 라인 인자 파싱
+def parse_args():
+    parser = argparse.ArgumentParser(description='Creditcoin 파이썬 모니터링 클라이언트')
+    parser.add_argument('--server-id', help='서버 ID')
+    parser.add_argument('--nodes', help='모니터링할 노드 이름 (쉼표로 구분)')
+    parser.add_argument('--interval', type=int, help='모니터링 간격(초)')
+    parser.add_argument('--ws-mode', choices=['auto', 'ws', 'wss', 'wss_internal', 'custom'],
+                      help='WebSocket 연결 모드')
+    parser.add_argument('--ws-url', help='사용자 지정 WebSocket URL')
+    parser.add_argument('--no-ssl-verify', action='store_true', help='SSL 인증서 검증 비활성화')
+    parser.add_argument('--local', action='store_true', help='로컬 모드로 실행')
+    parser.add_argument('--debug', action='store_true', help='디버그 모드 활성화')
+    parser.add_argument('--no-docker', action='store_true', help='Docker 모니터링 비활성화')
+    parser.add_argument('--max-retries', type=int, default=0, help='WebSocket 연결 최대 재시도 횟수 (0=무한)')
+    parser.add_argument('--retry-interval', type=int, default=10, help='WebSocket 연결 재시도 간격(초)')
+    
+    return parser.parse_args()
 
 # 값에 따른 색상 문자열 선택 함수
 def get_color_for_value(value: float) -> str:
@@ -481,29 +297,8 @@ def print_metrics(sys_info: Dict[str, Any], containers: List[Dict[str, Any]], in
     print()
     print(f"{COLOR_CYAN}[{time.strftime('%H:%M:%S')}] 실시간 모니터링 중... (간격: {interval}초){COLOR_RESET}")
 
-#################################################
-# 명령행 인자 파싱
-#################################################
-
-def parse_args():
-    parser = argparse.ArgumentParser(description='Creditcoin 파이썬 모니터링 클라이언트')
-    parser.add_argument('--server-id', help='서버 ID')
-    parser.add_argument('--nodes', help='모니터링할 노드 이름 (쉼표로 구분)')
-    parser.add_argument('--interval', type=int, help='모니터링 간격(초)')
-    parser.add_argument('--ws-mode', choices=['auto', 'ws', 'wss', 'wss_internal', 'custom'],
-                      help='WebSocket 연결 모드')
-    parser.add_argument('--ws-url', help='사용자 지정 WebSocket URL')
-    parser.add_argument('--no-ssl-verify', action='store_true', help='SSL 인증서 검증 비활성화')
-    parser.add_argument('--local', action='store_true', help='로컬 모드로 실행')
-    parser.add_argument('--debug', action='store_true', help='디버그 모드 활성화')
-    parser.add_argument('--no-docker', action='store_true', help='Docker 모니터링 비활성화')
-    parser.add_argument('--max-retries', type=int, default=None, help='WebSocket 연결 최대 재시도 횟수 (0=무한)')
-    parser.add_argument('--retry-interval', type=int, help='WebSocket 연결 재시도 간격(초)')
-    
-    return parser.parse_args()
-
 # 로컬 모드 실행 함수
-async def run_local_mode(settings, node_names: List[str]):
+async def run_local_mode(node_names: List[str], interval: int, use_docker: bool):
     """로컬 모드로 모니터링 (터미널에 출력)"""
     print(CLEAR_SCREEN)
     print(f"{STYLE_BOLD}{COLOR_WHITE}크레딧코인 노드 실시간 모니터링 시작 (Ctrl+C로 종료){COLOR_RESET}")
@@ -513,11 +308,11 @@ async def run_local_mode(settings, node_names: List[str]):
     system_info = SystemInfo()
     
     # Docker 클라이언트 설정
+    docker_client = None
     docker_stats_client = None
-    if not settings.NO_DOCKER:
+    if use_docker:
         try:
-            # Docker Stats 클라이언트 사용
-            from docker_stats_client import DockerStatsClient
+            # 먼저 Docker Stats 클라이언트 사용 시도
             docker_stats_client = DockerStatsClient()
             
             # Docker stats 모니터링 시작
@@ -539,17 +334,18 @@ async def run_local_mode(settings, node_names: List[str]):
             sys_metrics = system_info.collect()
             
             container_list = []
-            if not settings.NO_DOCKER and docker_stats_client:
+            if use_docker:
                 try:
-                    # Stats 클라이언트에서 데이터 가져오기 (이미 백그라운드에서 수집됨)
-                    container_data = await docker_stats_client.get_stats_for_nodes(node_names)
-                    container_list = list(container_data.values())
+                    if docker_stats_client:
+                        # Stats 클라이언트에서 데이터 가져오기 (이미 백그라운드에서 수집됨)
+                        container_data = await docker_stats_client.get_stats_for_nodes(node_names)
+                        container_list = list(container_data.values())
                 except Exception as e:
                     logger.error(f"Docker 정보 수집 실패: {e}")
             
             # 화면 업데이트
             print(CLEAR_SCREEN)
-            print_metrics(sys_metrics, container_list, settings.MONITOR_INTERVAL)
+            print_metrics(sys_metrics, container_list, interval)
             sys.stdout.flush()
             
             # 실행 시간 계산
@@ -557,7 +353,7 @@ async def run_local_mode(settings, node_names: List[str]):
             execution_time = loop_end_time - loop_start_time
             
             # 다음 간격까지 대기 (음수가 되지 않도록)
-            wait_time = max(0.1, settings.MONITOR_INTERVAL - execution_time)
+            wait_time = max(0.1, interval - execution_time)
             
             # 종료 이벤트가 설정될 때까지 또는 대기 시간 동안 대기
             try:
@@ -578,37 +374,43 @@ async def run_local_mode(settings, node_names: List[str]):
         logger.info("로컬 모니터링 종료")
 
 # 웹소켓 모드 실행 함수
-async def run_websocket_mode(settings, node_names: List[str]):
+async def run_websocket_mode(args, node_names: List[str], interval: int, use_docker: bool):
     """웹소켓 모드로 모니터링 (서버에 전송)"""
     global websocket_client_instance, shutdown_event
     
+    # 설정값 적용
+    server_id = args.server_id or settings.SERVER_ID
+    
     # WebSocket URL 결정
-    ws_url_or_mode = get_websocket_url(settings)
+    ws_mode = args.ws_mode or settings.WS_MODE
     
-    logger.info(f"모니터링 시작: 서버 ID={settings.SERVER_ID}, 노드={node_names}, 간격={settings.MONITOR_INTERVAL}초")
-    
-    if settings.SERVER_URL:
-        logger.info(f"WebSocket URL: {settings.SERVER_URL}")
+    if args.ws_url:
+        ws_url_or_mode = args.ws_url
+    elif ws_mode == "custom" and settings.WS_SERVER_URL:
+        ws_url_or_mode = settings.WS_SERVER_URL
     else:
-        logger.info(f"WebSocket 모드: {settings.WS_MODE}")
-        logger.info(f"WebSocket 호스트: {settings.WS_SERVER_HOST}")
-        if settings.WS_MODE in ['ws', 'auto']:
-            logger.info(f"WebSocket 포트(WS): {settings.WS_PORT_WS}")
-        if settings.WS_MODE in ['wss', 'wss_internal', 'auto']:
-            logger.info(f"WebSocket 포트(WSS): {settings.WS_PORT_WSS}")
+        ws_url_or_mode = ws_mode
     
-    if settings.NO_SSL_VERIFY:
+    logger.info(f"모니터링 시작: 서버 ID={server_id}, 노드={node_names}, 간격={interval}초")
+    logger.info(f"WebSocket 모드: {ws_mode}")
+    
+    if args.ws_url:
+        logger.info(f"WebSocket URL: {args.ws_url}")
+    elif settings.WS_SERVER_URL:
+        logger.info(f"WebSocket URL: {settings.WS_SERVER_URL}")
+    
+    if args.no_ssl_verify:
         logger.info("SSL 인증서 검증이 비활성화되었습니다.")
     
     # 클라이언트 초기화
     system_info = SystemInfo()
     
     # Docker 클라이언트 설정
+    docker_client = None
     docker_stats_client = None
-    if not settings.NO_DOCKER:
+    if use_docker:
         try:
             # Docker Stats 클라이언트 사용
-            from docker_stats_client import DockerStatsClient
             docker_stats_client = DockerStatsClient()
             
             # Docker stats 모니터링 시작
@@ -622,8 +424,7 @@ async def run_websocket_mode(settings, node_names: List[str]):
             logger.error(f"Docker 클라이언트 초기화 중 오류: {e}")
     
     # WebSocket 클라이언트 초기화 (SSL 검증 옵션 적용)
-    from websocket_client import WebSocketClient
-    websocket_client = WebSocketClient(ws_url_or_mode, settings.SERVER_ID, ssl_verify=not settings.NO_SSL_VERIFY)
+    websocket_client = WebSocketClient(ws_url_or_mode, server_id, ssl_verify=not args.no_ssl_verify)
     websocket_client_instance = websocket_client  # 전역 변수에 할당하여 종료 시 접근 가능
     
     # 전송 통계
@@ -632,8 +433,8 @@ async def run_websocket_mode(settings, node_names: List[str]):
     # WebSocket 연결 (재시도 로직 포함)
     connected = False
     retry_count = 0
-    max_retries = settings.MAX_RETRIES
-    retry_interval = settings.RETRY_INTERVAL
+    max_retries = args.max_retries
+    retry_interval = args.retry_interval
     
     # 연결 시도 로직
     while not connected and not shutdown_event.is_set():
@@ -678,11 +479,13 @@ async def run_websocket_mode(settings, node_names: List[str]):
             container_list = []
             
             # Docker 통계 데이터 가져오기 (Stats 클라이언트 사용)
-            if not settings.NO_DOCKER and docker_stats_client:
+            if use_docker:
                 t_start = time.time()
                 try:
-                    # Stats 클라이언트에서 데이터 가져오기 (이미 백그라운드에서 수집됨)
-                    container_data = await docker_stats_client.get_stats_for_nodes(node_names)
+                    if docker_stats_client:
+                        # Stats 클라이언트에서 데이터 가져오기 (이미 백그라운드에서 수집됨)
+                        container_data = await docker_stats_client.get_stats_for_nodes(node_names)
+                    
                     container_list = list(container_data.values())
                 except Exception as e:
                     logger.error(f"Docker 정보 수집 실패: {e}")
@@ -698,7 +501,7 @@ async def run_websocket_mode(settings, node_names: List[str]):
             
             # 서버로 전송할 데이터 구성
             server_data = {
-                "server_id": settings.SERVER_ID,
+                "server_id": server_id,
                 "timestamp": int(time.time() * 1000),
                 "system": sys_metrics,
                 "containers": container_list
@@ -739,9 +542,9 @@ async def run_websocket_mode(settings, node_names: List[str]):
             execution_time = loop_end_time - loop_start_time
             
             # 다음 간격까지 대기 (음수가 되지 않도록)
-            wait_time = max(0.1, settings.MONITOR_INTERVAL - execution_time)
-            if wait_time < settings.MONITOR_INTERVAL * 0.5:  # 대기 시간이 설정 간격의 절반 미만인 경우
-                logger.debug(f"대기 시간 줄어듦: {wait_time:.2f}초 (설정 간격: {settings.MONITOR_INTERVAL}초)")
+            wait_time = max(0.1, interval - execution_time)
+            if wait_time < interval * 0.5:  # 대기 시간이 설정 간격의 절반 미만인 경우
+                logger.debug(f"대기 시간 줄어듦: {wait_time:.2f}초 (설정 간격: {interval}초)")
             
             # 종료 이벤트가 설정될 때까지 또는 대기 시간 동안 대기
             try:
@@ -782,19 +585,40 @@ async def main():
     args = parse_args()
     
     # 설정 로드
-    settings = Settings(args)
+    server_id = args.server_id or settings.SERVER_ID
+    node_names_str = args.nodes or settings.NODE_NAMES
+    node_names = [name.strip() for name in node_names_str.split(',')]
+    interval = args.interval or settings.MONITOR_INTERVAL
     
-    # 노드 이름 파싱
-    node_names = [name.strip() for name in settings.NODE_NAMES.split(',')]
+    # 디버그 모드 설정
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.debug("디버그 모드 활성화됨")
+    
+    # Docker 사용 여부
+    use_docker = not args.no_docker
     
     # 설정 정보 출력
-    settings.print_settings()
+    logger.info(f"=== Creditcoin 파이썬 모니터링 클라이언트 시작 ===")
+    logger.info(f"서버 ID: {server_id}")
+    logger.info(f"모니터링 노드: {node_names}")
+    logger.info(f"모니터링 간격: {interval}초")
+    logger.info(f"WebSocket 모드: {args.ws_mode or settings.WS_MODE}")
+    if args.ws_url:
+        logger.info(f"WebSocket URL: {args.ws_url}")
+    elif settings.WS_SERVER_URL:
+        logger.info(f"WebSocket URL: {settings.WS_SERVER_URL}")
+    logger.info(f"Creditcoin 디렉토리: {settings.CREDITCOIN_DIR}")
+    logger.info(f"Docker 모니터링: {'활성화' if use_docker else '비활성화'}")
+    logger.info(f"모드: {'로컬 모드' if args.local else '서버 연결 모드'}")
+    if args.no_ssl_verify:
+        logger.info("SSL 인증서 검증이 비활성화되었습니다.")
     
     # 실행 모드 선택
-    if settings.LOCAL_MODE:
-        await run_local_mode(settings, node_names)
+    if args.local:
+        await run_local_mode(node_names, interval, use_docker)
     else:
-        await run_websocket_mode(settings, node_names)
+        await run_websocket_mode(args, node_names, interval, use_docker)
 
 # 종료 플래그 (전역 변수)
 shutdown_event = asyncio.Event()  # 여기서 바로 초기화
