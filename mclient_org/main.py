@@ -239,17 +239,31 @@ def configure_connection(settings):
 class SystemInfo:
     def __init__(self):
         self.hostname = ""
-        self.cpu_model = ""
+        self.model = ""
+        self.chip = ""
+        self.cpu_cores_total = 0
+        self.cpu_cores_perf = 0
+        self.cpu_cores_eff = 0
+        self.cpu_user = 0.0
+        self.cpu_system = 0.0
+        self.cpu_idle = 0.0
         self.cpu_usage = 0.0
-        self.cpu_cores = 0
         self.memory_total = 0
         self.memory_used = 0
+        self.memory_wired = 0
+        self.memory_active = 0
+        self.memory_inactive = 0
+        self.memory_free = 0
         self.memory_used_percent = 0.0
+        self.docker_available = False
+        self.docker_memory_total = 0  # Docker에 할당된 메모리
         self.swap_total = 0
         self.swap_used = 0
         self.uptime = 0
         self.disk_total = 0
         self.disk_used = 0
+        self.disk_available = 0
+        self.disk_percent = 0.0
         self._last_collect_time = 0
         self._cache_duration = 0.5  # 초 단위 캐시 지속 시간
 
@@ -261,22 +275,174 @@ class SystemInfo:
         if current_time - self._last_collect_time < self._cache_duration:
             return self.to_dict()
         
+        import platform
+        import psutil
+        import subprocess
+        import re
+        
         # 수집 시간 갱신
         self._last_collect_time = current_time
         
         # 호스트명
         self.hostname = platform.node()
         
-        # CPU 정보
-        self.cpu_cores = os.cpu_count() or 1
-        self.cpu_model = platform.processor() or "Unknown CPU"
+        # 모델 및 칩 정보 (macOS에 최적화)
+        if platform.system() == "Darwin":
+            # 모델 정보
+            try:
+                model_cmd = ["sysctl", "hw.model"]
+                model_result = subprocess.run(model_cmd, capture_output=True, text=True)
+                if model_result.returncode == 0:
+                    self.model = model_result.stdout.split(": ")[1].strip()
+                else:
+                    self.model = "Unknown Mac Model"
+            except:
+                self.model = platform.machine()
+                
+            # 칩 정보 (Apple Silicon vs Intel)
+            if platform.machine() == "arm64":  # Apple Silicon
+                try:
+                    chip_cmd = ["system_profiler", "SPHardwareDataType"]
+                    chip_result = subprocess.run(chip_cmd, capture_output=True, text=True)
+                    if chip_result.returncode == 0:
+                        for line in chip_result.stdout.splitlines():
+                            if "Chip" in line and ":" in line:
+                                self.chip = line.split(":")[1].strip()
+                                break
+                        if not self.chip:
+                            self.chip = "Apple Silicon"
+                    else:
+                        self.chip = "Apple Silicon"
+                except:
+                    self.chip = "Apple Silicon"
+            else:  # Intel Mac
+                try:
+                    chip_cmd = ["sysctl", "-n", "machdep.cpu.brand_string"]
+                    chip_result = subprocess.run(chip_cmd, capture_output=True, text=True)
+                    if chip_result.returncode == 0:
+                        self.chip = chip_result.stdout.strip()
+                    else:
+                        self.chip = "Intel"
+                except:
+                    self.chip = "Intel"
+                    
+            # CPU 코어 정보 (성능/효율 코어 구분)
+            self.cpu_cores_total = os.cpu_count() or 1
+            try:
+                if platform.machine() == "arm64":  # Apple Silicon
+                    # 성능 코어 수
+                    perf_cmd = ["sysctl", "-n", "hw.perflevel0.logicalcpu"]
+                    perf_result = subprocess.run(perf_cmd, capture_output=True, text=True)
+                    if perf_result.returncode == 0:
+                        self.cpu_cores_perf = int(perf_result.stdout.strip())
+                    else:
+                        self.cpu_cores_perf = self.cpu_cores_total
+                        
+                    # 효율 코어 수
+                    eff_cmd = ["sysctl", "-n", "hw.perflevel1.logicalcpu"]
+                    eff_result = subprocess.run(eff_cmd, capture_output=True, text=True)
+                    if eff_result.returncode == 0:
+                        self.cpu_cores_eff = int(eff_result.stdout.strip())
+                    else:
+                        self.cpu_cores_eff = 0
+                else:  # Intel (성능 코어만 있음)
+                    self.cpu_cores_perf = self.cpu_cores_total
+                    self.cpu_cores_eff = 0
+            except:
+                self.cpu_cores_perf = self.cpu_cores_total
+                self.cpu_cores_eff = 0
+                
+            # CPU 사용률 (사용자/시스템/유휴 구분)
+            try:
+                top_cmd = ["top", "-l", "1", "-n", "0"]
+                top_result = subprocess.run(top_cmd, capture_output=True, text=True)
+                if top_result.returncode == 0:
+                    for line in top_result.stdout.splitlines():
+                        if line.startswith("CPU usage:"):
+                            parts = line.split(":")
+                            if len(parts) > 1:
+                                usage_parts = parts[1].split(",")
+                                if len(usage_parts) >= 3:
+                                    self.cpu_user = float(usage_parts[0].strip().rstrip("% user"))
+                                    self.cpu_system = float(usage_parts[1].strip().rstrip("% sys"))
+                                    self.cpu_idle = float(usage_parts[2].strip().rstrip("% idle"))
+                                    break
+            except:
+                pass
+                
+            # 메모리 상세 정보 (wired, active, inactive 등)
+            try:
+                vm_stat_cmd = ["vm_stat"]
+                vm_stat_result = subprocess.run(vm_stat_cmd, capture_output=True, text=True)
+                if vm_stat_result.returncode == 0:
+                    vm_stat_output = vm_stat_result.stdout
+                    
+                    # 페이지 크기 추출
+                    page_size = 4096  # 기본값
+                    page_size_match = re.search(r'page size of (\d+) bytes', vm_stat_output)
+                    if page_size_match:
+                        page_size = int(page_size_match.group(1))
+                        
+                    # 페이지 수 추출
+                    pages_free = 0
+                    pages_active = 0
+                    pages_inactive = 0
+                    pages_wired = 0
+                    
+                    for line in vm_stat_output.splitlines():
+                        if "Pages free:" in line:
+                            pages_free = int(line.split(':')[1].strip().replace('.', ''))
+                        elif "Pages active:" in line:
+                            pages_active = int(line.split(':')[1].strip().replace('.', ''))
+                        elif "Pages inactive:" in line:
+                            pages_inactive = int(line.split(':')[1].strip().replace('.', ''))
+                        elif "Pages wired down:" in line:
+                            pages_wired = int(line.split(':')[1].strip().replace('.', ''))
+                    
+                    # 바이트 단위로 변환
+                    self.memory_wired = pages_wired * page_size
+                    self.memory_active = pages_active * page_size
+                    self.memory_inactive = pages_inactive * page_size
+                    self.memory_free = pages_free * page_size
+            except:
+                pass
+        else:
+            # macOS가 아닌 경우 기본 정보만 수집
+            self.model = platform.machine()
+            self.chip = platform.processor() or "Unknown CPU"
+            self.cpu_cores_total = os.cpu_count() or 1
+            self.cpu_cores_perf = self.cpu_cores_total
+            self.cpu_cores_eff = 0
+        
+        # 총 CPU 사용률 (기본 방식)
         self.cpu_usage = psutil.cpu_percent(interval=0.1)
+        
+        # CPU 사용률이 아직 구분되지 않은 경우, 총 사용률을 기준으로 추정
+        if self.cpu_user == 0 and self.cpu_system == 0 and self.cpu_idle == 0:
+            self.cpu_user = self.cpu_usage * 0.7  # 사용자 비중 추정
+            self.cpu_system = self.cpu_usage * 0.3  # 시스템 비중 추정
+            self.cpu_idle = 100.0 - self.cpu_usage
         
         # 메모리 정보
         memory = psutil.virtual_memory()
         self.memory_total = memory.total
         self.memory_used = memory.used
         self.memory_used_percent = memory.percent
+        
+        # Docker 메모리 정보 수집
+        try:
+            # Docker가 설치되어 있고 실행 중인지 확인
+            docker_cmd = ["docker", "info", "--format", "{{.MemTotal}}"]
+            docker_result = subprocess.run(docker_cmd, capture_output=True, text=True)
+            if docker_result.returncode == 0:
+                docker_mem = docker_result.stdout.strip()
+                if docker_mem and docker_mem.isdigit():
+                    self.docker_available = True
+                    self.docker_memory_total = int(docker_mem)
+            else:
+                self.docker_available = False
+        except:
+            self.docker_available = False
         
         # 스왑 정보
         swap = psutil.swap_memory()
@@ -290,23 +456,39 @@ class SystemInfo:
         disk = psutil.disk_usage('/')
         self.disk_total = disk.total
         self.disk_used = disk.used
+        self.disk_available = disk.free
+        self.disk_percent = disk.percent
         
         return self.to_dict()
     
     def to_dict(self):
+        """시스템 정보를 딕셔너리로 변환 (웹소켓 전송용)"""
         return {
             "host_name": self.hostname,
-            "cpu_model": self.cpu_model,
+            "cpu_model": f"{self.model} ({self.chip})",
             "cpu_usage": self.cpu_usage,
-            "cpu_cores": self.cpu_cores,
+            "cpu_cores": self.cpu_cores_total,
+            "cpu_perf_cores": self.cpu_cores_perf,
+            "cpu_eff_cores": self.cpu_cores_eff,
+            "cpu_user": self.cpu_user,
+            "cpu_system": self.cpu_system,
+            "cpu_idle": self.cpu_idle,
             "memory_total": self.memory_total,
             "memory_used": self.memory_used,
             "memory_used_percent": self.memory_used_percent,
+            "memory_wired": self.memory_wired,
+            "memory_active": self.memory_active,
+            "memory_inactive": self.memory_inactive,
+            "memory_free": self.memory_free,
+            "docker_available": self.docker_available,
+            "docker_memory_total": self.docker_memory_total,
             "swap_total": self.swap_total,
             "swap_used": self.swap_used,
             "uptime": self.uptime,
             "disk_total": self.disk_total,
-            "disk_used": self.disk_used
+            "disk_used": self.disk_used,
+            "disk_available": self.disk_available,
+            "disk_percent": self.disk_percent
         }
 
 #################################################
@@ -387,6 +569,11 @@ def format_memory(usage: int, limit: int) -> str:
     else:
         return f"{usage_mb:.0f}MB / {limit_mb:.0f}MB"
 
+# 소수점 형식화 함수
+def format_decimal(value: float, places: int = 2) -> str:
+    format_str = f"{{:.{places}f}}"
+    return format_str.format(value)
+
 # 전송 상태 출력 함수
 def print_transmission_status(stats: TransmissionStats):
     status_color = COLOR_GREEN if stats.success_rate() > 95.0 else (
@@ -416,52 +603,26 @@ def print_transmission_status(stats: TransmissionStats):
 
 # 메트릭 출력 함수 (로컬 모드용)
 def print_metrics(sys_info: Dict[str, Any], containers: List[Dict[str, Any]], interval: int):
-    print(f"{STYLE_BOLD}{COLOR_WHITE}CREDITCOIN NODE RESOURCE MONITOR{COLOR_RESET}                     "
+    print(f"{STYLE_BOLD}{COLOR_BLUE}CREDITCOIN NODE RESOURCE MONITOR{COLOR_RESET}                     "
           f"{time.strftime('%Y-%m-%d %H:%M:%S')}")
     print()
     
-    # 시스템 정보 섹션
-    print(f"{COLOR_YELLOW}=== 시스템 정보 ==={COLOR_RESET}")
-    print(f"호스트명: {sys_info['host_name']}")
-    print(f"CPU 모델: {sys_info['cpu_model']}")
-    
-    # CPU 사용률 (색상으로 강조)
-    cpu_color = get_color_for_value(sys_info['cpu_usage'])
-    print(f"CPU 사용률: {cpu_color}{sys_info['cpu_usage']:.2f}%{COLOR_RESET} (코어: {sys_info['cpu_cores']}개)")
-    
-    # 메모리 사용률 (색상으로 강조)
-    mem_color = get_color_for_value(sys_info['memory_used_percent'])
-    print(f"메모리: {mem_color}{sys_info['memory_used'] / 1024.0 / 1024.0 / 1024.0:.2f}GB / "
-          f"{sys_info['memory_total'] / 1024.0 / 1024.0 / 1024.0:.2f}GB ({sys_info['memory_used_percent']:.2f}%){COLOR_RESET}")
-    
-    print(f"스왑: {sys_info['swap_used'] / 1024.0 / 1024.0 / 1024.0:.2f}GB / "
-          f"{sys_info['swap_total'] / 1024.0 / 1024.0 / 1024.0:.2f}GB")
-    
-    # 디스크 정보 출력
-    disk_percent = (sys_info['disk_used'] / sys_info['disk_total'] * 100.0) if sys_info['disk_total'] > 0 else 0.0
-    disk_color = get_color_for_value(disk_percent)
-    print(f"디스크: {disk_color}{sys_info['disk_used'] / 1024.0 / 1024.0 / 1024.0:.2f}GB / "
-          f"{sys_info['disk_total'] / 1024.0 / 1024.0 / 1024.0:.2f}GB ({disk_percent:.2f}%){COLOR_RESET}")
-    
-    # 업타임
-    days = sys_info['uptime'] // 86400
-    hours = (sys_info['uptime'] % 86400) // 3600
-    minutes = (sys_info['uptime'] % 3600) // 60
-    print(f"업타임: {days}일 {hours}시간 {minutes}분")
-    print()
-    
     # 컨테이너 정보 섹션
-    print(f"{COLOR_YELLOW}=== 컨테이너 정보 ==={COLOR_RESET}")
-    
-    if not containers:
-        print("모니터링 중인 컨테이너가 없습니다.")
-    else:
+    if containers:
         # 헤더 출력
-        print(f"{STYLE_BOLD}노드{COLOR_RESET}            {STYLE_BOLD}CPU%{COLOR_RESET}    "
-              f"{STYLE_BOLD}메모리 사용량{COLOR_RESET}          {STYLE_BOLD}메모리%{COLOR_RESET}   "
-              f"{STYLE_BOLD}네트워크 RX/TX{COLOR_RESET}")
+        print(f"{STYLE_BOLD}NODE{COLOR_RESET}            {STYLE_BOLD}CPU%{COLOR_RESET}    "
+              f"{STYLE_BOLD}OF TOTAL%{COLOR_RESET}   {STYLE_BOLD}MEM USAGE{COLOR_RESET}          "
+              f"{STYLE_BOLD}MEM%{COLOR_RESET}   {STYLE_BOLD}NET RX/TX{COLOR_RESET}")
         
         # 각 컨테이너 정보 출력
+        total_cpu = 0.0
+        total_cpu_of_total = 0.0
+        total_mem_used = 0
+        total_mem_limit = 0
+        total_mem_percent = 0.0
+        total_net_rx = 0
+        total_net_tx = 0
+        
         for container in containers:
             # CPU와 메모리 색상 가져오기
             cpu_color = get_color_for_value(container['cpu']['percent'])
@@ -473,9 +634,94 @@ def print_metrics(sys_info: Dict[str, Any], containers: List[Dict[str, Any]], in
             # 네트워크 단위 변환
             network_str = f"{format_bytes(container['network']['rx'])}/{format_bytes(container['network']['tx'])}"
             
-            print(f"{container['name']:<15} {cpu_color}{container['cpu']['percent']:<8.2f}{COLOR_RESET} "
-                  f"{memory_str:<20} {mem_color}{container['memory']['percent']:<8.2f}{COLOR_RESET} "
+            # CPU 총량 대비 비율 계산
+            cpu_of_total = (container['cpu']['percent'] / sys_info['cpu_cores']) if sys_info['cpu_cores'] > 0 else 0
+            
+            print(f"{container['name']:<14} {cpu_color}{container['cpu']['percent']:<7.2f}%{COLOR_RESET} "
+                  f"{cpu_of_total:<10.2f}% {memory_str:<20} "
+                  f"{mem_color}{container['memory']['percent']:<7.2f}%{COLOR_RESET} "
                   f"{network_str:<15}")
+                  
+            # 총계 누적
+            total_cpu += container['cpu']['percent']
+            total_cpu_of_total += cpu_of_total
+            total_mem_used += container['memory']['usage']
+            if container['memory']['limit'] > 0:
+                if total_mem_limit == 0:
+                    total_mem_limit = container['memory']['limit']
+                else:
+                    # 컨테이너별 메모리 한계는 모두 동일한 값으로 가정
+                    pass
+            total_net_rx += container['network']['rx']
+            total_net_tx += container['network']['tx']
+        
+        # 총 메모리 사용률 계산
+        if total_mem_limit > 0:
+            total_mem_percent = (total_mem_used / total_mem_limit) * 100.0
+        
+        # 구분선
+        print("-" * 80)
+        
+        # 합계 행 출력
+        total_memory_str = format_memory(total_mem_used, total_mem_limit)
+        total_network_str = f"{format_bytes(total_net_rx)}/{format_bytes(total_net_tx)}"
+        
+        total_mem_color = get_color_for_value(total_mem_percent)
+        total_cpu_color = get_color_for_value(total_cpu)
+        
+        print(f"{STYLE_BOLD}TOTAL{COLOR_RESET}          {total_cpu_color}{total_cpu:<7.2f}%{COLOR_RESET} "
+              f"{total_cpu_of_total:<10.2f}% {total_memory_str:<20} "
+              f"{total_mem_color}{total_mem_percent:<7.2f}%{COLOR_RESET} "
+              f"{total_network_str:<15}")
+        
+        print()
+    else:
+        print("모니터링 중인 컨테이너가 없습니다.")
+        print()
+    
+    # 시스템 정보 섹션
+    print(f"{COLOR_BLUE}SYSTEM INFORMATION:{COLOR_RESET}")
+    
+    # 모델 정보
+    model_display = f"{sys_info.get('host_name')} - {sys_info.get('cpu_model')}"
+    print(f"{COLOR_YELLOW}MODEL:{COLOR_RESET} {model_display}")
+    
+    # CPU 코어 정보
+    cpu_cores_info = f"{sys_info.get('cpu_cores')} ({sys_info.get('cpu_perf_cores')} Performance, {sys_info.get('cpu_eff_cores')} Efficiency)"
+    print(f"{COLOR_YELLOW}CPU CORES:{COLOR_RESET} {cpu_cores_info}")
+    
+    # CPU 사용률 정보
+    cpu_usage_info = f"사용자 {sys_info.get('cpu_user', 0):.2f}%, 시스템 {sys_info.get('cpu_system', 0):.2f}%, 유휴 {sys_info.get('cpu_idle', 0):.2f}%"
+    print(f"{COLOR_YELLOW}CPU USAGE:{COLOR_RESET} {cpu_usage_info}")
+    
+    # 메모리 정보
+    memory_gb = sys_info.get('memory_total', 0) / 1024.0 / 1024.0 / 1024.0
+    used_gb = sys_info.get('memory_used', 0) / 1024.0 / 1024.0 / 1024.0
+    memory_info = f"{memory_gb:.2f} GB 총량 (시스템 사용: {used_gb:.2f} GB, {sys_info.get('memory_used_percent', 0):.2f}%)"
+    print(f"{COLOR_YELLOW}MEMORY:{COLOR_RESET} {memory_info}")
+    
+    # Docker 메모리 정보 (가용한 경우)
+    if sys_info.get('docker_available', False):
+        docker_mem_gb = sys_info.get('docker_memory_total', 0) / 1024.0 / 1024.0 / 1024.0
+        
+        # 총 컨테이너 메모리 사용량 계산
+        container_mem_total = sum(container['memory']['usage'] for container in containers)
+        container_mem_gb = container_mem_total / 1024.0 / 1024.0 / 1024.0
+        
+        # 사용률 계산
+        docker_mem_percent = 0
+        if sys_info.get('docker_memory_total', 0) > 0:
+            docker_mem_percent = (container_mem_total / sys_info.get('docker_memory_total', 1)) * 100.0
+            
+        docker_info = f"{docker_mem_gb:.2f} GB 할당됨 (노드 사용: {container_mem_gb:.2f} GB, {docker_mem_percent:.2f}%)"
+        print(f"{COLOR_YELLOW}DOCKER:{COLOR_RESET} {docker_info}")
+    
+    # 디스크 정보
+    disk_gb = sys_info.get('disk_total', 0) / 1024.0 / 1024.0 / 1024.0
+    used_disk_gb = sys_info.get('disk_used', 0) / 1024.0 / 1024.0 / 1024.0
+    avail_disk_gb = sys_info.get('disk_available', 0) / 1024.0 / 1024.0 / 1024.0
+    disk_info = f"{used_disk_gb:.2f}GB/{disk_gb:.2f}GB (사용: {sys_info.get('disk_percent', 0):.2f}%, 남음: {avail_disk_gb:.2f}GB)"
+    print(f"{COLOR_YELLOW}DISK:{COLOR_RESET} {disk_info}")
     
     # 아래에 상태 라인 추가
     print()
@@ -513,10 +759,11 @@ async def run_local_mode(settings, node_names: List[str]):
     system_info = SystemInfo()
     
     # Docker 클라이언트 설정
+    docker_client = None
     docker_stats_client = None
     if not settings.NO_DOCKER:
         try:
-            # Docker Stats 클라이언트 사용
+            # 먼저 Docker Stats 클라이언트 사용 시도
             from docker_stats_client import DockerStatsClient
             docker_stats_client = DockerStatsClient()
             
@@ -539,11 +786,12 @@ async def run_local_mode(settings, node_names: List[str]):
             sys_metrics = system_info.collect()
             
             container_list = []
-            if not settings.NO_DOCKER and docker_stats_client:
+            if not settings.NO_DOCKER:
                 try:
-                    # Stats 클라이언트에서 데이터 가져오기 (이미 백그라운드에서 수집됨)
-                    container_data = await docker_stats_client.get_stats_for_nodes(node_names)
-                    container_list = list(container_data.values())
+                    if docker_stats_client:
+                        # Stats 클라이언트에서 데이터 가져오기 (이미 백그라운드에서 수집됨)
+                        container_data = await docker_stats_client.get_stats_for_nodes(node_names)
+                        container_list = list(container_data.values())
                 except Exception as e:
                     logger.error(f"Docker 정보 수집 실패: {e}")
             
@@ -582,20 +830,19 @@ async def run_websocket_mode(settings, node_names: List[str]):
     """웹소켓 모드로 모니터링 (서버에 전송)"""
     global websocket_client_instance, shutdown_event
     
-    # WebSocket URL 결정
+    # 웹소켓 라이브러리 관련 import - 필요 시에만 임포트
+    from websocket_client import WebSocketClient
+    
+    # 설정값 적용
+    server_id = settings.SERVER_ID
+    
+    # WebSocket URL 결정 - settings 변수를 명시적으로 전달
     ws_url_or_mode = get_websocket_url(settings)
     
-    logger.info(f"모니터링 시작: 서버 ID={settings.SERVER_ID}, 노드={node_names}, 간격={settings.MONITOR_INTERVAL}초")
+    logger.info(f"모니터링 시작: 서버 ID={server_id}, 노드={node_names}, 간격={settings.MONITOR_INTERVAL}초")
     
     if settings.SERVER_URL:
         logger.info(f"WebSocket URL: {settings.SERVER_URL}")
-    else:
-        logger.info(f"WebSocket 모드: {settings.WS_MODE}")
-        logger.info(f"WebSocket 호스트: {settings.WS_SERVER_HOST}")
-        if settings.WS_MODE in ['ws', 'auto']:
-            logger.info(f"WebSocket 포트(WS): {settings.WS_PORT_WS}")
-        if settings.WS_MODE in ['wss', 'wss_internal', 'auto']:
-            logger.info(f"WebSocket 포트(WSS): {settings.WS_PORT_WSS}")
     
     if settings.NO_SSL_VERIFY:
         logger.info("SSL 인증서 검증이 비활성화되었습니다.")
@@ -604,6 +851,7 @@ async def run_websocket_mode(settings, node_names: List[str]):
     system_info = SystemInfo()
     
     # Docker 클라이언트 설정
+    docker_client = None
     docker_stats_client = None
     if not settings.NO_DOCKER:
         try:
@@ -622,8 +870,7 @@ async def run_websocket_mode(settings, node_names: List[str]):
             logger.error(f"Docker 클라이언트 초기화 중 오류: {e}")
     
     # WebSocket 클라이언트 초기화 (SSL 검증 옵션 적용)
-    from websocket_client import WebSocketClient
-    websocket_client = WebSocketClient(ws_url_or_mode, settings.SERVER_ID, ssl_verify=not settings.NO_SSL_VERIFY)
+    websocket_client = WebSocketClient(ws_url_or_mode, server_id, ssl_verify=not settings.NO_SSL_VERIFY)
     websocket_client_instance = websocket_client  # 전역 변수에 할당하여 종료 시 접근 가능
     
     # 전송 통계
@@ -678,11 +925,13 @@ async def run_websocket_mode(settings, node_names: List[str]):
             container_list = []
             
             # Docker 통계 데이터 가져오기 (Stats 클라이언트 사용)
-            if not settings.NO_DOCKER and docker_stats_client:
+            if not settings.NO_DOCKER:
                 t_start = time.time()
                 try:
-                    # Stats 클라이언트에서 데이터 가져오기 (이미 백그라운드에서 수집됨)
-                    container_data = await docker_stats_client.get_stats_for_nodes(node_names)
+                    if docker_stats_client:
+                        # Stats 클라이언트에서 데이터 가져오기 (이미 백그라운드에서 수집됨)
+                        container_data = await docker_stats_client.get_stats_for_nodes(node_names)
+                    
                     container_list = list(container_data.values())
                 except Exception as e:
                     logger.error(f"Docker 정보 수집 실패: {e}")
@@ -698,7 +947,7 @@ async def run_websocket_mode(settings, node_names: List[str]):
             
             # 서버로 전송할 데이터 구성
             server_data = {
-                "server_id": settings.SERVER_ID,
+                "server_id": server_id,
                 "timestamp": int(time.time() * 1000),
                 "system": sys_metrics,
                 "containers": container_list
@@ -797,7 +1046,7 @@ async def main():
         await run_websocket_mode(settings, node_names)
 
 # 종료 플래그 (전역 변수)
-shutdown_event = asyncio.Event()  # 여기서 바로 초기화
+shutdown_event = asyncio.Event()  # 종료 이벤트 초기화
 websocket_client_instance = None
 
 # 신호 핸들러 설정
