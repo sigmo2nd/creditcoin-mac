@@ -8,6 +8,12 @@ BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# GitHub 저장소 정보
+GITHUB_REPO="sigmo2nd/creditcoin-mac"
+GITHUB_BRANCH="monitoring"  # 모니터링 클라이언트 파일이 있는 별도 브랜치
+MCLIENT_ORG_DIR="mclient_org"
+GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${MCLIENT_ORG_DIR}"
+
 # Docker 명령어 및 환경 확인
 check_docker_env() {
   # Docker 명령어 경로 확인 및 추가
@@ -149,12 +155,98 @@ echo -e "${GREEN}- Creditcoin 디렉토리: $CREDITCOIN_DIR${NC}"
 # 현재 디렉토리
 CURRENT_DIR=$(pwd)
 
-# mclient 디렉토리 확인
+# mclient 디렉토리 확인 및 생성
 if [ ! -d "./mclient" ]; then
-  echo -e "${RED}오류: mclient 디렉토리가 없습니다.${NC}"
-  echo -e "${YELLOW}먼저 setupmclient.sh를 실행하여 기본 환경을 구성한 후 다시 시도하세요.${NC}"
-  exit 1
+  mkdir -p ./mclient
+  echo -e "${BLUE}mclient 디렉토리를 생성했습니다.${NC}"
+else
+  echo -e "${BLUE}기존 mclient 디렉토리를 사용합니다.${NC}"
 fi
+
+# 필요한 파일 다운로드
+download_mclient_files() {
+  echo -e "${BLUE}모니터링 클라이언트 필수 파일 다운로드 중...${NC}"
+  
+  # 다운로드할 파일 목록
+  local files=("config.py" "docker_stats_client.py" "websocket_client.py" "main.py" "requirements.txt" "start.sh")
+  
+  # 각 파일 다운로드
+  for file in "${files[@]}"; do
+    echo -e "${YELLOW}다운로드 중: ${file}${NC}"
+    
+    # curl로 파일 다운로드
+    if curl -s -o "./mclient/${file}" "${GITHUB_RAW_URL}/${file}"; then
+      echo -e "${GREEN}${file} 다운로드 완료${NC}"
+      
+      # 실행 파일 권한 부여
+      if [[ "${file}" == *.sh ]]; then
+        chmod +x "./mclient/${file}"
+        echo -e "${GREEN}${file}에 실행 권한 부여${NC}"
+      fi
+    else
+      echo -e "${RED}${file} 다운로드 실패${NC}"
+      echo -e "${YELLOW}GitHub 저장소 접근 권한을 확인하세요: ${GITHUB_RAW_URL}/${NC}"
+      exit 1
+    fi
+  done
+  
+  echo -e "${GREEN}모든 필수 파일 다운로드 완료${NC}"
+}
+
+# Dockerfile 생성
+create_dockerfile() {
+  echo -e "${BLUE}Dockerfile 생성 중...${NC}"
+  
+  cat > ./mclient/Dockerfile << 'EOF'
+FROM python:3.11-slim
+WORKDIR /app
+# 시스템 패키지 설치 (빌드 도구 포함)
+RUN apt-get update && apt-get install -y \
+    curl \
+    procps \
+    iproute2 \
+    iputils-ping \
+    net-tools \
+    gcc \
+    g++ \
+    python3-dev \
+    build-essential \
+    tzdata \
+    docker.io \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+# 타임존은 /etc/localtime 볼륨 마운트를 통해 호스트 시스템의 타임존을 사용합니다
+# pip 업그레이드 및 wheel 패키지 설치
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+# 파이썬 패키지 설치 - 기본 패키지 먼저 설치
+RUN pip install --no-cache-dir psutil==5.9.6 docker==6.1.3
+# 소스 코드 복사
+COPY . /app/
+# 나머지 요구사항 파일 복사 및 설치
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r requirements.txt
+# 권한 설정
+RUN chmod +x /app/main.py
+# 스타트업 스크립트 생성
+RUN echo '#!/bin/bash' > /app/start.sh && \
+    echo 'echo "== Creditcoin Python 모니터링 클라이언트 ==" ' >> /app/start.sh && \
+    echo 'echo "서버 ID: ${SERVER_ID}"' >> /app/start.sh && \
+    echo 'echo "모니터링 노드: ${NODE_NAMES}"' >> /app/start.sh && \
+    echo 'echo "모니터링 간격: ${MONITOR_INTERVAL}초"' >> /app/start.sh && \
+    echo 'echo "WebSocket 모드: ${WS_MODE}"' >> /app/start.sh && \
+    echo 'echo "시작 중..."' >> /app/start.sh && \
+    echo 'export PROCFS_PATH=/host/proc' >> /app/start.sh && \
+    echo 'python /app/main.py' >> /app/start.sh && \
+    chmod +x /app/start.sh
+# 시작 명령어
+ENTRYPOINT ["/app/start.sh"]
+# 헬스체크
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD ps aux | grep python | grep main.py || exit 1
+EOF
+
+  echo -e "${GREEN}Dockerfile이 생성되었습니다.${NC}"
+}
 
 # 환경 변수 안전하게 업데이트 함수
 update_env_file() {
@@ -292,29 +384,64 @@ update_docker_compose() {
     mclient_service=$(cat << EOF
 
   mclient:
+    <<: *node-defaults
     build:
       context: ./mclient
       dockerfile: Dockerfile
     container_name: mclient
-    restart: unless-stopped
+    # 호스트 프로세스 네임스페이스 공유
+    pid: "host"
+    # 호스트 네트워크 모드 사용
+    network_mode: "host"
     volumes:
+      # Docker 소켓 마운트
       - ${DOCKER_SOCK_PATH}:/var/run/docker.sock:ro
+      # 호스트 시간대 정보
       - /etc/localtime:/etc/localtime:ro
+      # 호스트 시스템 정보 접근
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      # mclient 디렉토리 마운트
       - ./mclient:/app
     environment:
       - SERVER_ID=${SERVER_ID}
       - NODE_NAMES=${NODE_NAMES}
       - MONITOR_INTERVAL=${MONITOR_INTERVAL}
       - WS_MODE=${WS_MODE}
+EOF
+)
+
+    # WS_SERVER_URL이 있는 경우에만 추가
+    if [ -n "$WS_SERVER_URL" ]; then
+      mclient_service+=$(cat << EOF
+
+      # 사용자 지정 WebSocket URL
       - WS_SERVER_URL=${WS_SERVER_URL}
+EOF
+)
+    else
+      # 기본 서버 URL 예시 (주석 처리)
+      mclient_service+=$(cat << EOF
+
+      # 내부 네트워크의 다른 머신 (실제 IP와 포트 확인 필요)
+      # - WS_SERVER_URL=ws://58.228.166.201:8080/ws
+      # WSS 프로토콜 필요시
+      # - NO_SSL_VERIFY=true
+      # - WS_SERVER_URL=wss://58.228.166.201:8443/ws
+EOF
+)
+    fi
+
+    # 나머지 환경 변수 추가
+    mclient_service+=$(cat << EOF
+
       - CREDITCOIN_DIR=/creditcoin-mac
+      # Docker 접근을 위한 환경 변수
       - DOCKER_HOST=unix:///var/run/docker.sock
       - DOCKER_API_VERSION=1.41
-    ports:
-      - "8080:8080"
-      - "8443:8443"
-    networks:
-      creditnet:
+      # 호스트 시스템 정보 접근을 위한 환경 변수
+      - HOST_PROC=/host/proc
+      - HOST_SYS=/host/sys
 EOF
 )
     
@@ -330,6 +457,12 @@ EOF
     exit 1
   fi
 }
+
+# 필요한 파일 다운로드
+download_mclient_files
+
+# Dockerfile 생성
+create_dockerfile
 
 # .env 파일 업데이트
 update_env_file
