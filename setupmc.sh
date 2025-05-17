@@ -83,15 +83,82 @@ check_docker_env() {
   fi
 }
 
+# Docker Compose 확인
+check_docker_compose() {
+  show_step "Docker Compose 확인"
+  
+  # docker-compose.yml 파일 존재 확인
+  if [ ! -f "${SCRIPT_DIR}/docker-compose.yml" ]; then
+    show_error "docker-compose.yml 파일이 현재 디렉토리에 없습니다"
+    show_warning "이 스크립트는 Creditcoin 노드가 설치된 디렉토리에서 실행되어야 합니다"
+    exit 1
+  fi
+  
+  # Docker Compose 명령어 사용 가능 여부 확인
+  if docker compose version &>/dev/null; then
+    show_success "Docker Compose 플러그인이 사용 가능합니다."
+  elif command -v docker-compose &>/dev/null; then
+    show_warning "Docker Compose 플러그인이 아닌 독립 실행형 docker-compose를 사용합니다."
+    show_warning "가능하면 Docker Compose 플러그인으로 업그레이드하는 것이 좋습니다."
+  else
+    show_error "Docker Compose가 설치되어 있지 않습니다."
+    show_warning "Docker와 Docker Compose를 설치한 후 다시 시도하세요."
+    exit 1
+  fi
+}
+
 # 기본 디렉토리 구조 생성
 create_directory_structure() {
   show_step "기본 디렉토리 구조 생성"
   
   # mclient 디렉토리 생성
-  mkdir -p ./mclient
-  mkdir -p ./mclient/certs
+  mkdir -p "${SCRIPT_DIR}/mclient"
+  mkdir -p "${SCRIPT_DIR}/mclient/certs"
+  
+  # mclient_org 디렉토리 생성 (소스 코드 저장용)
+  mkdir -p "${SCRIPT_DIR}/mclient_org"
   
   show_success "기본 디렉토리 구조가 생성되었습니다."
+}
+
+# 기본 소스 파일 복사 또는 생성
+create_source_files() {
+  show_step "기본 소스 파일 준비"
+  
+  # 필요한 파일 목록
+  local files=(
+    "main.py" 
+    "docker_stats_client.py" 
+    "websocket_client.py" 
+    "requirements.txt"
+  )
+  
+  # 파일이 현재 디렉토리에 있는지 확인하고 복사
+  local source_found=false
+  for file in "${files[@]}"; do
+    if [ -f "${SCRIPT_DIR}/$file" ]; then
+      show_success "$file 파일을 찾았습니다. mclient_org 디렉토리로 복사합니다."
+      cp "${SCRIPT_DIR}/$file" "${SCRIPT_DIR}/mclient_org/"
+      source_found=true
+    fi
+  done
+  
+  # 소스 파일이 없으면 샘플 requirements.txt 생성
+  if [ "$source_found" = false ]; then
+    show_warning "소스 파일을 찾을 수 없습니다. 기본 requirements.txt 파일을 생성합니다."
+    
+    cat > "${SCRIPT_DIR}/mclient_org/requirements.txt" << EOF
+docker==6.1.2
+websockets==11.0.3
+pydantic==2.1.1
+pydantic-settings==2.0.3
+python-dotenv==1.0.0
+psutil==5.9.5
+EOF
+    
+    show_success "기본 requirements.txt 파일이 생성되었습니다."
+    show_warning "모니터링 클라이언트 소스 파일(main.py, docker_stats_client.py 등)이 필요합니다."
+  fi
 }
 
 # 클라이언트 유틸리티 함수 생성
@@ -187,8 +254,14 @@ main() {
   # Docker 환경 확인
   check_docker_env
   
+  # Docker Compose 확인
+  check_docker_compose
+  
   # 기본 디렉토리 구조 생성
   create_directory_structure
+  
+  # 기본 소스 파일 생성
+  create_source_files
   
   # 클라이언트 유틸리티 함수 생성
   create_client_utils

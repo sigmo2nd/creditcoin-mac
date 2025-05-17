@@ -269,6 +269,28 @@ EOF
   # 실행 권한 부여
   chmod +x "${MCLIENT_DIR}/start.sh"
   
+  # Docker 엔트리포인트 스크립트 직접 추가
+  cat > "${MCLIENT_DIR}/docker-entrypoint.sh" << 'EOF'
+#!/bin/bash
+echo "== Creditcoin 모니터링 클라이언트 =="
+echo "서버 ID: ${SERVER_ID}"
+echo "모니터링 노드: ${NODE_NAMES}"
+echo "모니터링 간격: ${MONITOR_INTERVAL}초"
+if [ "${LOCAL_MODE}" = "true" ]; then
+  echo "모드: 로컬 (데이터 전송 없음)"
+else
+  echo "모드: 서버 연결"
+  if [ ! -z "${SERVER_URL}" ]; then echo "서버 URL: ${SERVER_URL}"; fi
+  if [ ! -z "${SERVER_HOST}" ]; then echo "서버 호스트: ${SERVER_HOST}"; fi
+fi
+echo "시작 중..."
+export PROCFS_PATH=/host/proc
+python /app/main.py "$@"
+EOF
+
+  # 실행 권한 부여
+  chmod +x "${MCLIENT_DIR}/docker-entrypoint.sh"
+  
   echo -e "${GREEN}모니터링 클라이언트 파일 준비 완료${NC}"
 }
 
@@ -311,25 +333,7 @@ COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 권한 설정
-RUN chmod +x /app/main.py /app/start.sh
-
-# 스타트업 스크립트 생성
-RUN echo '#!/bin/bash' > /app/docker-entrypoint.sh && \
-    echo 'echo "== Creditcoin 모니터링 클라이언트 ==" ' >> /app/docker-entrypoint.sh && \
-    echo 'echo "서버 ID: ${SERVER_ID}"' >> /app/docker-entrypoint.sh && \
-    echo 'echo "모니터링 노드: ${NODE_NAMES}"' >> /app/docker-entrypoint.sh && \
-    echo 'echo "모니터링 간격: ${MONITOR_INTERVAL}초"' >> /app/docker-entrypoint.sh && \
-    echo 'if [ "${LOCAL_MODE}" = "true" ]; then' >> /app/docker-entrypoint.sh && \
-    echo '  echo "모드: 로컬 (데이터 전송 없음)"' >> /app/docker-entrypoint.sh && \
-    echo 'else' >> /app/docker-entrypoint.sh && \
-    echo '  echo "모드: 서버 연결"' >> /app/docker-entrypoint.sh && \
-    echo '  if [ ! -z "${SERVER_URL}" ]; then echo "서버 URL: ${SERVER_URL}"; fi' >> /app/docker-entrypoint.sh && \
-    echo '  if [ ! -z "${SERVER_HOST}" ]; then echo "서버 호스트: ${SERVER_HOST}"; fi' >> /app/docker-entrypoint.sh && \
-    echo 'fi' >> /app/docker-entrypoint.sh && \
-    echo 'echo "시작 중..."' >> /app/docker-entrypoint.sh && \
-    echo 'export PROCFS_PATH=/host/proc' >> /app/docker-entrypoint.sh && \
-    echo 'python /app/main.py "$@"' >> /app/docker-entrypoint.sh && \
-    chmod +x /app/docker-entrypoint.sh
+RUN chmod +x /app/*.py /app/start.sh /app/docker-entrypoint.sh
 
 # 시작 명령어
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
@@ -408,12 +412,14 @@ update_docker_compose() {
   if grep -q "  mclient:" docker-compose.yml; then
     if [ "$FORCE" = "true" ]; then
       echo -e "${YELLOW}mclient 서비스가 이미 존재합니다. 업데이트합니다...${NC}"
+      
       # mclient 서비스 라인 찾기
       mclient_line=$(grep -n "  mclient:" docker-compose.yml | cut -d: -f1)
       
       # mclient 서비스 블록 제거
       # 다음 서비스나 networks 섹션 시작 위치 찾기
-      next_service_line=$(awk "/^  [a-zA-Z0-9_-]+:/ && NR > $mclient_line && !/^  mclient:/" {print NR; exit} docker-compose.yml)
+      next_service_line=$(awk "/^  [a-zA-Z0-9_-]+:/ && NR > $mclient_line && !/^  mclient:/" docker-compose.yml | head -1 | grep -n . | cut -d: -f1)
+      
       if [ -z "$next_service_line" ]; then
         next_service_line=$(grep -n "^networks:" docker-compose.yml | cut -d: -f1)
       fi
@@ -475,7 +481,6 @@ update_docker_compose() {
     mclient_service=$(cat << EOF
 
   mclient:
-    <<: *node-defaults
     build:
       context: ./mclient
       dockerfile: Dockerfile
@@ -639,6 +644,13 @@ run_interactive_mode() {
 
 # 메인 실행 함수
 main() {
+  # setupmc.sh가 먼저 실행되었는지 확인
+  if [ ! -d "$MCLIENT_DIR" ]; then
+    echo -e "${RED}오류: mclient 디렉토리가 없습니다.${NC}"
+    echo -e "${YELLOW}먼저 setupmc.sh를 실행하여 기본 환경을 설정하세요.${NC}"
+    exit 1
+  fi
+  
   # Docker 환경 확인
   check_docker_env
   
