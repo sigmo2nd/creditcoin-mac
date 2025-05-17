@@ -36,6 +36,10 @@ class DockerStatsClient:
         
         # Docker 명령어 사용 가능 여부 확인
         try:
+            # Docker 환경 변수 설정
+            if os.environ.get('DOCKER_HOST') is None and os.path.exists('/var/run/docker.sock'):
+                os.environ['DOCKER_HOST'] = 'unix:///var/run/docker.sock'
+            
             result = subprocess.run(["docker", "version"], capture_output=True, text=True)
             if result.returncode == 0:
                 self.docker_available = True
@@ -503,6 +507,7 @@ class DockerStatsClient:
             units = {
                 'B': 1,
                 'KB': 1024,
+                'kB': 1024,  # 추가된 단위: kB
                 'MB': 1024 ** 2,
                 'GB': 1024 ** 3,
                 'TB': 1024 ** 4,
@@ -512,6 +517,7 @@ class DockerStatsClient:
                 'TiB': 1024 ** 4,
                 # 단축 형태 추가
                 'K': 1024,
+                'k': 1024,  # 추가된 단위: k (소문자)
                 'M': 1024 ** 2,
                 'G': 1024 ** 3,
                 'T': 1024 ** 4,
