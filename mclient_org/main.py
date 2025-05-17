@@ -821,6 +821,7 @@ def parse_args():
     return parser.parse_args()
 
 # 로컬 모드 실행 함수
+# 로컬 모드 실행 함수
 async def run_local_mode(settings, node_names: List[str]):
     """로컬 모드로 모니터링 (터미널에 출력)"""
     print(CLEAR_SCREEN)
@@ -890,7 +891,7 @@ async def run_local_mode(settings, node_names: List[str]):
                 pass
     except Exception as e:
         logger.error(f"로컬 모니터링 중 오류 발생: {e}")
-finally:
+    finally:
         # 정리 작업
         logger.info("리소스 정리 중...")
         if docker_stats_client:
