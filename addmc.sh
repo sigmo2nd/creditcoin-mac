@@ -408,42 +408,6 @@ update_docker_compose() {
   # Docker 소켓 경로 찾기 (메시지 출력 없음)
   DOCKER_SOCK_PATH=$(find_docker_sock_path)
   
-  # 임시 작업 파일 생성
-  TEMP_FILE=$(mktemp)
-  
-  # 기존 파일에서 mclient 서비스 제거
-  if grep -q "  mclient:" docker-compose.yml; then
-    echo -e "${YELLOW}mclient 서비스가 이미 존재합니다. 삭제 후 재생성합니다...${NC}"
-    
-    # mclient 서비스를 제외한 모든 내용 임시 파일에 복사
-    awk '
-    BEGIN { print_line = 1; in_mclient = 0; }
-    /^  mclient:/ { in_mclient = 1; print_line = 0; next; }
-    /^  [a-zA-Z0-9_-]+:/ && in_mclient { in_mclient = 0; print_line = 1; }
-    { if (print_line) print $0; }
-    ' docker-compose.yml > "$TEMP_FILE"
-    
-    # 결과 확인
-    if [ ! -s "$TEMP_FILE" ]; then
-      echo -e "${RED}오류: docker-compose.yml 파일 처리 중 문제가 발생했습니다.${NC}"
-      rm -f "$TEMP_FILE"
-      exit 1
-    fi
-    
-    # 원본 파일 대체
-    mv "$TEMP_FILE" docker-compose.yml
-  else
-    rm -f "$TEMP_FILE"
-  fi
-  
-  # networks 섹션 위치 찾기
-  networks_line=$(grep -n "^networks:" docker-compose.yml | cut -d: -f1)
-  
-  if [ -z "$networks_line" ]; then
-    echo -e "${RED}오류: docker-compose.yml 파일에서 networks 섹션을 찾을 수 없습니다.${NC}"
-    exit 1
-  fi
-  
   # 환경 변수 설정
   mclient_environment="      - SERVER_ID=${SERVER_ID}\n"
   mclient_environment+="      - NODE_NAMES=${NODE_NAMES}\n"
@@ -506,21 +470,58 @@ ${mclient_environment}
 EOF
 )
   
-  # networks 섹션 앞에 mclient 서비스 삽입
+  # 임시 파일 생성
   TEMP_FILE=$(mktemp)
-  head -n $((networks_line-1)) docker-compose.yml > "$TEMP_FILE"
-  echo -e "$mclient_service" >> "$TEMP_FILE"
-  tail -n +$((networks_line)) docker-compose.yml >> "$TEMP_FILE"
   
-  # 결과 확인
-  if [ ! -s "$TEMP_FILE" ]; then
-    echo -e "${RED}오류: docker-compose.yml 파일 수정 중 문제가 발생했습니다.${NC}"
+  # 기존 파일에서 mclient 서비스 제거
+  if grep -q "  mclient:" docker-compose.yml; then
+    echo -e "${YELLOW}mclient 서비스가 이미 존재합니다. 삭제 후 재생성합니다...${NC}"
+    
+    # mclient 서비스를 제외한 모든 내용 임시 파일에 복사
+    awk '
+    BEGIN { print_line = 1; in_mclient = 0; }
+    /^  mclient:/ { in_mclient = 1; print_line = 0; next; }
+    /^  [a-zA-Z0-9_-]+:/ && in_mclient { in_mclient = 0; print_line = 1; }
+    { if (print_line) print $0; }
+    ' docker-compose.yml > "$TEMP_FILE"
+    
+    # 결과 확인
+    if [ ! -s "$TEMP_FILE" ]; then
+      echo -e "${RED}오류: docker-compose.yml 파일 처리 중 문제가 발생했습니다.${NC}"
+      rm -f "$TEMP_FILE"
+      exit 1
+    fi
+    
+    # 원본 파일 대체
+    cp "$TEMP_FILE" docker-compose.yml
     rm -f "$TEMP_FILE"
-    exit 1
   fi
   
-  # 원본 파일 대체
-  mv "$TEMP_FILE" docker-compose.yml
+  # 파일에 서비스 추가 위치 결정 (네트워크 섹션이나 파일 끝)
+  INSERTION_POINT=$(grep -n "^networks:" docker-compose.yml 2>/dev/null | head -1 | cut -d: -f1)
+  
+  if [ -z "$INSERTION_POINT" ]; then
+    # networks 섹션이 없으면 파일 끝에 추가
+    echo -e "${YELLOW}docker-compose.yml 파일에서 networks 섹션을 찾을 수 없습니다. 파일 끝에 추가합니다.${NC}"
+    echo -e "$mclient_service" >> docker-compose.yml
+  else
+    # networks 섹션 앞에 추가
+    TEMP_FILE=$(mktemp)
+    head -n $((INSERTION_POINT-1)) docker-compose.yml > "$TEMP_FILE"
+    echo -e "$mclient_service" >> "$TEMP_FILE"
+    tail -n +$((INSERTION_POINT)) docker-compose.yml >> "$TEMP_FILE"
+    
+    # 결과 확인
+    if [ ! -s "$TEMP_FILE" ]; then
+      echo -e "${RED}오류: docker-compose.yml 파일 수정 중 문제가 발생했습니다.${NC}"
+      rm -f "$TEMP_FILE"
+      exit 1
+    fi
+    
+    # 원본 파일 대체
+    cp "$TEMP_FILE" docker-compose.yml
+    rm -f "$TEMP_FILE"
+  fi
   
   echo -e "${GREEN}mclient 서비스가 docker-compose.yml에 추가되었습니다.${NC}"
 }
@@ -548,7 +549,7 @@ run_interactive_mode() {
   echo -e "${YELLOW}모니터링 모드를 선택하세요:${NC}"
   echo "1) 서버 모드 - 중앙 모니터링 서버에 데이터 전송"
   echo "2) 로컬 모드 - 화면에만 표시 (데이터 전송 없음)"
-  read -p "선택 (1-2) [기본값: 1]: " mode_choice
+  read -p "선택 (1/2) [1]: " mode_choice
   
   case $mode_choice in
     2)
@@ -559,14 +560,14 @@ run_interactive_mode() {
       MODE="server"
       # 연결 설정
       echo -e "${YELLOW}연결 설정 방식을 선택하세요:${NC}"
-      echo "1) 전체 URL 직접 지정 - 프로토콜, 호스트, 포트, 경로를 포함한 전체 URL 입력"
-      echo "   예: wss://monitor.example.com:8443/ws"
-      echo "2) 호스트만 지정 - 서버의 호스트 이름이나 IP만 입력 (포트와 경로는 자동 구성)"
+      echo "1) 호스트만 지정 - 서버의 호스트 이름이나 IP만 입력 (포트와 경로는 자동 구성)"
       echo "   예: monitor.example.com 또는 192.168.1.100"
-      read -p "선택 (1-2) [기본값: 2]: " conn_choice
+      echo "2) 전체 URL 직접 지정 - 프로토콜, 호스트, 포트, 경로를 포함한 전체 URL 입력"
+      echo "   예: wss://monitor.example.com:8443/ws"
+      read -p "선택 (1/2) [1]: " conn_choice
       
       case $conn_choice in
-        1)
+        2)
           read -p "WebSocket URL을 입력하세요 (예: wss://monitor.example.com/ws): " input_url
           # URL 형식 확인 및 수정
           if [[ ! "$input_url" =~ ^(ws|wss):// ]]; then
@@ -594,8 +595,8 @@ run_interactive_mode() {
           ;;
       esac
       
-      # SSL 검증 설정
-      read -p "SSL 인증서 검증을 비활성화하시겠습니까? (Y/n) [기본값: N]: " ssl_choice
+      # SSL 검증 설정 (기본값은 활성화 = No)
+      read -p "SSL 인증서 검증을 비활성화하시겠습니까? (y/N): " ssl_choice
       if [[ "$ssl_choice" =~ ^[Yy]$ ]]; then
         NO_SSL_VERIFY=true
         echo -e "${GREEN}SSL 인증서 검증이 비활성화되었습니다.${NC}"
@@ -604,13 +605,14 @@ run_interactive_mode() {
         echo -e "${GREEN}SSL 인증서 검증이 활성화되었습니다.${NC}"
       fi
       
-      # 디버그 모드 설정
-      read -p "디버그 모드를 활성화하시겠습니까? (Y/n) [기본값: N]: " debug_choice
+      # 디버그 모드 설정 (기본값은 비활성화 = No)
+      read -p "디버그 모드를 활성화하시겠습니까? (y/N): " debug_choice
       if [[ "$debug_choice" =~ ^[Yy]$ ]]; then
         DEBUG_MODE=true
         echo -e "${GREEN}디버그 모드가 활성화되었습니다.${NC}"
       else
         DEBUG_MODE=false
+        echo -e "${GREEN}디버그 모드가 비활성화되었습니다.${NC}"
       fi
       ;;
   esac
@@ -640,6 +642,8 @@ run_interactive_mode() {
   
   if [ "$DEBUG_MODE" = true ]; then
     echo -e "${GREEN}디버그 모드: 활성화${NC}"
+  else
+    echo -e "${GREEN}디버그 모드: 비활성화${NC}"
   fi
   
   # 확인 및 진행
