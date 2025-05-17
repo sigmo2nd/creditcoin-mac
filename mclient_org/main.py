@@ -103,6 +103,15 @@ class Settings:
         self.MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "0"))
         self.RETRY_INTERVAL = int(os.environ.get("RETRY_INTERVAL", "10"))
         
+        # 호스트 정보 설정
+        self.HOST_SYSTEM_NAME = os.environ.get("HOST_SYSTEM_NAME", "")
+        self.HOST_MODEL = os.environ.get("HOST_MODEL", "")
+        self.HOST_PROCESSOR = os.environ.get("HOST_PROCESSOR", "")
+        self.HOST_CPU_CORES = int(os.environ.get("HOST_CPU_CORES", "0"))
+        self.HOST_CPU_PERF_CORES = int(os.environ.get("HOST_CPU_PERF_CORES", "0"))
+        self.HOST_CPU_EFF_CORES = int(os.environ.get("HOST_CPU_EFF_CORES", "0"))
+        self.HOST_MEMORY_GB = int(os.environ.get("HOST_MEMORY_GB", "0"))
+        
         # 명령행 인자 적용 (있는 경우)
         if args:
             # 필수값 오버라이딩
@@ -142,6 +151,10 @@ class Settings:
         logger.info(f"서버 ID: {self.SERVER_ID}")
         logger.info(f"노드 이름: {self.NODE_NAMES}")
         logger.info(f"모니터링 간격: {self.MONITOR_INTERVAL}초")
+        
+        # 호스트 시스템 정보
+        if self.HOST_SYSTEM_NAME:
+            logger.info(f"호스트 시스템: {self.HOST_SYSTEM_NAME}")
         
         # 로컬 모드인 경우
         if self.LOCAL_MODE:
@@ -279,6 +292,7 @@ class SystemInfo:
         import psutil
         import subprocess
         import re
+        import os
         
         # 수집 시간 갱신
         self._last_collect_time = current_time
@@ -286,8 +300,39 @@ class SystemInfo:
         # 호스트명
         self.hostname = platform.node()
         
-        # 모델 및 칩 정보 (macOS에 최적화)
-        if platform.system() == "Darwin":
+        # Docker 컨테이너 내부에서 실행 중인지 확인
+        is_docker = os.path.exists('/.dockerenv')
+        
+        # 환경 변수에서 호스트 정보 가져오기 (Docker 실행 시)
+        # OrbStack 또는 일반적인 Docker 환경에서 호스트명이 generic한 경우(orbstack, container 등)
+        generic_hostnames = ["orbstack", "docker", "container", "localhost"]
+        if is_docker or any(name in self.hostname.lower() for name in generic_hostnames):
+            # 환경변수에서 호스트명 확인
+            env_hostname = os.environ.get("HOST_SYSTEM_NAME")
+            if env_hostname:
+                self.hostname = env_hostname
+                logger.debug(f"호스트명을 환경변수 설정으로 대체: {self.hostname}")
+                
+            # 다른 호스트 정보도 환경변수에서 가져옴
+            env_model = os.environ.get("HOST_MODEL")
+            env_processor = os.environ.get("HOST_PROCESSOR")
+            env_cpu_cores = os.environ.get("HOST_CPU_CORES")
+            env_cpu_perf_cores = os.environ.get("HOST_CPU_PERF_CORES")
+            env_cpu_eff_cores = os.environ.get("HOST_CPU_EFF_CORES")
+            
+            if env_model:
+                self.model = env_model
+            if env_processor:
+                self.chip = env_processor
+            if env_cpu_cores:
+                self.cpu_cores_total = int(env_cpu_cores)
+            if env_cpu_perf_cores:
+                self.cpu_cores_perf = int(env_cpu_perf_cores)
+            if env_cpu_eff_cores:
+                self.cpu_cores_eff = int(env_cpu_eff_cores)
+        
+        # macOS 환경에서 직접 시스템 정보 수집 (Docker가 아닌 경우)
+        if not is_docker and platform.system() == "Darwin":
             # 모델 정보
             try:
                 model_cmd = ["sysctl", "hw.model"]
@@ -407,12 +452,18 @@ class SystemInfo:
             except:
                 pass
         else:
-            # macOS가 아닌 경우 기본 정보만 수집
-            self.model = platform.machine()
-            self.chip = platform.processor() or "Unknown CPU"
-            self.cpu_cores_total = os.cpu_count() or 1
-            self.cpu_cores_perf = self.cpu_cores_total
-            self.cpu_cores_eff = 0
+            # macOS가 아니거나 Docker 환경인 경우 기본 정보만 수집하고
+            # 환경변수에서 가져오지 못한 정보 설정
+            if not self.model:
+                self.model = platform.machine()
+            if not self.chip:
+                self.chip = platform.processor() or "Unknown CPU"
+            if not self.cpu_cores_total:
+                self.cpu_cores_total = os.cpu_count() or 1
+            if not self.cpu_cores_perf:
+                self.cpu_cores_perf = self.cpu_cores_total
+            if not self.cpu_cores_eff:
+                self.cpu_cores_eff = 0
         
         # 총 CPU 사용률 (기본 방식)
         self.cpu_usage = psutil.cpu_percent(interval=0.1)
@@ -685,10 +736,6 @@ def print_metrics(sys_info: Dict[str, Any], containers: List[Dict[str, Any]], in
     # 모델 정보
     model_display = f"{sys_info.get('host_name')} - {sys_info.get('cpu_model')}"
     print(f"{COLOR_YELLOW}MODEL:{COLOR_RESET} {model_display}")
-    
-    # CPU 코어 정보
-    cpu_cores_info = f"{sys_info.get('cpu_cores')} ({sys_info.get('cpu_perf_cores')} Performance, {sys_info.get('cpu_eff_cores')} Efficiency)"
-    print(f"{COLOR_YELLOW}CPU CORES:{COLOR_RESET} {cpu_cores_info}")
     
     # CPU 사용률 정보
     cpu_usage_info = f"사용자 {sys_info.get('cpu_user', 0):.2f}%, 시스템 {sys_info.get('cpu_system', 0):.2f}%, 유휴 {sys_info.get('cpu_idle', 0):.2f}%"
