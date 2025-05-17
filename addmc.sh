@@ -24,6 +24,41 @@ NON_INTERACTIVE=false
 CURRENT_DIR=$(pwd)
 MCLIENT_DIR="${CURRENT_DIR}/mclient"
 
+# 외부 IP 주소 가져오는 함수
+detect_external_ip() {
+  echo -e "${BLUE}외부 IP 주소 감지 중...${NC}" >&2
+  
+  # 여러 서비스 시도하여 외부 IP 가져오기
+  local external_ip=""
+  for service in "https://api.ipify.org" "https://ifconfig.me" "https://icanhazip.com"; do
+    external_ip=$(curl -s $service)
+    if [[ "$external_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo -e "${GREEN}외부 IP 감지됨: $external_ip${NC}" >&2
+      echo "$external_ip"
+      return
+    fi
+  done
+  
+  # 실패한 경우 로컬 네트워크 주소 가져오기 시도
+  if [ -z "$external_ip" ]; then
+    # macOS에서 활성 네트워크 인터페이스 찾기
+    local interface=$(route -n get default 2>/dev/null | grep interface | awk '{print $2}')
+    
+    if [ -n "$interface" ]; then
+      external_ip=$(ifconfig $interface 2>/dev/null | grep "inet " | awk '{print $2}')
+      if [ -n "$external_ip" ]; then
+        echo -e "${YELLOW}외부 IP를 감지할 수 없습니다. 로컬 IP를 사용합니다: $external_ip${NC}" >&2
+        echo "$external_ip"
+        return
+      fi
+    fi
+  fi
+  
+  # 마지막 시도: localhost
+  echo -e "${RED}IP 주소를 찾을 수 없습니다. localhost를 사용합니다.${NC}" >&2
+  echo "127.0.0.1"
+}
+
 # Docker 명령어 및 환경 확인 (OrbStack 호환성)
 check_docker_env() {
   # Docker 명령어 경로 확인 및 추가
@@ -179,8 +214,14 @@ detect_server_host() {
     return
   fi
   
-  # 기본 서버 호스트 (로컬호스트)
-  default_host="localhost"
+  # 외부 IP 주소 가져오기 시도
+  default_host=$(detect_external_ip)
+  
+  # IP를 가져오지 못했다면 기본값으로 localhost 사용
+  if [ -z "$default_host" ] || [ "$default_host" = "127.0.0.1" ]; then
+    default_host="localhost"
+    echo -e "${YELLOW}외부 IP를 감지할 수 없어 기본값(localhost)을 사용합니다.${NC}" >&2
+  fi
   
   echo -e "${GREEN}서버 호스트 감지 완료: ${default_host}${NC}" >&2
   echo "${default_host}"
@@ -320,6 +361,39 @@ EOF
 
   # 실행 권한 부여
   chmod +x "${MCLIENT_DIR}/docker-entrypoint.sh"
+
+  # kB 단위 수정 추가
+  if [ -f "${MCLIENT_DIR}/docker_stats_client.py" ]; then
+    # 'kB': 1024 항목이 없는지 확인
+    if ! grep -q "'kB': 1024" "${MCLIENT_DIR}/docker_stats_client.py"; then
+      echo -e "${YELLOW}docker_stats_client.py 파일에 kB 단위 추가 중...${NC}"
+      # 임시 파일 생성
+      temp_file=$(mktemp)
+      
+      # 파일 수정
+      awk '
+      /units = {/ {
+        print $0
+        in_units_dict = 1
+        next
+      }
+      in_units_dict && /}/ {
+        # 'kB': 1024 항목 추가 (마지막 중괄호 전에)
+        gsub(/}/, "    # 추가된 kB 형식\n            '\''kB'\'': 1024\n        }")
+        in_units_dict = 0
+        print $0
+        next
+      }
+      { print $0 }
+      ' "${MCLIENT_DIR}/docker_stats_client.py" > "$temp_file"
+      
+      # 원본 파일 대체
+      mv "$temp_file" "${MCLIENT_DIR}/docker_stats_client.py"
+      echo -e "${GREEN}docker_stats_client.py 파일에 kB 단위 추가 완료${NC}"
+    else
+      echo -e "${GREEN}docker_stats_client.py 파일에 kB 단위가 이미 설정되어 있습니다.${NC}"
+    fi
+  fi
   
   echo -e "${GREEN}모니터링 클라이언트 파일 준비 완료${NC}"
 }
@@ -744,8 +818,8 @@ run_interactive_mode() {
           echo -e "${GREEN}설정된 WebSocket URL: $SERVER_URL${NC}"
           ;;
         *)
-          # 기본 호스트 감지
-          default_host=$(detect_server_host)
+          # 외부 IP 주소 자동 감지
+          default_host=$(detect_external_ip)
           read -p "서버 호스트를 입력하세요 ($default_host): " input
           SERVER_HOST=${input:-$default_host}
           ;;
@@ -829,7 +903,7 @@ main() {
     
     # 비대화형 모드에서 호스트 자동 감지 (설정되지 않은 경우)
     if [ -z "$SERVER_HOST" ] && [ "$MODE" = "server" ] && [ -z "$SERVER_URL" ]; then
-      SERVER_HOST=$(detect_server_host)
+      SERVER_HOST=$(detect_external_ip)
     fi
   fi
   
