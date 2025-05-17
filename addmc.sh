@@ -15,6 +15,7 @@ MODE="server"  # server 또는 local
 NODE_NAMES=""
 SERVER_URL=""
 SERVER_HOST=""
+WS_MODE="auto"  # auto, ws, wss, custom 중 하나
 NO_SSL_VERIFY=false
 DEBUG_MODE=false
 FORCE=false
@@ -117,6 +118,7 @@ show_help() {
   echo "  --mode MODE         연결 모드: server, local (기본값: server)"
   echo "  --url URL           WebSocket 서버 URL 직접 지정"
   echo "  --host HOST         WebSocket 서버 호스트 지정"
+  echo "  --ws-mode MODE      WebSocket 모드: auto, ws, wss (기본값: auto)"
   echo "  --no-ssl-verify     SSL 인증서 검증 비활성화"
   echo "  --debug             디버그 모드 활성화"
   echo "  --force             기존 파일을 강제로 덮어쓰기"
@@ -127,6 +129,7 @@ show_help() {
   echo "  $0 --mode local                 # 로컬 모드로 설치"
   echo "  $0 --url wss://example.com/ws   # 특정 URL 사용"
   echo "  $0 --host monitor.example.com   # 특정 호스트 사용"
+  echo "  $0 --ws-mode wss                # WSS 모드 사용"
   echo ""
 }
 
@@ -152,10 +155,15 @@ parse_args() {
         ;;
       --url)
         SERVER_URL="$2"
+        WS_MODE="custom"  # URL이 지정되면 WS_MODE를 custom으로 설정
         shift 2
         ;;
       --host)
         SERVER_HOST="$2"
+        shift 2
+        ;;
+      --ws-mode)
+        WS_MODE="$2"
         shift 2
         ;;
       --no-ssl-verify)
@@ -352,7 +360,10 @@ if [ "${LOCAL_MODE}" = "true" ]; then
 else
   echo "모드: 서버 연결"
   if [ ! -z "${SERVER_URL}" ]; then echo "서버 URL: ${SERVER_URL}"; fi
-  if [ ! -z "${SERVER_HOST}" ]; then echo "서버 호스트: ${SERVER_HOST}"; fi
+  if [ ! -z "${SERVER_HOST}" ]; then 
+    echo "서버 호스트: ${SERVER_HOST}"
+    echo "웹소켓 모드: ${WS_MODE}"
+  fi
 fi
 echo "시작 중..."
 export PROCFS_PATH=/host/proc
@@ -470,14 +481,14 @@ EOF
   else
     echo "# 서버 연결 설정" >> "${MCLIENT_DIR}/.env"
     
-    # URL이 직접 지정된 경우
-    if [ ! -z "$SERVER_URL" ]; then
+    # URL이 직접 지정된 경우 (WS_MODE가 custom)
+    if [ "$WS_MODE" = "custom" ] && [ ! -z "$SERVER_URL" ]; then
+      echo "WS_MODE=custom" >> "${MCLIENT_DIR}/.env"
       echo "SERVER_URL=${SERVER_URL}" >> "${MCLIENT_DIR}/.env"
-    fi
-    
-    # 서버 호스트가 지정된 경우
-    if [ ! -z "$SERVER_HOST" ]; then
+    # 호스트 지정 & 웹소켓 모드 지정 경우
+    elif [ ! -z "$SERVER_HOST" ]; then
       echo "WS_SERVER_HOST=${SERVER_HOST}" >> "${MCLIENT_DIR}/.env"
+      echo "WS_MODE=${WS_MODE}" >> "${MCLIENT_DIR}/.env"
     fi
   fi
   
@@ -650,12 +661,14 @@ update_docker_compose() {
     if [ "$MODE" = "local" ]; then
       echo "      - LOCAL_MODE=true" >> "$TEMP_FILE"
     else
-      if [ ! -z "$SERVER_URL" ]; then
+      # URL 직접 지정 (custom 모드)
+      if [ "$WS_MODE" = "custom" ] && [ ! -z "$SERVER_URL" ]; then
+        echo "      - WS_MODE=custom" >> "$TEMP_FILE"
         echo "      - SERVER_URL=${SERVER_URL}" >> "$TEMP_FILE"
-      fi
-      
-      if [ ! -z "$SERVER_HOST" ]; then
+      # 호스트 지정 & 웹소켓 모드 지정
+      elif [ ! -z "$SERVER_HOST" ]; then
         echo "      - WS_SERVER_HOST=${SERVER_HOST}" >> "$TEMP_FILE"
+        echo "      - WS_MODE=${WS_MODE}" >> "$TEMP_FILE"
       fi
     fi
     
@@ -726,12 +739,14 @@ update_docker_compose() {
     if [ "$MODE" = "local" ]; then
       echo "      - LOCAL_MODE=true" >> "$NEW_TEMP_FILE"
     else
-      if [ ! -z "$SERVER_URL" ]; then
+      # URL 직접 지정 (custom 모드)
+      if [ "$WS_MODE" = "custom" ] && [ ! -z "$SERVER_URL" ]; then
+        echo "      - WS_MODE=custom" >> "$NEW_TEMP_FILE"
         echo "      - SERVER_URL=${SERVER_URL}" >> "$NEW_TEMP_FILE"
-      fi
-      
-      if [ ! -z "$SERVER_HOST" ]; then
+      # 호스트 지정 & 웹소켓 모드 지정
+      elif [ ! -z "$SERVER_HOST" ]; then
         echo "      - WS_SERVER_HOST=${SERVER_HOST}" >> "$NEW_TEMP_FILE"
+        echo "      - WS_MODE=${WS_MODE}" >> "$NEW_TEMP_FILE"
       fi
     fi
     
@@ -818,6 +833,7 @@ run_interactive_mode() {
       
       case $conn_choice in
         2)
+          # URL 직접 지정 모드
           read -p "WebSocket URL을 입력하세요 (예: wss://monitor.example.com/ws): " input_url
           # URL 형식 확인 및 수정
           if [[ ! "$input_url" =~ ^(ws|wss):// ]]; then
@@ -835,13 +851,38 @@ run_interactive_mode() {
             echo -e "${YELLOW}경로가 지정되지 않아 '/ws'를 기본값으로 추가했습니다.${NC}"
           fi
           SERVER_URL="$input_url"
+          WS_MODE="custom"  # URL이 직접 지정되면 WS_MODE를 custom으로 설정
           echo -e "${GREEN}설정된 WebSocket URL: $SERVER_URL${NC}"
+          echo -e "${GREEN}WebSocket 모드: custom${NC}"
           ;;
         *)
+          # 호스트 지정 모드
           # 외부 IP 주소 자동 감지
           default_host=$(detect_external_ip)
           read -p "서버 호스트를 입력하세요 ($default_host): " input
           SERVER_HOST=${input:-$default_host}
+          
+          # WebSocket 모드 선택 (새로 추가된 부분)
+          echo -e "${YELLOW}WebSocket 연결 방식을 선택하세요:${NC}"
+          echo "1) 자동 (서버 환경에 따라 자동 선택) [기본값]"
+          echo "2) ws (비보안 WebSocket)"
+          echo "3) wss (보안 WebSocket)"
+          read -p "선택 (1/2/3) [1]: " ws_mode_choice
+          
+          case $ws_mode_choice in
+            2)
+              WS_MODE="ws"
+              echo -e "${GREEN}WebSocket 모드: ws (비보안)${NC}"
+              ;;
+            3)
+              WS_MODE="wss"
+              echo -e "${GREEN}WebSocket 모드: wss (보안)${NC}"
+              ;;
+            *)
+              WS_MODE="auto"
+              echo -e "${GREEN}WebSocket 모드: auto (자동)${NC}"
+              ;;
+          esac
           ;;
       esac
       
@@ -886,11 +927,13 @@ run_interactive_mode() {
     echo -e "${GREEN}모드: 로컬 (데이터 전송 없음)${NC}"
   else
     echo -e "${GREEN}모드: 서버 연결${NC}"
-    if [ ! -z "$SERVER_URL" ]; then
+    if [ "$WS_MODE" = "custom" ] && [ ! -z "$SERVER_URL" ]; then
       echo -e "${GREEN}WebSocket URL: $SERVER_URL${NC}"
+      echo -e "${GREEN}WebSocket 모드: custom (URL 직접 지정)${NC}"
     fi
     if [ ! -z "$SERVER_HOST" ]; then
       echo -e "${GREEN}WebSocket 호스트: $SERVER_HOST${NC}"
+      echo -e "${GREEN}WebSocket 모드: $WS_MODE${NC}"
     fi
     if [ "$NO_SSL_VERIFY" = true ]; then
       echo -e "${GREEN}SSL 검증: 비활성화${NC}"
@@ -933,6 +976,11 @@ main() {
     # 비대화형 모드에서 호스트 자동 감지 (설정되지 않은 경우)
     if [ -z "$SERVER_HOST" ] && [ "$MODE" = "server" ] && [ -z "$SERVER_URL" ]; then
       SERVER_HOST=$(detect_external_ip)
+    fi
+    
+    # URL이 지정되었을 때 WS_MODE를 custom으로 설정
+    if [ ! -z "$SERVER_URL" ]; then
+      WS_MODE="custom"
     fi
   fi
   
