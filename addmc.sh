@@ -636,6 +636,16 @@ update_docker_compose() {
     echo "      - NODE_NAMES=${NODE_NAMES}" >> "$TEMP_FILE"
     echo "      - MONITOR_INTERVAL=${MONITOR_INTERVAL}" >> "$TEMP_FILE"
     
+    # 호스트 시스템 하드웨어 사양 정보 (정적 데이터만)
+    echo "      # 호스트 시스템 하드웨어 사양 정보" >> "$TEMP_FILE"
+    echo "      - HOST_SYSTEM_NAME=\${HOST_SYSTEM_NAME:-\$(hostname)}" >> "$TEMP_FILE"
+    echo "      - HOST_MODEL=\${HOST_MODEL:-\"Unknown\"}" >> "$TEMP_FILE"
+    echo "      - HOST_PROCESSOR=\${HOST_PROCESSOR:-\"Unknown\"}" >> "$TEMP_FILE" 
+    echo "      - HOST_CPU_CORES=\${HOST_CPU_CORES:-0}" >> "$TEMP_FILE"
+    echo "      - HOST_CPU_PERF_CORES=\${HOST_CPU_PERF_CORES:-0}" >> "$TEMP_FILE"
+    echo "      - HOST_CPU_EFF_CORES=\${HOST_CPU_EFF_CORES:-0}" >> "$TEMP_FILE"
+    echo "      - HOST_MEMORY_GB=\${HOST_MEMORY_GB:-0}" >> "$TEMP_FILE"
+    
     # 모드별 환경 변수
     if [ "$MODE" = "local" ]; then
       echo "      - LOCAL_MODE=true" >> "$TEMP_FILE"
@@ -702,6 +712,16 @@ update_docker_compose() {
     echo "      - NODE_NAMES=${NODE_NAMES}" >> "$NEW_TEMP_FILE"
     echo "      - MONITOR_INTERVAL=${MONITOR_INTERVAL}" >> "$NEW_TEMP_FILE"
     
+    # 호스트 시스템 하드웨어 사양 정보 (정적 데이터만)
+    echo "      # 호스트 시스템 하드웨어 사양 정보" >> "$NEW_TEMP_FILE"
+    echo "      - HOST_SYSTEM_NAME=\${HOST_SYSTEM_NAME:-\$(hostname)}" >> "$NEW_TEMP_FILE"
+    echo "      - HOST_MODEL=\${HOST_MODEL:-\"Unknown\"}" >> "$NEW_TEMP_FILE"
+    echo "      - HOST_PROCESSOR=\${HOST_PROCESSOR:-\"Unknown\"}" >> "$NEW_TEMP_FILE" 
+    echo "      - HOST_CPU_CORES=\${HOST_CPU_CORES:-0}" >> "$NEW_TEMP_FILE"
+    echo "      - HOST_CPU_PERF_CORES=\${HOST_CPU_PERF_CORES:-0}" >> "$NEW_TEMP_FILE"
+    echo "      - HOST_CPU_EFF_CORES=\${HOST_CPU_EFF_CORES:-0}" >> "$NEW_TEMP_FILE"
+    echo "      - HOST_MEMORY_GB=\${HOST_MEMORY_GB:-0}" >> "$NEW_TEMP_FILE"
+    
     # 모드별 환경 변수
     if [ "$MODE" = "local" ]; then
       echo "      - LOCAL_MODE=true" >> "$NEW_TEMP_FILE"
@@ -748,7 +768,7 @@ update_docker_compose() {
     exit 1
   fi
   
-  # 원본 파일 대체
+# 원본 파일 대체
   mv "$TEMP_FILE" docker-compose.yml
   
   # 성공 메시지
@@ -852,6 +872,15 @@ run_interactive_mode() {
   echo -e "${GREEN}서버 ID: $SERVER_ID${NC}"
   echo -e "${GREEN}모니터링 노드: $NODE_NAMES${NC}"
   echo -e "${GREEN}모니터링 간격: ${MONITOR_INTERVAL}초${NC}"
+  
+  # 호스트 시스템 정보가 있으면 표시
+  if [ -n "${HOST_SYSTEM_NAME}" ]; then
+    echo -e "${GREEN}호스트 시스템: ${HOST_SYSTEM_NAME}${NC}"
+    echo -e "${GREEN}모델: ${HOST_MODEL}${NC}"
+    echo -e "${GREEN}프로세서: ${HOST_PROCESSOR}${NC}"
+    [ -n "${HOST_CPU_CORES}" ] && echo -e "${GREEN}CPU 코어: ${HOST_CPU_CORES}${NC}"
+    [ -n "${HOST_MEMORY_GB}" ] && echo -e "${GREEN}메모리: ${HOST_MEMORY_GB}GB${NC}"
+  fi
   
   if [ "$MODE" = "local" ]; then
     echo -e "${GREEN}모드: 로컬 (데이터 전송 없음)${NC}"

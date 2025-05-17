@@ -103,7 +103,7 @@ class Settings:
         self.MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "0"))
         self.RETRY_INTERVAL = int(os.environ.get("RETRY_INTERVAL", "10"))
         
-        # 호스트 정보 설정
+        # 호스트 정보 설정 - 환경 변수에서 로드
         self.HOST_SYSTEM_NAME = os.environ.get("HOST_SYSTEM_NAME", "")
         self.HOST_MODEL = os.environ.get("HOST_MODEL", "")
         self.HOST_PROCESSOR = os.environ.get("HOST_PROCESSOR", "")
@@ -155,6 +155,10 @@ class Settings:
         # 호스트 시스템 정보
         if self.HOST_SYSTEM_NAME:
             logger.info(f"호스트 시스템: {self.HOST_SYSTEM_NAME}")
+            logger.info(f"모델: {self.HOST_MODEL}")
+            logger.info(f"프로세서: {self.HOST_PROCESSOR}")
+            logger.info(f"CPU 코어: {self.HOST_CPU_CORES}코어 (성능: {self.HOST_CPU_PERF_CORES}, 효율: {self.HOST_CPU_EFF_CORES})")
+            logger.info(f"메모리: {self.HOST_MEMORY_GB}GB")
         
         # 로컬 모드인 경우
         if self.LOCAL_MODE:
@@ -319,7 +323,9 @@ class SystemInfo:
             env_cpu_cores = os.environ.get("HOST_CPU_CORES")
             env_cpu_perf_cores = os.environ.get("HOST_CPU_PERF_CORES")
             env_cpu_eff_cores = os.environ.get("HOST_CPU_EFF_CORES")
+            env_memory_gb = os.environ.get("HOST_MEMORY_GB")
             
+            # 값 설정 (있는 경우에만)
             if env_model:
                 self.model = env_model
             if env_processor:
@@ -330,6 +336,10 @@ class SystemInfo:
                 self.cpu_cores_perf = int(env_cpu_perf_cores)
             if env_cpu_eff_cores:
                 self.cpu_cores_eff = int(env_cpu_eff_cores)
+            
+            # 중요: 메모리 총량만 가져오고 다른 메모리 사용률 등은 실시간 수집
+            if env_memory_gb and self.memory_total == 0:
+                self.memory_total = int(env_memory_gb) * 1024 * 1024 * 1024  # GB -> bytes
         
         # macOS 환경에서 직접 시스템 정보 수집 (Docker가 아닌 경우)
         if not is_docker and platform.system() == "Darwin":
@@ -476,11 +486,26 @@ class SystemInfo:
         
         # 메모리 정보
         memory = psutil.virtual_memory()
-        self.memory_total = memory.total
+        if self.memory_total == 0:  # 환경변수에서 가져오지 못한 경우에만
+            self.memory_total = memory.total
         self.memory_used = memory.used
         self.memory_used_percent = memory.percent
         
+        # Docker 소켓 경로 찾기
+        docker_sock_paths = [
+            "/var/run/docker.sock",
+            os.path.expanduser("~/.orbstack/run/docker.sock"),
+            "/var/run/orbstack/docker.sock"
+        ]
+        
         # Docker 메모리 정보 수집
+        self.docker_available = False
+        for sock_path in docker_sock_paths:
+            if os.path.exists(sock_path):
+                self.docker_available = True
+                break
+                
+        # Docker 메모리 사용량은 동적으로 수집
         try:
             # Docker가 설치되어 있고 실행 중인지 확인
             docker_cmd = ["docker", "info", "--format", "{{.MemTotal}}"]
@@ -865,7 +890,7 @@ async def run_local_mode(settings, node_names: List[str]):
                 pass
     except Exception as e:
         logger.error(f"로컬 모니터링 중 오류 발생: {e}")
-    finally:
+finally:
         # 정리 작업
         logger.info("리소스 정리 중...")
         if docker_stats_client:

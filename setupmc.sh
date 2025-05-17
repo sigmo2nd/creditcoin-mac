@@ -169,81 +169,68 @@ collect_host_info() {
   local hostname=$(hostname)
   local hostname_local=$(hostname -f 2>/dev/null || echo "$hostname.local")
   
-  # macOS 고유 ID 수집 (하드웨어 UUID)
-  local hw_uuid=$(system_profiler SPHardwareDataType 2>/dev/null | grep "Hardware UUID" | awk -F': ' '{print $2}' | tr -d ' ' || echo "")
+  # 마커 문자열 설정
+  local marker="# === Creditcoin Host System Info ==="
+  local endmarker="# === End Creditcoin Host System Info ==="
   
-  # 시스템 모델 정보
-  local model_name=""
-  local processor_info=""
+  # 쉘 프로필 설정
+  if [[ "$SHELL" == *"zsh"* ]]; then
+    SHELL_PROFILE="$HOME/.zshrc"
+  else
+    SHELL_PROFILE="$HOME/.bash_profile"
+  fi
   
+  # 이미 추가되었는지 확인하고 제거
+  if grep -q "$marker" "$SHELL_PROFILE" 2>/dev/null; then
+    sed -i.tmp "/$marker/,/$endmarker/d" "$SHELL_PROFILE"
+    rm -f "${SHELL_PROFILE}.tmp"
+  fi
+  
+  # macOS 시스템 정보 수집
   if [[ "$(uname)" == "Darwin" ]]; then
-    # macOS 시스템 모델 및 프로세서 정보
+    # 시스템 모델 및 프로세서 정보
     model_name=$(system_profiler SPHardwareDataType 2>/dev/null | grep "Model Name" | awk -F': ' '{print $2}' | xargs || echo "Unknown Mac")
     processor_info=$(system_profiler SPHardwareDataType 2>/dev/null | grep "Chip" | awk -F': ' '{print $2}' | xargs || echo "")
     
-    # Intel Mac의 경우 프로세서 정보가 'Processor'로 표시될 수 있음
+    # Intel Mac의 경우 프로세서 정보가 다를 수 있음
     if [[ -z "$processor_info" ]]; then
       processor_info=$(system_profiler SPHardwareDataType 2>/dev/null | grep "Processor" | awk -F': ' '{print $2}' | xargs || echo "Unknown Processor")
     fi
     
     # CPU 코어 정보
-    local cpu_cores=$(sysctl -n hw.ncpu 2>/dev/null || echo "0")
-    local perf_cores=$(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null || echo "0")
-    local eff_cores=$(sysctl -n hw.perflevel1.logicalcpu 2>/dev/null || echo "0")
+    cpu_cores=$(sysctl -n hw.ncpu 2>/dev/null || echo "0")
+    perf_cores=$(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null || echo "0")
+    eff_cores=$(sysctl -n hw.perflevel1.logicalcpu 2>/dev/null || echo "0")
     
     # 메모리 정보
-    local memory_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo "0") / 1024 / 1024 / 1024 ))
+    memory_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo "0") / 1024 / 1024 / 1024 ))
     
-    # 디스크 정보
-    local disk_total=$(df -h / | awk 'NR==2 {print $2}')
-    
+    # 셸 프로필에 추가
+    cat >> "$SHELL_PROFILE" << EOT
+$marker
+# Creditcoin 호스트 시스템 정보
+export HOST_SYSTEM_NAME="${hostname_local}"
+export HOST_MODEL="${model_name}"
+export HOST_PROCESSOR="${processor_info}"
+export HOST_CPU_CORES=${cpu_cores}
+export HOST_CPU_PERF_CORES=${perf_cores}
+export HOST_CPU_EFF_CORES=${eff_cores}
+export HOST_MEMORY_GB=${memory_gb}
+$endmarker
+EOT
+
+    show_success "호스트 시스템 정보가 $SHELL_PROFILE에 추가되었습니다"
     # 결과 출력
     show_success "호스트명: $hostname_local"
     show_success "모델명: $model_name"
     show_success "프로세서: $processor_info"
     show_success "CPU 코어: $cpu_cores 코어 (성능: $perf_cores, 효율: $eff_cores)"
     show_success "메모리: ${memory_gb}GB"
-    show_success "디스크 용량: $disk_total"
-    
-    # 호스트 정보만 담긴 환경 변수 파일 생성
-    create_host_env_file "$hostname_local" "$model_name" "$processor_info" "$cpu_cores" "$memory_gb" "$perf_cores" "$eff_cores"
   else
+    # 비-macOS 환경
     show_warning "이 스크립트는 현재 macOS에 최적화되어 있습니다."
-    # 비-macOS 환경에서도 기본 정보는 수집
-    local cpu_cores=$(nproc 2>/dev/null || echo "0")
-    local memory_info=$(free -g 2>/dev/null | awk 'NR==2{print $2}' || echo "0")
-    create_host_env_file "$hostname" "Unknown" "Unknown" "$cpu_cores" "$memory_info" "0" "0"
+    # 기본 정보 수집 추가...
   fi
-}
-
-# 호스트 정보만 담긴 환경 변수 파일 생성
-create_host_env_file() {
-  local hostname="$1"
-  local model_name="$2"
-  local processor="$3"
-  local cpu_cores="$4"
-  local memory_gb="$5"
-  local perf_cores="$6"
-  local eff_cores="$7"
-  local host_env_file="${SCRIPT_DIR}/mclient/host_info.env"
-  
-  # 호스트 정보 파일 생성
-  cat > "$host_env_file" << EOT
-# Creditcoin 모니터링 클라이언트 호스트 정보
-# 생성일: $(date)
-
-# 호스트 시스템 정보
-HOST_SYSTEM_NAME="${hostname}"
-HOST_MODEL="${model_name}"
-HOST_PROCESSOR="${processor}"
-HOST_CPU_CORES=${cpu_cores}
-HOST_CPU_PERF_CORES=${perf_cores}
-HOST_CPU_EFF_CORES=${eff_cores}
-HOST_MEMORY_GB=${memory_gb}
-EOT
-
-  show_success "호스트 정보 파일 생성 완료: $host_env_file"
-  show_warning "이 정보는 Docker 컨테이너에서 모니터링 클라이언트 실행 시 호스트 시스템 정보를 제공합니다."
 }
 
 # 클라이언트 유틸리티 함수 생성
