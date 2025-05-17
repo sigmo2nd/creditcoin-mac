@@ -136,6 +136,15 @@ status() {
       fi
     done
   fi
+
+  # 모니터링 상태 확인
+  echo -e "\n${BLUE}모니터링 상태:${NC}"
+  if docker ps | grep -q "creditcoin-monitor"; then
+    local monitor_uptime=$(docker ps --format "{{.Status}}" --filter "name=creditcoin-monitor" | sed -E 's/Up ([0-9]+) (seconds|minutes|hours|days).*/\1 \2/')
+    echo -e "  ${GREEN}모니터링 서비스 실행 중${NC} - 가동 시간: $monitor_uptime"
+  else
+    echo -e "  ${RED}모니터링 서비스 중지됨${NC}"
+  fi
 }
 
 # Creditcoin CLI 키 생성
@@ -1107,4 +1116,166 @@ monitorhealth() {
     
     sleep 30  # 30초마다 새로고침
   done
+}
+
+
+# 모니터 시작
+monstart() {
+  echo -e "${BLUE}모니터 서비스 시작 중...${NC}"
+  docker compose up -d monitor
+  if [ $? -eq 0 ]; then
+    echo -e "${GREEN}모니터 서비스가 시작되었습니다.${NC}"
+  else
+    echo -e "${RED}모니터 서비스 시작에 실패했습니다.${NC}"
+  fi
+}
+
+# 모니터 중지
+monstop() {
+  echo -e "${BLUE}모니터 서비스 중지 중...${NC}"
+  docker compose stop monitor
+  if [ $? -eq 0 ]; then
+    echo -e "${GREEN}모니터 서비스가 중지되었습니다.${NC}"
+  else
+    echo -e "${RED}모니터 서비스 중지에 실패했습니다.${NC}"
+  fi
+}
+
+# 모니터 재시작
+monrestart() {
+  echo -e "${BLUE}모니터 서비스 재시작 중...${NC}"
+  docker compose restart monitor
+  if [ $? -eq 0 ]; then
+    echo -e "${GREEN}모니터 서비스가 재시작되었습니다.${NC}"
+  else
+    echo -e "${RED}모니터 서비스 재시작에 실패했습니다.${NC}"
+  fi
+}
+
+# 모니터 로그 확인
+monlog() {
+  echo -e "${BLUE}모니터 서비스 로그 확인 중...${NC}"
+  docker logs -f creditcoin-monitor
+}
+
+# 모니터 상태 확인
+monstatus() {
+  echo -e "${BLUE}모니터 서비스 상태 확인 중...${NC}"
+  if docker ps | grep -q "creditcoin-monitor"; then
+    echo -e "${GREEN}모니터 서비스가 실행 중입니다.${NC}"
+    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep "creditcoin-monitor"
+  else
+    echo -e "${RED}모니터 서비스가 실행 중이 아닙니다.${NC}"
+  fi
+}
+
+# 모니터 서버 URL 업데이트
+monurl() {
+  if [ -z "$1" ]; then
+    echo -e "${YELLOW}사용법: monurl <새 웹소켓 URL>${NC}"
+    echo -e "${YELLOW}예시: monurl wss://monitor.example.com/ws${NC}"
+    return 1
+  fi
+  
+  NEW_URL="$1"
+  echo -e "${BLUE}웹소켓 서버 URL 업데이트 중: ${NEW_URL}${NC}"
+  
+  # .env 파일 확인
+  if [ ! -f ".env" ]; then
+    echo -e "${RED}오류: .env 파일이 없습니다.${NC}"
+    return 1
+  fi
+  
+  # .env 백업 생성
+  cp .env .env.bak
+  
+  # 새 .env 파일 생성
+  sed "s|^WS_SERVER_URL=.*|WS_SERVER_URL=${NEW_URL}|" .env > .env.new
+  mv .env.new .env
+  
+  echo -e "${GREEN}웹소켓 서버 URL이 업데이트되었습니다.${NC}"
+  echo -e "${YELLOW}변경 사항을 적용하려면 모니터 서비스를 재시작하세요:${NC}"
+  echo -e "${GREEN}monrestart${NC}"
+}
+# 파이썬 모니터링 관련 함수
+
+# 모니터 시작
+mstart() {
+  echo -e "${BLUE}파이썬 모니터 서비스 시작 중...${NC}"
+  docker compose up -d mclient
+  if [ $? -eq 0 ]; then
+    echo -e "${GREEN}파이썬 모니터 서비스가 시작되었습니다.${NC}"
+  else
+    echo -e "${RED}파이썬 모니터 서비스 시작에 실패했습니다.${NC}"
+  fi
+}
+
+# 모니터 중지
+mstop() {
+  echo -e "${BLUE}파이썬 모니터 서비스 중지 중...${NC}"
+  docker compose stop mclient
+  if [ $? -eq 0 ]; then
+    echo -e "${GREEN}파이썬 모니터 서비스가 중지되었습니다.${NC}"
+  else
+    echo -e "${RED}파이썬 모니터 서비스 중지에 실패했습니다.${NC}"
+  fi
+}
+
+# 모니터 재시작
+mrestart() {
+  echo -e "${BLUE}파이썬 모니터 서비스 재시작 중...${NC}"
+  docker compose restart mclient
+  if [ $? -eq 0 ]; then
+    echo -e "${GREEN}파이썬 모니터 서비스가 재시작되었습니다.${NC}"
+  else
+    echo -e "${RED}파이썬 모니터 서비스 재시작에 실패했습니다.${NC}"
+  fi
+}
+
+# 모니터 로그 확인
+mlog() {
+  echo -e "${BLUE}파이썬 모니터 서비스 로그 확인 중...${NC}"
+  docker logs -f creditcoin-mclient
+}
+
+# 모니터 상태 확인
+mstatus() {
+  echo -e "${BLUE}파이썬 모니터 서비스 상태 확인 중...${NC}"
+  if docker ps | grep -q "creditcoin-mclient"; then
+    echo -e "${GREEN}파이썬 모니터 서비스가 실행 중입니다.${NC}"
+    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep "creditcoin-mclient"
+  else
+    echo -e "${RED}파이썬 모니터 서비스가 실행 중이 아닙니다.${NC}"
+  fi
+}
+
+# 모니터 서버 URL 업데이트
+murl() {
+  if [ -z "$1" ]; then
+    echo -e "${YELLOW}사용법: murl <새 웹소켓 URL>${NC}"
+    echo -e "${YELLOW}예시: murl wss://monitor.example.com/ws${NC}"
+    return 1
+  fi
+  
+  NEW_URL="$1"
+  echo -e "${BLUE}웹소켓 서버 URL 업데이트 중: ${NEW_URL}${NC}"
+  
+  # .env 파일 확인
+  if [ ! -f ".env" ]; then
+    echo -e "${RED}오류: .env 파일이 없습니다.${NC}"
+    return 1
+  fi
+  
+  # .env 백업 생성
+  cp .env .env.bak
+  
+  # 새 .env 파일 생성
+  grep -v "^M_WS_SERVER_URL=" .env > .env.new
+  echo "M_WS_SERVER_URL=${NEW_URL}" >> .env.new
+  echo "M_WS_MODE=custom" >> .env.new
+  mv .env.new .env
+  
+  echo -e "${GREEN}웹소켓 서버 URL이 업데이트되었습니다.${NC}"
+  echo -e "${YELLOW}변경 사항을 적용하려면 모니터 서비스를 재시작하세요:${NC}"
+  echo -e "${GREEN}mrestart${NC}"
 }
