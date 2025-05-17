@@ -10,8 +10,8 @@ import os
 import json
 import platform
 import psutil
-from typing import Dict, List, Any, Optional
 import subprocess
+from typing import Dict, List, Any, Optional
 from pathlib import Path
 
 # 로깅 설정
@@ -601,6 +601,7 @@ def print_transmission_status(stats: TransmissionStats):
         print(f"평균 처리 시간: {stats.avg_processing_time():.2f}초")
         print(f"총 전송 데이터: {stats.total_bytes_sent / 1024.0 / 1024.0:.2f} MB\n")
 
+# 메트릭 출력 함수 (로컬 모드용)
 def print_metrics(sys_info: Dict[str, Any], containers: List[Dict[str, Any]], interval: int):
     # 현재 시간 포맷
     current_time = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -624,11 +625,11 @@ def print_metrics(sys_info: Dict[str, Any], containers: List[Dict[str, Any]], in
         col5_width = 12  # MEM%
         
         # 헤더 출력 - 데이터 위치에 맞게 정확히 정렬
-        print(f"{STYLE_BOLD}NODE{' ' * (col1_width - 4)}"
-              f"{STYLE_BOLD}CPU%{' ' * (col2_width - 4)}"
-              f"{STYLE_BOLD}OF TOTAL%{' ' * (col3_width - 9)}"
-              f"{STYLE_BOLD}MEM USAGE{' ' * (col4_width - 9)}"
-              f"{STYLE_BOLD}MEM%{' ' * (col5_width - 4)}"
+        print(f"{STYLE_BOLD}NODE{COLOR_RESET}{' ' * (col1_width - 4)}"
+              f"{STYLE_BOLD}CPU%{COLOR_RESET}{' ' * (col2_width - 4)}"
+              f"{STYLE_BOLD}OF TOTAL%{COLOR_RESET}{' ' * (col3_width - 9)}"
+              f"{STYLE_BOLD}MEM USAGE{COLOR_RESET}{' ' * (col4_width - 9)}"
+              f"{STYLE_BOLD}MEM%{COLOR_RESET}{' ' * (col5_width - 4)}"
               f"{STYLE_BOLD}NET RX/TX{COLOR_RESET}")
         
         # 각 컨테이너 정보 출력
@@ -865,7 +866,7 @@ async def run_local_mode(node_names: List[str], interval: int, use_docker: bool)
 # 웹소켓 모드 실행 함수
 async def run_websocket_mode(args, node_names: List[str], interval: int, use_docker: bool):
     """웹소켓 모드로 모니터링 (서버에 전송)"""
-    global websocket_client_instance, shutdown_event
+    global websocket_client_instance, shutdown_event, settings
     
     # 웹소켓 관련 import - 필요 시에만 임포트
     from websocket_client import WebSocketClient
@@ -874,14 +875,19 @@ async def run_websocket_mode(args, node_names: List[str], interval: int, use_doc
     server_id = args.server_id or settings.SERVER_ID
     
     # WebSocket URL 결정
-    ws_url_or_mode = get_websocket_url(settings)
+    if args.ws_url:
+        ws_url_or_mode = args.ws_url
+    elif args.ws_mode:
+        ws_url_or_mode = args.ws_mode
+    else:
+        ws_url_or_mode = get_websocket_url(settings)
     
     logger.info(f"모니터링 시작: 서버 ID={server_id}, 노드={node_names}, 간격={interval}초")
     
     if args.ws_url:
         logger.info(f"WebSocket URL: {args.ws_url}")
-    elif settings.WS_SERVER_URL:
-        logger.info(f"WebSocket URL: {settings.WS_SERVER_URL}")
+    elif settings.SERVER_URL:
+        logger.info(f"WebSocket URL: {settings.SERVER_URL}")
     
     if args.no_ssl_verify:
         logger.info("SSL 인증서 검증이 비활성화되었습니다.")
@@ -918,8 +924,8 @@ async def run_websocket_mode(args, node_names: List[str], interval: int, use_doc
     # WebSocket 연결 (재시도 로직 포함)
     connected = False
     retry_count = 0
-    max_retries = args.max_retries
-    retry_interval = args.retry_interval
+    max_retries = args.max_retries if args.max_retries is not None else settings.MAX_RETRIES
+    retry_interval = args.retry_interval if args.retry_interval else settings.RETRY_INTERVAL
     
     # 연결 시도 로직
     while not connected and not shutdown_event.is_set():
@@ -1070,6 +1076,7 @@ async def main():
     args = parse_args()
     
     # 설정 로드
+    global settings  # settings를 전역 변수로 선언
     settings = Settings(args)
     
     # 노드 이름 파싱
@@ -1087,6 +1094,7 @@ async def main():
 # 종료 플래그 (전역 변수)
 shutdown_event = asyncio.Event()  # 종료 이벤트 초기화
 websocket_client_instance = None
+settings = None  # settings 변수 추가
 
 # 신호 핸들러 설정
 def signal_handler(sig, frame):
