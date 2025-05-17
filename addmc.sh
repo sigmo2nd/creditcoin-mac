@@ -408,77 +408,79 @@ update_docker_compose() {
   # Docker 소켓 경로 찾기 (메시지 출력 없음)
   DOCKER_SOCK_PATH=$(find_docker_sock_path)
   
-  # mclient 서비스가 이미 있는지 확인
+  # 임시 작업 파일 생성
+  TEMP_FILE=$(mktemp)
+  
+  # 기존 파일에서 mclient 서비스 제거
   if grep -q "  mclient:" docker-compose.yml; then
-    if [ "$FORCE" = "true" ]; then
-      echo -e "${YELLOW}mclient 서비스가 이미 존재합니다. 업데이트합니다...${NC}"
-      
-      # mclient 서비스 라인 찾기
-      mclient_line=$(grep -n "  mclient:" docker-compose.yml | cut -d: -f1)
-      
-      # mclient 서비스 블록 제거
-      # 다음 서비스나 networks 섹션 시작 위치 찾기
-      next_service_line=$(awk "/^  [a-zA-Z0-9_-]+:/ && NR > $mclient_line && !/^  mclient:/" docker-compose.yml | head -1 | grep -n . | cut -d: -f1)
-      
-      if [ -z "$next_service_line" ]; then
-        next_service_line=$(grep -n "^networks:" docker-compose.yml | cut -d: -f1)
-      fi
-      
-      if [ -n "$next_service_line" ]; then
-        # mclient 서비스 블록 제거
-        sed -i.tmp "${mclient_line},$(($next_service_line-1))d" docker-compose.yml
-        rm -f docker-compose.yml.tmp
-      else
-        echo -e "${RED}오류: docker-compose.yml 파일 구조를 이해할 수 없습니다.${NC}"
-        exit 1
-      fi
-    else
-      echo -e "${YELLOW}mclient 서비스가 이미 존재합니다. --force 옵션이 꺼져 있어 업데이트를 건너뜁니다.${NC}"
-      return
+    echo -e "${YELLOW}mclient 서비스가 이미 존재합니다. 삭제 후 재생성합니다...${NC}"
+    
+    # mclient 서비스를 제외한 모든 내용 임시 파일에 복사
+    awk '
+    BEGIN { print_line = 1; in_mclient = 0; }
+    /^  mclient:/ { in_mclient = 1; print_line = 0; next; }
+    /^  [a-zA-Z0-9_-]+:/ && in_mclient { in_mclient = 0; print_line = 1; }
+    { if (print_line) print $0; }
+    ' docker-compose.yml > "$TEMP_FILE"
+    
+    # 결과 확인
+    if [ ! -s "$TEMP_FILE" ]; then
+      echo -e "${RED}오류: docker-compose.yml 파일 처리 중 문제가 발생했습니다.${NC}"
+      rm -f "$TEMP_FILE"
+      exit 1
     fi
+    
+    # 원본 파일 대체
+    mv "$TEMP_FILE" docker-compose.yml
+  else
+    rm -f "$TEMP_FILE"
   fi
   
   # networks 섹션 위치 찾기
   networks_line=$(grep -n "^networks:" docker-compose.yml | cut -d: -f1)
   
-  if [ -n "$networks_line" ]; then
-    # 환경 변수 설정
-    mclient_environment="      - SERVER_ID=${SERVER_ID}\n"
-    mclient_environment+="      - NODE_NAMES=${NODE_NAMES}\n"
-    mclient_environment+="      - MONITOR_INTERVAL=${MONITOR_INTERVAL}\n"
-    
-    # 모드별 환경 변수
-    if [ "$MODE" = "local" ]; then
-      mclient_environment+="      - LOCAL_MODE=true\n"
-    else
-      if [ ! -z "$SERVER_URL" ]; then
-        mclient_environment+="      - SERVER_URL=${SERVER_URL}\n"
-      fi
-      
-      if [ ! -z "$SERVER_HOST" ]; then
-        mclient_environment+="      - WS_SERVER_HOST=${SERVER_HOST}\n"
-      fi
+  if [ -z "$networks_line" ]; then
+    echo -e "${RED}오류: docker-compose.yml 파일에서 networks 섹션을 찾을 수 없습니다.${NC}"
+    exit 1
+  fi
+  
+  # 환경 변수 설정
+  mclient_environment="      - SERVER_ID=${SERVER_ID}\n"
+  mclient_environment+="      - NODE_NAMES=${NODE_NAMES}\n"
+  mclient_environment+="      - MONITOR_INTERVAL=${MONITOR_INTERVAL}\n"
+  
+  # 모드별 환경 변수
+  if [ "$MODE" = "local" ]; then
+    mclient_environment+="      - LOCAL_MODE=true\n"
+  else
+    if [ ! -z "$SERVER_URL" ]; then
+      mclient_environment+="      - SERVER_URL=${SERVER_URL}\n"
     fi
     
-    # SSL 검증 비활성화 설정
-    if [ "$NO_SSL_VERIFY" = true ]; then
-      mclient_environment+="      - NO_SSL_VERIFY=true\n"
+    if [ ! -z "$SERVER_HOST" ]; then
+      mclient_environment+="      - WS_SERVER_HOST=${SERVER_HOST}\n"
     fi
-    
-    # 디버그 모드 설정
-    if [ "$DEBUG_MODE" = true ]; then
-      mclient_environment+="      - DEBUG_MODE=true\n"
-    fi
-    
-    # 공통 환경 변수
-    mclient_environment+="      # Docker 접근을 위한 환경 변수\n"
-    mclient_environment+="      - DOCKER_HOST=unix:///var/run/docker.sock\n"
-    mclient_environment+="      # 호스트 시스템 정보 접근을 위한 환경 변수\n"
-    mclient_environment+="      - HOST_PROC=/host/proc\n"
-    mclient_environment+="      - HOST_SYS=/host/sys\n"
-    
-    # mclient 서비스 블록 생성
-    mclient_service=$(cat << EOF
+  fi
+  
+  # SSL 검증 비활성화 설정
+  if [ "$NO_SSL_VERIFY" = true ]; then
+    mclient_environment+="      - NO_SSL_VERIFY=true\n"
+  fi
+  
+  # 디버그 모드 설정
+  if [ "$DEBUG_MODE" = true ]; then
+    mclient_environment+="      - DEBUG_MODE=true\n"
+  fi
+  
+  # 공통 환경 변수
+  mclient_environment+="      # Docker 접근을 위한 환경 변수\n"
+  mclient_environment+="      - DOCKER_HOST=unix:///var/run/docker.sock\n"
+  mclient_environment+="      # 호스트 시스템 정보 접근을 위한 환경 변수\n"
+  mclient_environment+="      - HOST_PROC=/host/proc\n"
+  mclient_environment+="      - HOST_SYS=/host/sys\n"
+  
+  # mclient 서비스 블록 생성
+  mclient_service=$(cat << EOF
 
   mclient:
     build:
@@ -503,18 +505,24 @@ update_docker_compose() {
 ${mclient_environment}
 EOF
 )
-    
-    # networks 섹션 앞에 mclient 서비스 삽입
-    head -n $((networks_line-1)) docker-compose.yml > docker-compose.yml.new
-    echo -e "$mclient_service" >> docker-compose.yml.new
-    tail -n +$((networks_line)) docker-compose.yml >> docker-compose.yml.new
-    mv docker-compose.yml.new docker-compose.yml
-    
-    echo -e "${GREEN}mclient 서비스가 docker-compose.yml에 추가되었습니다.${NC}"
-  else
-    echo -e "${RED}오류: docker-compose.yml 파일에서 networks 섹션을 찾을 수 없습니다.${NC}"
+  
+  # networks 섹션 앞에 mclient 서비스 삽입
+  TEMP_FILE=$(mktemp)
+  head -n $((networks_line-1)) docker-compose.yml > "$TEMP_FILE"
+  echo -e "$mclient_service" >> "$TEMP_FILE"
+  tail -n +$((networks_line)) docker-compose.yml >> "$TEMP_FILE"
+  
+  # 결과 확인
+  if [ ! -s "$TEMP_FILE" ]; then
+    echo -e "${RED}오류: docker-compose.yml 파일 수정 중 문제가 발생했습니다.${NC}"
+    rm -f "$TEMP_FILE"
     exit 1
   fi
+  
+  # 원본 파일 대체
+  mv "$TEMP_FILE" docker-compose.yml
+  
+  echo -e "${GREEN}mclient 서비스가 docker-compose.yml에 추가되었습니다.${NC}"
 }
 
 # 대화형 모드 실행
