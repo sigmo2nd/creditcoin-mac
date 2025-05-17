@@ -420,7 +420,7 @@ EOF
   echo -e "${GREEN}.env 파일이 생성되었습니다.${NC}"
 }
 
-# docker-compose.yml 파일 업데이트
+# docker-compose.yml 파일 업데이트 - 수정된 버전
 update_docker_compose() {
   echo -e "${BLUE}docker-compose.yml 파일 업데이트 중...${NC}"
   
@@ -474,16 +474,18 @@ update_docker_compose() {
   mclient_environment+="      - HOST_PROC=/host/proc\n"
   mclient_environment+="      - HOST_SYS=/host/sys\n"
   
-  # mclient 서비스 블록 생성
-  mclient_service="  mclient:
+  # mclient 서비스 블록을 임시 파일에 저장
+  MCLIENT_TEMPLATE_FILE=$(mktemp)
+  cat > "$MCLIENT_TEMPLATE_FILE" << EOF
+  mclient:
     build:
       context: ./mclient
       dockerfile: Dockerfile
     container_name: mclient
     # 호스트 프로세스 네임스페이스 공유
-    pid: \"host\"
+    pid: "host"
     # 호스트 네트워크 모드 사용
-    network_mode: \"host\"
+    network_mode: "host"
     volumes:
       # Docker 소켓 마운트
       - ${DOCKER_SOCK_PATH}:/var/run/docker.sock:ro
@@ -495,91 +497,37 @@ update_docker_compose() {
       # mclient 디렉토리 마운트
       - ./mclient:/app
     environment:
-${mclient_environment}"
+${mclient_environment}
+EOF
   
   # 임시 파일 생성
   TEMP_FILE=$(mktemp)
   
-  # 기존 파일에서 mclient 서비스를 제외한 내용을 awk로 추출
-  # 주요 로직: mclient 서비스 블록을 건너뛰고, networks 섹션 전에 새 mclient 블록 삽입
-  awk -v mclient="$mclient_service" '
-  BEGIN {
-    print_line = 1;          # 기본적으로 모든 줄 출력
-    skip_mclient = 0;        # mclient 서비스 건너뛰기 플래그
-    mclient_added = 0;       # mclient 서비스 추가 여부
-    current_indent = 0;      # 현재 줄 들여쓰기 수준
-    mclient_indent = 0;      # mclient 서비스 들여쓰기 수준
-  }
+  # 1단계: mclient 서비스 제거
+  grep -v "^  mclient:" docker-compose.yml > "$TEMP_FILE"
   
-  # mclient 서비스 줄 감지 (2칸 들여쓰기 정확히 확인)
-  /^  mclient:/ { 
-    skip_mclient = 1;        # 건너뛰기 모드 시작
-    mclient_indent = 2;      # mclient 들여쓰기 수준 저장
-    next;                    # 현재 줄 건너뛰기
-  }
+  # 2단계: 네트워크 섹션 직전에 mclient 서비스 추가
+  NETWORK_LINE=$(grep -n "^networks:" "$TEMP_FILE" | head -1 | cut -d: -f1)
   
-  # 처리 중인 각 줄마다 들여쓰기 계산
-  {
-    # 현재 줄의 들여쓰기 계산
-    match($0, /^[ \t]*/);
-    current_indent = RLENGTH;
-  }
-  
-  # mclient 서비스 블록 건너뛰기 로직
-  skip_mclient == 1 {
-    # 빈 줄이면 계속 건너뛰기
-    if ($0 ~ /^[ \t]*$/) next;
-    
-    # 새 서비스 시작 또는 최상위 섹션 시작 감지
-    if (current_indent <= mclient_indent && $0 ~ /[^ \t]/) {
-      if ($0 ~ /^  [a-zA-Z0-9_-]+:/ || $0 ~ /^[a-zA-Z0-9_-]+:/) {
-        skip_mclient = 0;    # 건너뛰기 종료
-      }
-    }
-    
-    # 아직 mclient 서비스 블록 내부면 건너뛰기
-    if (skip_mclient == 1) next;
-  }
-  
-  # 최상위 networks 섹션 감지 -> mclient 서비스 삽입
-  /^networks:/ {
-    if (mclient_added == 0) {
-      print "";              # 빈 줄 추가
-      print mclient;         # mclient 서비스 블록 출력
-      print "";              # 빈 줄 추가
-      mclient_added = 1;     # mclient 추가 완료 표시
-    }
-    print $0;                # networks 줄 출력
-    next;
-  }
-  
-  # 나머지 줄 출력
-  { 
-    print $0;                # 현재 줄 출력 
-  }
-  
-  # 파일 끝에 도달했는데 mclient가 추가되지 않았다면 추가
-  END {
-    if (mclient_added == 0) {
-      print "";               # 빈 줄 추가
-      print mclient;          # mclient 서비스 블록 출력
-    }
-  }
-  ' docker-compose.yml > "$TEMP_FILE"
-  
-  # 처리 결과 확인
-  if [ ! -s "$TEMP_FILE" ]; then
-    echo -e "${RED}오류: docker-compose.yml 파일 처리 중 문제가 발생했습니다.${NC}"
-    echo -e "${YELLOW}백업 파일($BACKUP_FILE)을 확인하세요.${NC}"
-    rm -f "$TEMP_FILE"
-    exit 1
+  if [ -z "$NETWORK_LINE" ]; then
+    # networks 섹션이 없으면 파일 끝에 추가
+    cat "$TEMP_FILE" > docker-compose.yml
+    echo "" >> docker-compose.yml # 빈 줄 추가
+    cat "$MCLIENT_TEMPLATE_FILE" >> docker-compose.yml
+  else
+    # networks 섹션 앞에 추가
+    head -n $((NETWORK_LINE-1)) "$TEMP_FILE" > docker-compose.yml
+    echo "" >> docker-compose.yml # 빈 줄 추가
+    cat "$MCLIENT_TEMPLATE_FILE" >> docker-compose.yml
+    echo "" >> docker-compose.yml # 빈 줄 추가
+    tail -n +$NETWORK_LINE "$TEMP_FILE" >> docker-compose.yml
   fi
   
-  # 원본 파일 대체
-  mv "$TEMP_FILE" docker-compose.yml
+  # 임시 파일 삭제
+  rm -f "$TEMP_FILE" "$MCLIENT_TEMPLATE_FILE"
   
   # 성공 메시지
-  echo -e "${GREEN}mclient 서비스가 docker-compose.yml에 성공적으로 추가/업데이트되었습니다.${NC}"
+  echo -e "${GREEN}mclient 서비스가 docker-compose.yml에 성공적으로 추가되었습니다.${NC}"
   echo -e "${YELLOW}백업 파일: $BACKUP_FILE${NC}"
 }
 
