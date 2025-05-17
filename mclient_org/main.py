@@ -167,25 +167,29 @@ class Settings:
         logger.info(f"디버그 모드: {'활성화' if self.DEBUG_MODE else '비활성화'}")
         logger.info("================")
 
-def get_websocket_url(settings):
+def get_websocket_url(settings_obj):
     """설정에 따라 WebSocket URL 결정"""
+    # 설정 객체가 없는 경우
+    if not settings_obj:
+        return "ws://localhost:8080/ws"  # 기본값
+    
     # 1. 커스텀 URL이 직접 설정된 경우
-    if settings.SERVER_URL:
-        return settings.SERVER_URL
+    if settings_obj.SERVER_URL:
+        return settings_obj.SERVER_URL
     
     # 2. 기본 URL 설정 (설정값으로부터 동적 생성)
     base_urls = {
-        "ws": f"ws://{settings.WS_SERVER_HOST}:{settings.WS_PORT_WS}/ws",
-        "wss": f"wss://{settings.WS_SERVER_HOST}:{settings.WS_PORT_WSS}/ws",
-        "wss_internal": f"wss://{settings.WS_SERVER_HOST}:{settings.WS_PORT_WSS}/ws"
+        "ws": f"ws://{settings_obj.WS_SERVER_HOST}:{settings_obj.WS_PORT_WS}/ws",
+        "wss": f"wss://{settings_obj.WS_SERVER_HOST}:{settings_obj.WS_PORT_WSS}/ws",
+        "wss_internal": f"wss://{settings_obj.WS_SERVER_HOST}:{settings_obj.WS_PORT_WSS}/ws"
     }
     
     # 3. auto 모드인 경우 자동 연결 로직 사용
-    if settings.WS_MODE == "auto":
+    if settings_obj.WS_MODE == "auto":
         return "auto"  # 자동 연결 로직은 websocket_client에서 구현
     
     # 4. 모드에 해당하는 URL 반환 (없으면 ws 모드 기본값 사용)
-    url = base_urls.get(settings.WS_MODE, base_urls["ws"])
+    url = base_urls.get(settings_obj.WS_MODE, base_urls["ws"])
     return url
 
 # 실행 환경 감지
@@ -201,35 +205,35 @@ def detect_environment():
         return "unknown"
 
 # 연결 설정 구성
-def configure_connection(settings):
+def configure_connection(settings_obj):
     """설정에 따른 연결 구성 생성"""
     # 로컬 모드인 경우
-    if settings.LOCAL_MODE:
+    if settings_obj.LOCAL_MODE:
         return {"mode": "local", "use_websocket": False}
     
     # 서버 모드인 경우
     environment = detect_environment()
     
     # 커스텀 URL이 있는 경우 그대로 사용
-    if settings.SERVER_URL:
+    if settings_obj.SERVER_URL:
         return {
             "mode": "server",
-            "url": settings.SERVER_URL,
-            "verify_ssl": not settings.NO_SSL_VERIFY
+            "url": settings_obj.SERVER_URL,
+            "verify_ssl": not settings_obj.NO_SSL_VERIFY
         }
     
     # URL 기반으로 구성
-    ws_url = get_websocket_url(settings)
-    use_ssl = settings.WS_MODE in ["wss", "wss_internal"] or ws_url.startswith("wss://")
+    ws_url = get_websocket_url(settings_obj)
+    use_ssl = settings_obj.WS_MODE in ["wss", "wss_internal"] or (isinstance(ws_url, str) and ws_url.startswith("wss://"))
     
     return {
         "mode": "server",
         "url": ws_url,
-        "server_id": settings.SERVER_ID,
+        "server_id": settings_obj.SERVER_ID,
         "use_ssl": use_ssl,
-        "verify_ssl": not settings.NO_SSL_VERIFY,
-        "max_retries": settings.MAX_RETRIES,
-        "retry_interval": settings.RETRY_INTERVAL
+        "verify_ssl": not settings_obj.NO_SSL_VERIFY,
+        "max_retries": settings_obj.MAX_RETRIES,
+        "retry_interval": settings_obj.RETRY_INTERVAL
     }
 
 #################################################
@@ -864,15 +868,15 @@ async def run_local_mode(node_names: List[str], interval: int, use_docker: bool)
         logger.info("로컬 모니터링 종료")
 
 # 웹소켓 모드 실행 함수
-async def run_websocket_mode(args, node_names: List[str], interval: int, use_docker: bool):
+async def run_websocket_mode(args, settings_obj, node_names: List[str], interval: int, use_docker: bool):
     """웹소켓 모드로 모니터링 (서버에 전송)"""
-    global websocket_client_instance, shutdown_event, settings
+    global websocket_client_instance
     
     # 웹소켓 관련 import - 필요 시에만 임포트
     from websocket_client import WebSocketClient
     
     # 설정값 적용
-    server_id = args.server_id or settings.SERVER_ID
+    server_id = args.server_id or settings_obj.SERVER_ID
     
     # WebSocket URL 결정
     if args.ws_url:
@@ -880,14 +884,14 @@ async def run_websocket_mode(args, node_names: List[str], interval: int, use_doc
     elif args.ws_mode:
         ws_url_or_mode = args.ws_mode
     else:
-        ws_url_or_mode = get_websocket_url(settings)
+        ws_url_or_mode = get_websocket_url(settings_obj)
     
     logger.info(f"모니터링 시작: 서버 ID={server_id}, 노드={node_names}, 간격={interval}초")
     
     if args.ws_url:
         logger.info(f"WebSocket URL: {args.ws_url}")
-    elif settings.SERVER_URL:
-        logger.info(f"WebSocket URL: {settings.SERVER_URL}")
+    elif settings_obj.SERVER_URL:
+        logger.info(f"WebSocket URL: {settings_obj.SERVER_URL}")
     
     if args.no_ssl_verify:
         logger.info("SSL 인증서 검증이 비활성화되었습니다.")
@@ -924,8 +928,8 @@ async def run_websocket_mode(args, node_names: List[str], interval: int, use_doc
     # WebSocket 연결 (재시도 로직 포함)
     connected = False
     retry_count = 0
-    max_retries = args.max_retries if args.max_retries is not None else settings.MAX_RETRIES
-    retry_interval = args.retry_interval if args.retry_interval else settings.RETRY_INTERVAL
+    max_retries = args.max_retries if args.max_retries is not None else settings_obj.MAX_RETRIES
+    retry_interval = args.retry_interval if args.retry_interval else settings_obj.RETRY_INTERVAL
     
     # 연결 시도 로직
     while not connected and not shutdown_event.is_set():
@@ -1076,25 +1080,23 @@ async def main():
     args = parse_args()
     
     # 설정 로드
-    global settings  # settings를 전역 변수로 선언
-    settings = Settings(args)
+    settings_obj = Settings(args)
     
     # 노드 이름 파싱
-    node_names = [name.strip() for name in settings.NODE_NAMES.split(',')]
+    node_names = [name.strip() for name in settings_obj.NODE_NAMES.split(',')]
     
     # 설정 정보 출력
-    settings.print_settings()
+    settings_obj.print_settings()
     
     # 실행 모드 선택
-    if settings.LOCAL_MODE:
-        await run_local_mode(node_names, settings.MONITOR_INTERVAL, not settings.NO_DOCKER)
+    if settings_obj.LOCAL_MODE:
+        await run_local_mode(node_names, settings_obj.MONITOR_INTERVAL, not settings_obj.NO_DOCKER)
     else:
-        await run_websocket_mode(args, node_names, settings.MONITOR_INTERVAL, not settings.NO_DOCKER)
+        await run_websocket_mode(args, settings_obj, node_names, settings_obj.MONITOR_INTERVAL, not settings_obj.NO_DOCKER)
 
 # 종료 플래그 (전역 변수)
 shutdown_event = asyncio.Event()  # 종료 이벤트 초기화
 websocket_client_instance = None
-settings = None  # settings 변수 추가
 
 # 신호 핸들러 설정
 def signal_handler(sig, frame):
