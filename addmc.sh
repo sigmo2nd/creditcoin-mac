@@ -17,7 +17,7 @@ SERVER_URL=""
 SERVER_HOST=""
 NO_SSL_VERIFY=false
 DEBUG_MODE=false
-FORCE=true
+FORCE=false
 NON_INTERACTIVE=false
 
 # 현재 디렉토리 저장
@@ -84,6 +84,7 @@ show_help() {
   echo "  --host HOST         WebSocket 서버 호스트 지정"
   echo "  --no-ssl-verify     SSL 인증서 검증 비활성화"
   echo "  --debug             디버그 모드 활성화"
+  echo "  --force             기존 파일을 강제로 덮어쓰기"
   echo "  --help, -h          이 도움말 표시"
   echo ""
   echo "사용 예시:"
@@ -128,6 +129,10 @@ parse_args() {
         ;;
       --debug)
         DEBUG_MODE=true
+        shift
+        ;;
+      --force)
+        FORCE=true
         shift
         ;;
       --help|-h)
@@ -225,38 +230,63 @@ prepare_client_files() {
     echo -e "${BLUE}기존 mclient 디렉토리를 사용합니다.${NC}"
   fi
   
-  # 소스 디렉토리 (mclient_org)
-  local SRC_DIR="${CURRENT_DIR}/mclient_org"
+  # 필요한 파일 경로들
+  local main_py="${MCLIENT_DIR}/main.py"
+  local docker_stats="${MCLIENT_DIR}/docker_stats_client.py"
+  local websocket="${MCLIENT_DIR}/websocket_client.py"
+  local requirements="${MCLIENT_DIR}/requirements.txt"
   
-  # 소스 디렉토리 존재 확인
-  if [ ! -d "$SRC_DIR" ]; then
-    echo -e "${RED}오류: mclient_org 디렉토리를 찾을 수 없습니다.${NC}"
-    echo -e "${YELLOW}현재 디렉토리: $(pwd)${NC}"
-    exit 1
+  # 필수 파일이 모두 존재하는지 확인
+  if [ -f "$main_py" ] && [ -f "$docker_stats" ] && [ -f "$websocket" ] && [ -f "$requirements" ]; then
+    # 모든 파일이 존재하면 사용자에게 확인 요청
+    if [ "$FORCE" != true ] && [ "$NON_INTERACTIVE" != true ]; then
+      echo -e "${YELLOW}기존 모니터링 클라이언트 파일을 발견했습니다.${NC}"
+      read -p "기존 파일을 덮어쓰시겠습니까? (y/N): " override
+      if [[ ! "$override" =~ ^[Yy]$ ]]; then
+        echo -e "${GREEN}기존 파일을 유지합니다.${NC}"
+        return
+      fi
+    fi
   fi
   
-  # 필요한 파일들 목록
-  local files=(
+  # 현재 디렉토리에서 필요한 파일들 찾기
+  local src_files=(
     "main.py" 
     "docker_stats_client.py" 
     "websocket_client.py" 
     "requirements.txt"
   )
   
-  # 각 파일 복사
-  for file in "${files[@]}"; do
-    local src_file="${SRC_DIR}/${file}"
-    
-    # 파일 존재 확인
-    if [ -f "$src_file" ]; then
+  local file_found=false
+  
+  # 현재 디렉토리에서 파일 찾기
+  for file in "${src_files[@]}"; do
+    if [ -f "${CURRENT_DIR}/${file}" ]; then
+      echo -e "${GREEN}파일 발견: ${CURRENT_DIR}/${file}${NC}"
       echo -e "${YELLOW}복사 중: ${file}${NC}"
-      cp "$src_file" "${MCLIENT_DIR}/${file}"
-      echo -e "${GREEN}${file} 복사 완료${NC}"
-    else
-      echo -e "${RED}오류: ${SRC_DIR}/${file} 파일을 찾을 수 없습니다.${NC}"
-      exit 1
+      cp "${CURRENT_DIR}/${file}" "${MCLIENT_DIR}/${file}"
+      file_found=true
     fi
   done
+  
+  # mclient_org 디렉토리 확인
+  local mclient_org="${CURRENT_DIR}/mclient_org"
+  if [ -d "$mclient_org" ]; then
+    for file in "${src_files[@]}"; do
+      if [ -f "${mclient_org}/${file}" ]; then
+        echo -e "${GREEN}파일 발견: ${mclient_org}/${file}${NC}"
+        echo -e "${YELLOW}복사 중: ${file}${NC}"
+        cp "${mclient_org}/${file}" "${MCLIENT_DIR}/${file}"
+        file_found=true
+      fi
+    done
+  fi
+  
+  # 파일을 찾지 못한 경우
+  if [ "$file_found" = false ]; then
+    echo -e "${YELLOW}필요한 소스 파일을 찾을 수 없습니다.${NC}"
+    echo -e "${YELLOW}수동으로 필요한 파일을 ${MCLIENT_DIR} 디렉토리에 복사해야 합니다.${NC}"
+  fi
   
   # 스타트 스크립트 추가
   cat > "${MCLIENT_DIR}/start.sh" << 'EOF'
@@ -402,8 +432,9 @@ update_docker_compose() {
   fi
   
   # docker-compose.yml 파일 백업
-  cp docker-compose.yml docker-compose.yml.bak.$(date +%Y%m%d%H%M%S)
-  echo -e "${GREEN}docker-compose.yml 파일이 백업되었습니다.${NC}"
+  BACKUP_FILE="docker-compose.yml.bak.$(date +%Y%m%d%H%M%S)"
+  cp docker-compose.yml "$BACKUP_FILE"
+  echo -e "${GREEN}docker-compose.yml 파일이 $BACKUP_FILE으로 백업되었습니다.${NC}"
   
   # Docker 소켓 경로 찾기 (메시지 출력 없음)
   DOCKER_SOCK_PATH=$(find_docker_sock_path)
@@ -444,17 +475,15 @@ update_docker_compose() {
   mclient_environment+="      - HOST_SYS=/host/sys\n"
   
   # mclient 서비스 블록 생성
-  mclient_service=$(cat << EOF
-
-  mclient:
+  mclient_service="  mclient:
     build:
       context: ./mclient
       dockerfile: Dockerfile
     container_name: mclient
     # 호스트 프로세스 네임스페이스 공유
-    pid: "host"
+    pid: \"host\"
     # 호스트 네트워크 모드 사용
-    network_mode: "host"
+    network_mode: \"host\"
     volumes:
       # Docker 소켓 마운트
       - ${DOCKER_SOCK_PATH}:/var/run/docker.sock:ro
@@ -466,64 +495,92 @@ update_docker_compose() {
       # mclient 디렉토리 마운트
       - ./mclient:/app
     environment:
-${mclient_environment}
-EOF
-)
+${mclient_environment}"
   
   # 임시 파일 생성
   TEMP_FILE=$(mktemp)
   
-  # 기존 파일에서 mclient 서비스 제거
-  if grep -q "  mclient:" docker-compose.yml; then
-    echo -e "${YELLOW}mclient 서비스가 이미 존재합니다. 삭제 후 재생성합니다...${NC}"
+  # 기존 파일에서 mclient 서비스를 제외한 내용을 awk로 추출
+  # 주요 로직: mclient 서비스 블록을 건너뛰고, networks 섹션 전에 새 mclient 블록 삽입
+  awk -v mclient="$mclient_service" '
+  BEGIN {
+    print_line = 1;          # 기본적으로 모든 줄 출력
+    skip_mclient = 0;        # mclient 서비스 건너뛰기 플래그
+    mclient_added = 0;       # mclient 서비스 추가 여부
+    current_indent = 0;      # 현재 줄 들여쓰기 수준
+    mclient_indent = 0;      # mclient 서비스 들여쓰기 수준
+  }
+  
+  # mclient 서비스 줄 감지 (2칸 들여쓰기 정확히 확인)
+  /^  mclient:/ { 
+    skip_mclient = 1;        # 건너뛰기 모드 시작
+    mclient_indent = 2;      # mclient 들여쓰기 수준 저장
+    next;                    # 현재 줄 건너뛰기
+  }
+  
+  # 처리 중인 각 줄마다 들여쓰기 계산
+  {
+    # 현재 줄의 들여쓰기 계산
+    match($0, /^[ \t]*/);
+    current_indent = RLENGTH;
+  }
+  
+  # mclient 서비스 블록 건너뛰기 로직
+  skip_mclient == 1 {
+    # 빈 줄이면 계속 건너뛰기
+    if ($0 ~ /^[ \t]*$/) next;
     
-    # mclient 서비스를 제외한 모든 내용 임시 파일에 복사
-    awk '
-    BEGIN { print_line = 1; in_mclient = 0; }
-    /^  mclient:/ { in_mclient = 1; print_line = 0; next; }
-    /^  [a-zA-Z0-9_-]+:/ && in_mclient { in_mclient = 0; print_line = 1; }
-    { if (print_line) print $0; }
-    ' docker-compose.yml > "$TEMP_FILE"
+    # 새 서비스 시작 또는 최상위 섹션 시작 감지
+    if (current_indent <= mclient_indent && $0 ~ /[^ \t]/) {
+      if ($0 ~ /^  [a-zA-Z0-9_-]+:/ || $0 ~ /^[a-zA-Z0-9_-]+:/) {
+        skip_mclient = 0;    # 건너뛰기 종료
+      }
+    }
     
-    # 결과 확인
-    if [ ! -s "$TEMP_FILE" ]; then
-      echo -e "${RED}오류: docker-compose.yml 파일 처리 중 문제가 발생했습니다.${NC}"
-      rm -f "$TEMP_FILE"
-      exit 1
-    fi
-    
-    # 원본 파일 대체
-    cp "$TEMP_FILE" docker-compose.yml
+    # 아직 mclient 서비스 블록 내부면 건너뛰기
+    if (skip_mclient == 1) next;
+  }
+  
+  # 최상위 networks 섹션 감지 -> mclient 서비스 삽입
+  /^networks:/ {
+    if (mclient_added == 0) {
+      print "";              # 빈 줄 추가
+      print mclient;         # mclient 서비스 블록 출력
+      print "";              # 빈 줄 추가
+      mclient_added = 1;     # mclient 추가 완료 표시
+    }
+    print $0;                # networks 줄 출력
+    next;
+  }
+  
+  # 나머지 줄 출력
+  { 
+    print $0;                # 현재 줄 출력 
+  }
+  
+  # 파일 끝에 도달했는데 mclient가 추가되지 않았다면 추가
+  END {
+    if (mclient_added == 0) {
+      print "";               # 빈 줄 추가
+      print mclient;          # mclient 서비스 블록 출력
+    }
+  }
+  ' docker-compose.yml > "$TEMP_FILE"
+  
+  # 처리 결과 확인
+  if [ ! -s "$TEMP_FILE" ]; then
+    echo -e "${RED}오류: docker-compose.yml 파일 처리 중 문제가 발생했습니다.${NC}"
+    echo -e "${YELLOW}백업 파일($BACKUP_FILE)을 확인하세요.${NC}"
     rm -f "$TEMP_FILE"
+    exit 1
   fi
   
-  # 파일에 서비스 추가 위치 결정 (네트워크 섹션이나 파일 끝)
-  INSERTION_POINT=$(grep -n "^networks:" docker-compose.yml 2>/dev/null | head -1 | cut -d: -f1)
+  # 원본 파일 대체
+  mv "$TEMP_FILE" docker-compose.yml
   
-  if [ -z "$INSERTION_POINT" ]; then
-    # networks 섹션이 없으면 파일 끝에 추가
-    echo -e "${YELLOW}docker-compose.yml 파일에서 networks 섹션을 찾을 수 없습니다. 파일 끝에 추가합니다.${NC}"
-    echo -e "$mclient_service" >> docker-compose.yml
-  else
-    # networks 섹션 앞에 추가
-    TEMP_FILE=$(mktemp)
-    head -n $((INSERTION_POINT-1)) docker-compose.yml > "$TEMP_FILE"
-    echo -e "$mclient_service" >> "$TEMP_FILE"
-    tail -n +$((INSERTION_POINT)) docker-compose.yml >> "$TEMP_FILE"
-    
-    # 결과 확인
-    if [ ! -s "$TEMP_FILE" ]; then
-      echo -e "${RED}오류: docker-compose.yml 파일 수정 중 문제가 발생했습니다.${NC}"
-      rm -f "$TEMP_FILE"
-      exit 1
-    fi
-    
-    # 원본 파일 대체
-    cp "$TEMP_FILE" docker-compose.yml
-    rm -f "$TEMP_FILE"
-  fi
-  
-  echo -e "${GREEN}mclient 서비스가 docker-compose.yml에 추가되었습니다.${NC}"
+  # 성공 메시지
+  echo -e "${GREEN}mclient 서비스가 docker-compose.yml에 성공적으로 추가/업데이트되었습니다.${NC}"
+  echo -e "${YELLOW}백업 파일: $BACKUP_FILE${NC}"
 }
 
 # 대화형 모드 실행
@@ -656,13 +713,6 @@ run_interactive_mode() {
 
 # 메인 실행 함수
 main() {
-  # setupmc.sh가 먼저 실행되었는지 확인
-  if [ ! -d "$MCLIENT_DIR" ]; then
-    echo -e "${RED}오류: mclient 디렉토리가 없습니다.${NC}"
-    echo -e "${YELLOW}먼저 setupmc.sh를 실행하여 기본 환경을 설정하세요.${NC}"
-    exit 1
-  fi
-  
   # Docker 환경 확인
   check_docker_env
   
