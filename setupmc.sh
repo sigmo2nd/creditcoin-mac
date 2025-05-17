@@ -205,16 +205,19 @@ collect_host_info() {
     show_success "메모리: ${memory_gb}GB"
     show_success "디스크 용량: $disk_total"
     
-    # 환경 변수 파일 생성
-    create_env_file "$hostname_local" "$model_name" "$processor_info" "$cpu_cores" "$memory_gb" "$perf_cores" "$eff_cores"
+    # 호스트 정보만 담긴 환경 변수 파일 생성
+    create_host_env_file "$hostname_local" "$model_name" "$processor_info" "$cpu_cores" "$memory_gb" "$perf_cores" "$eff_cores"
   else
-    show_error "이 스크립트는 현재 macOS만 지원합니다."
-    create_env_file "$hostname" "Unknown" "Unknown" "1" "1" "0" "0"
+    show_warning "이 스크립트는 현재 macOS에 최적화되어 있습니다."
+    # 비-macOS 환경에서도 기본 정보는 수집
+    local cpu_cores=$(nproc 2>/dev/null || echo "0")
+    local memory_info=$(free -g 2>/dev/null | awk 'NR==2{print $2}' || echo "0")
+    create_host_env_file "$hostname" "Unknown" "Unknown" "$cpu_cores" "$memory_info" "0" "0"
   fi
 }
 
-# 환경 변수 파일 생성
-create_env_file() {
+# 호스트 정보만 담긴 환경 변수 파일 생성
+create_host_env_file() {
   local hostname="$1"
   local model_name="$2"
   local processor="$3"
@@ -222,58 +225,12 @@ create_env_file() {
   local memory_gb="$5"
   local perf_cores="$6"
   local eff_cores="$7"
-  local env_file="${SCRIPT_DIR}/mclient/.env"
+  local host_env_file="${SCRIPT_DIR}/mclient/host_info.env"
   
-  show_step "환경 변수 파일 생성 (.env)"
-  
-  # 기존 .env 백업 (있는 경우)
-  if [ -f "$env_file" ]; then
-    cp "$env_file" "${env_file}.bak.$(date +%Y%m%d%H%M%S)"
-    show_success ".env 파일 백업 완료"
-  fi
-  
-  # 서버 ID 및 노드 이름 지정에 대한 안내
-  show_warning "모니터링 클라이언트 식별을 위한 설정을 입력합니다."
-  
-  # 서버 ID 기본값 (호스트명)
-  local default_server_id="${hostname%%.*}"
-  read -p "서버 ID (기본값: $default_server_id): " server_id
-  server_id=${server_id:-$default_server_id}
-  
-  # 노드 이름 기본값
-  local default_node_names="node,3node"
-  read -p "모니터링할 노드 이름 쉼표로 구분 (기본값: $default_node_names): " node_names
-  node_names=${node_names:-$default_node_names}
-  
-  # Docker 정보 환경변수 사용 여부
-  read -p "Docker 정보를 수집하시겠습니까? (Y/n): " use_docker
-  if [[ "$use_docker" =~ ^([nN][oO]|[nN])$ ]]; then
-    no_docker="true"
-  else
-    no_docker="false"
-  fi
-  
-  # 로컬 모드 기본 설정
-  read -p "로컬 모드로 실행하시겠습니까? (Y/n): " local_mode
-  if [[ ! "$local_mode" =~ ^([nN][oO]|[nN])$ ]]; then
-    is_local_mode="true"
-  else
-    is_local_mode="false"
-  fi
-  
-  # 모니터링 간격 설정
-  read -p "모니터링 간격(초) (기본값: 5): " monitor_interval
-  monitor_interval=${monitor_interval:-5}
-  
-  # .env 파일 생성
-  cat > "$env_file" << EOT
-# Creditcoin 모니터링 클라이언트 환경설정
+  # 호스트 정보 파일 생성
+  cat > "$host_env_file" << EOT
+# Creditcoin 모니터링 클라이언트 호스트 정보
 # 생성일: $(date)
-
-# 클라이언트 식별자 설정
-SERVER_ID="${server_id}"
-NODE_NAMES="${node_names}"
-MONITOR_INTERVAL=${monitor_interval}
 
 # 호스트 시스템 정보
 HOST_SYSTEM_NAME="${hostname}"
@@ -283,21 +240,10 @@ HOST_CPU_CORES=${cpu_cores}
 HOST_CPU_PERF_CORES=${perf_cores}
 HOST_CPU_EFF_CORES=${eff_cores}
 HOST_MEMORY_GB=${memory_gb}
-
-# 실행 모드 설정 
-LOCAL_MODE=${is_local_mode}
-NO_DOCKER=${no_docker}
-DEBUG_MODE=false
-
-# WebSocket 서버 설정 (로컬 모드가 아닌 경우만 사용)
-WS_MODE="auto"
-WS_SERVER_HOST="192.168.0.24"
-WS_PORT_WS=8080
-WS_PORT_WSS=8443
-NO_SSL_VERIFY=false
 EOT
 
-  show_success ".env 파일 생성 완료: $env_file"
+  show_success "호스트 정보 파일 생성 완료: $host_env_file"
+  show_warning "이 정보는 Docker 컨테이너에서 모니터링 클라이언트 실행 시 호스트 시스템 정보를 제공합니다."
 }
 
 # 클라이언트 유틸리티 함수 생성
@@ -335,6 +281,7 @@ create_client_utils() {
 $marker
 # Creditcoin 모니터링 클라이언트 설정
 MCLIENT_DIR="$SCRIPT_DIR/mclient"
+HOST_INFO_ENV="\$MCLIENT_DIR/host_info.env"
 
 # 모니터링 클라이언트 유틸리티 함수
 function mclient-start() {
@@ -369,7 +316,11 @@ function mclient-status() {
 
 function mclient-local() {
   echo -e "${BLUE}모니터링 클라이언트 로컬 실행 중...${NC}"
-  cd "$MCLIENT_DIR" && python3 main.py --local
+  # 호스트 정보 환경 변수 먼저 로드
+  if [ -f "\$HOST_INFO_ENV" ]; then
+    source "\$HOST_INFO_ENV"
+  fi
+  cd "\$MCLIENT_DIR" && python3 main.py --local
 }
 
 # 짧은 형태의 명령어 추가
@@ -411,6 +362,7 @@ update_docker_compose() {
       dockerfile: Dockerfile
     env_file:
       - ./mclient/.env
+      - ./mclient/host_info.env
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
@@ -463,7 +415,7 @@ main() {
   # 기본 소스 파일 생성
   create_source_files
   
-  # 호스트 시스템 정보 수집 및 .env 파일 생성
+  # 호스트 시스템 정보 수집 및 저장
   collect_host_info
   
   # 클라이언트 유틸리티 함수 생성
@@ -478,6 +430,8 @@ main() {
   
   echo -e "\n${YELLOW}변경 사항을 적용하려면 다음 명령어를 실행하세요:${NC}"
   echo -e "${BLUE}source $SHELL_PROFILE${NC}"
+  
+  echo -e "\n${YELLOW}다음 단계로 addmc.sh를 실행하여 모니터링 클라이언트 설정을 완료하세요.${NC}"
   
   echo -e "\n${YELLOW}사용 가능한 명령어:${NC}"
   echo -e "${GREEN}mcstart${NC}     - 모니터링 클라이언트 시작"
