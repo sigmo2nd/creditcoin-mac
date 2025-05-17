@@ -161,6 +161,145 @@ EOF
   fi
 }
 
+# 호스트 시스템 정보 수집
+collect_host_info() {
+  show_step "호스트 시스템 정보 수집"
+  
+  # 호스트명 수집
+  local hostname=$(hostname)
+  local hostname_local=$(hostname -f 2>/dev/null || echo "$hostname.local")
+  
+  # macOS 고유 ID 수집 (하드웨어 UUID)
+  local hw_uuid=$(system_profiler SPHardwareDataType 2>/dev/null | grep "Hardware UUID" | awk -F': ' '{print $2}' | tr -d ' ' || echo "")
+  
+  # 시스템 모델 정보
+  local model_name=""
+  local processor_info=""
+  
+  if [[ "$(uname)" == "Darwin" ]]; then
+    # macOS 시스템 모델 및 프로세서 정보
+    model_name=$(system_profiler SPHardwareDataType 2>/dev/null | grep "Model Name" | awk -F': ' '{print $2}' | xargs || echo "Unknown Mac")
+    processor_info=$(system_profiler SPHardwareDataType 2>/dev/null | grep "Chip" | awk -F': ' '{print $2}' | xargs || echo "")
+    
+    # Intel Mac의 경우 프로세서 정보가 'Processor'로 표시될 수 있음
+    if [[ -z "$processor_info" ]]; then
+      processor_info=$(system_profiler SPHardwareDataType 2>/dev/null | grep "Processor" | awk -F': ' '{print $2}' | xargs || echo "Unknown Processor")
+    fi
+    
+    # CPU 코어 정보
+    local cpu_cores=$(sysctl -n hw.ncpu 2>/dev/null || echo "0")
+    local perf_cores=$(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null || echo "0")
+    local eff_cores=$(sysctl -n hw.perflevel1.logicalcpu 2>/dev/null || echo "0")
+    
+    # 메모리 정보
+    local memory_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo "0") / 1024 / 1024 / 1024 ))
+    
+    # 디스크 정보
+    local disk_total=$(df -h / | awk 'NR==2 {print $2}')
+    
+    # 결과 출력
+    show_success "호스트명: $hostname_local"
+    show_success "모델명: $model_name"
+    show_success "프로세서: $processor_info"
+    show_success "CPU 코어: $cpu_cores 코어 (성능: $perf_cores, 효율: $eff_cores)"
+    show_success "메모리: ${memory_gb}GB"
+    show_success "디스크 용량: $disk_total"
+    
+    # 환경 변수 파일 생성
+    create_env_file "$hostname_local" "$model_name" "$processor_info" "$cpu_cores" "$memory_gb" "$perf_cores" "$eff_cores"
+  else
+    show_error "이 스크립트는 현재 macOS만 지원합니다."
+    create_env_file "$hostname" "Unknown" "Unknown" "1" "1" "0" "0"
+  fi
+}
+
+# 환경 변수 파일 생성
+create_env_file() {
+  local hostname="$1"
+  local model_name="$2"
+  local processor="$3"
+  local cpu_cores="$4"
+  local memory_gb="$5"
+  local perf_cores="$6"
+  local eff_cores="$7"
+  local env_file="${SCRIPT_DIR}/mclient/.env"
+  
+  show_step "환경 변수 파일 생성 (.env)"
+  
+  # 기존 .env 백업 (있는 경우)
+  if [ -f "$env_file" ]; then
+    cp "$env_file" "${env_file}.bak.$(date +%Y%m%d%H%M%S)"
+    show_success ".env 파일 백업 완료"
+  fi
+  
+  # 서버 ID 및 노드 이름 지정에 대한 안내
+  show_warning "모니터링 클라이언트 식별을 위한 설정을 입력합니다."
+  
+  # 서버 ID 기본값 (호스트명)
+  local default_server_id="${hostname%%.*}"
+  read -p "서버 ID (기본값: $default_server_id): " server_id
+  server_id=${server_id:-$default_server_id}
+  
+  # 노드 이름 기본값
+  local default_node_names="node,3node"
+  read -p "모니터링할 노드 이름 쉼표로 구분 (기본값: $default_node_names): " node_names
+  node_names=${node_names:-$default_node_names}
+  
+  # Docker 정보 환경변수 사용 여부
+  read -p "Docker 정보를 수집하시겠습니까? (Y/n): " use_docker
+  if [[ "$use_docker" =~ ^([nN][oO]|[nN])$ ]]; then
+    no_docker="true"
+  else
+    no_docker="false"
+  fi
+  
+  # 로컬 모드 기본 설정
+  read -p "로컬 모드로 실행하시겠습니까? (Y/n): " local_mode
+  if [[ ! "$local_mode" =~ ^([nN][oO]|[nN])$ ]]; then
+    is_local_mode="true"
+  else
+    is_local_mode="false"
+  fi
+  
+  # 모니터링 간격 설정
+  read -p "모니터링 간격(초) (기본값: 5): " monitor_interval
+  monitor_interval=${monitor_interval:-5}
+  
+  # .env 파일 생성
+  cat > "$env_file" << EOT
+# Creditcoin 모니터링 클라이언트 환경설정
+# 생성일: $(date)
+
+# 클라이언트 식별자 설정
+SERVER_ID="${server_id}"
+NODE_NAMES="${node_names}"
+MONITOR_INTERVAL=${monitor_interval}
+
+# 호스트 시스템 정보
+HOST_SYSTEM_NAME="${hostname}"
+HOST_MODEL="${model_name}"
+HOST_PROCESSOR="${processor}"
+HOST_CPU_CORES=${cpu_cores}
+HOST_CPU_PERF_CORES=${perf_cores}
+HOST_CPU_EFF_CORES=${eff_cores}
+HOST_MEMORY_GB=${memory_gb}
+
+# 실행 모드 설정 
+LOCAL_MODE=${is_local_mode}
+NO_DOCKER=${no_docker}
+DEBUG_MODE=false
+
+# WebSocket 서버 설정 (로컬 모드가 아닌 경우만 사용)
+WS_MODE="auto"
+WS_SERVER_HOST="192.168.0.24"
+WS_PORT_WS=8080
+WS_PORT_WSS=8443
+NO_SSL_VERIFY=false
+EOT
+
+  show_success ".env 파일 생성 완료: $env_file"
+}
+
 # 클라이언트 유틸리티 함수 생성
 create_client_utils() {
   show_step "클라이언트 유틸리티 함수 생성"
@@ -244,7 +383,68 @@ $endmarker
 EOT
 
   show_success "모니터링 클라이언트 유틸리티 함수가 $SHELL_PROFILE에 추가되었습니다."
-  show_warning "새 설정을 적용하려면 'source $SHELL_PROFILE' 명령을 실행하거나 새 터미널을 여세요."
+}
+
+# Docker Compose 설정 수정
+update_docker_compose() {
+  show_step "Docker Compose 설정 업데이트"
+  
+  # docker-compose.yml 파일 경로
+  local compose_file="${SCRIPT_DIR}/docker-compose.yml"
+  
+  # mclient 서비스가 있는지 확인
+  if grep -q "mclient:" "$compose_file"; then
+    show_warning "docker-compose.yml에 이미 mclient 서비스가 있습니다."
+  else
+    show_warning "docker-compose.yml에 mclient 서비스 추가 중..."
+    
+    # 임시 파일로 복사 후 수정
+    cp "$compose_file" "${compose_file}.bak.$(date +%Y%m%d%H%M%S)"
+    show_success "docker-compose.yml 백업 완료"
+    
+    # 파일 마지막에 mclient 서비스 추가
+    cat >> "$compose_file" << EOT
+
+  mclient:
+    build:
+      context: ./mclient
+      dockerfile: Dockerfile
+    env_file:
+      - ./mclient/.env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+EOT
+    
+    show_success "docker-compose.yml에 mclient 서비스가 추가되었습니다."
+  fi
+  
+  # Dockerfile 생성
+  local dockerfile="${SCRIPT_DIR}/mclient/Dockerfile"
+  
+  if [ -f "$dockerfile" ]; then
+    show_warning "Dockerfile이 이미 존재합니다."
+  else
+    show_warning "Dockerfile 생성 중..."
+    
+    cat > "$dockerfile" << EOT
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# 의존성 설치
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 소스 코드 복사
+COPY . .
+
+# 실행 명령어
+CMD ["python", "main.py"]
+EOT
+    
+    show_success "Dockerfile이 생성되었습니다."
+  fi
 }
 
 # 메인 함수
@@ -263,13 +463,21 @@ main() {
   # 기본 소스 파일 생성
   create_source_files
   
+  # 호스트 시스템 정보 수집 및 .env 파일 생성
+  collect_host_info
+  
   # 클라이언트 유틸리티 함수 생성
   create_client_utils
   
+  # Docker Compose 설정 업데이트
+  update_docker_compose
+  
   echo -e "\n${GREEN}===================================================${NC}"
   echo -e "${GREEN}Creditcoin 모니터링 클라이언트 기본 설정이 완료되었습니다!${NC}"
-  echo -e "${YELLOW}다음 단계로 addmc.sh를 실행하여 모니터링 클라이언트를 추가하세요.${NC}"
   echo -e "${GREEN}===================================================${NC}"
+  
+  echo -e "\n${YELLOW}변경 사항을 적용하려면 다음 명령어를 실행하세요:${NC}"
+  echo -e "${BLUE}source $SHELL_PROFILE${NC}"
   
   echo -e "\n${YELLOW}사용 가능한 명령어:${NC}"
   echo -e "${GREEN}mcstart${NC}     - 모니터링 클라이언트 시작"
