@@ -1,7 +1,7 @@
 #!/bin/bash
-# addmclient.sh - Creditcoin 모니터링 클라이언트 추가 스크립트
+# addmclient.sh - Creditcoin 모니터링 클라이언트 추가 스크립트 (개선된 버전)
 
-# 색상
+# 색상 정의
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
@@ -60,38 +60,51 @@ check_docker_env() {
 # Docker 환경 확인
 check_docker_env
 
+# 기본값 설정
+SERVER_ID="server1"
+NODE_NAMES="node,3node"
+MONITOR_INTERVAL="5"
+WS_MODE="local"  # 기본값은 로컬 모드
+WS_SERVER_URL=""
+WS_SERVER_HOST=""
+WS_PROTOCOL="ws"
+WS_PORT_WS="8080"
+WS_PORT_WSS="8443"
+WS_PRESET=""
+NO_SSL_VERIFY=false
+CREDITCOIN_DIR=$(pwd)
+FORCE=false
+INTERACTIVE=false
+
 # 도움말 표시 함수
 show_help() {
   echo "사용법: $0 [옵션]"
   echo ""
   echo "옵션:"
-  echo "  -s, --server-id    서버 ID (기본값: server1)"
-  echo "  -n, --node-names   모니터링할 노드 이름 목록 (쉼표로 구분, 기본값: node,3node)"
-  echo "  -i, --interval     모니터링 간격(초) (기본값: 5)"
-  echo "  -w, --ws-mode      웹소켓 모드 (auto, ws, wss, wss_internal) (기본값: auto)"
-  echo "  -u, --ws-url       사용자 지정 웹소켓 URL (기본값: 없음)"
-  echo "  -c, --creditcoin   Creditcoin 디렉토리 (기본값: 현재 디렉토리)"
-  echo "  -f, --force        기존 설정 덮어쓰기"
-  echo "  -h, --help         도움말 표시"
+  echo "  -s, --server-id        서버 ID (기본값: server1)"
+  echo "  -n, --node-names       모니터링할 노드 이름 목록 (쉼표로 구분, 기본값: node,3node)"
+  echo "  -i, --interval         모니터링 간격(초) (기본값: 5)"
+  echo "  --interactive          대화형 모드로 실행"
+  echo "  --mode <mode>          연결 모드 (custom, host, local, preset)"
+  echo "  --url <url>            WebSocket URL (custom 모드용)"
+  echo "  --host <host>          WebSocket 서버 호스트 (host 모드용)"
+  echo "  --protocol <protocol>  WebSocket 프로토콜 (ws, wss) (host 모드용)"
+  echo "  --port-ws <port>       WS 포트 (기본값: 8080) (host 모드용)"
+  echo "  --port-wss <port>      WSS 포트 (기본값: 8443) (host 모드용)"
+  echo "  --preset <preset>      프리셋 선택 (gcloud, aws, azure, local) (preset 모드용)"
+  echo "  --no-ssl-verify        SSL 인증서 검증 비활성화"
+  echo "  -c, --creditcoin       Creditcoin 디렉토리 (기본값: 현재 디렉토리)"
+  echo "  -f, --force            기존 설정 덮어쓰기"
+  echo "  -h, --help             도움말 표시"
   echo ""
   echo "사용 예시:"
-  echo "  ./addmclient.sh                        # 기본 설정으로 모니터 설치"
-  echo "  ./addmclient.sh -s server2             # 다른 서버 ID로 설치"
-  echo "  ./addmclient.sh -n node0,node1,3node0  # 특정 노드만 모니터링"
-  echo "  ./addmclient.sh -i 10                  # 10초 간격으로 모니터링"
-  echo "  ./addmclient.sh -w wss                 # WSS 모드로 연결"
-  echo "  ./addmclient.sh -u wss://example.com/ws  # 지정된 웹소켓 서버 사용"
+  echo "  ./addmclient.sh --interactive                     # 대화형 모드로 실행"
+  echo "  ./addmclient.sh --mode custom --url wss://192.168.0.24:8443/ws --no-ssl-verify  # 커스텀 URL 모드 (IP 주소 지정)"
+  echo "  ./addmclient.sh --mode host --host 192.168.0.24 --protocol wss  # 호스트 지정 모드 (IP 주소 지정)"
+  echo "  ./addmclient.sh --mode local                      # 로컬 모드 (WebSocket 연결 없음)"
+  echo "  ./addmclient.sh --mode preset --preset gcloud     # 프리셋 모드 (미리 정의된 설정 사용)"
   echo ""
 }
-
-# 기본값 설정
-SERVER_ID="server1"
-NODE_NAMES="node,3node"
-MONITOR_INTERVAL="5"
-WS_MODE="auto"
-WS_SERVER_URL=""
-CREDITCOIN_DIR=$(pwd)
-FORCE=false
 
 # 옵션 파싱
 while [ $# -gt 0 ]; do
@@ -108,19 +121,41 @@ while [ $# -gt 0 ]; do
       MONITOR_INTERVAL="$2"
       shift 2
       ;;
-    -w|--ws-mode)
-      if [[ "$2" == "auto" || "$2" == "ws" || "$2" == "wss" || "$2" == "wss_internal" || "$2" == "custom" ]]; then
-        WS_MODE="$2"
-        shift 2
-      else
-        echo -e "${RED}오류: 유효하지 않은 웹소켓 모드입니다. auto, ws, wss, wss_internal, custom 중 하나를 사용하세요.${NC}"
-        exit 1
-      fi
+    --interactive)
+      INTERACTIVE=true
+      shift
       ;;
-    -u|--ws-url)
-      WS_SERVER_URL="$2"
-      WS_MODE="custom"
+    --mode)
+      WS_MODE="$2"
       shift 2
+      ;;
+    --url)
+      WS_SERVER_URL="$2"
+      shift 2
+      ;;
+    --host)
+      WS_SERVER_HOST="$2"
+      shift 2
+      ;;
+    --protocol)
+      WS_PROTOCOL="$2"
+      shift 2
+      ;;
+    --port-ws)
+      WS_PORT_WS="$2"
+      shift 2
+      ;;
+    --port-wss)
+      WS_PORT_WSS="$2"
+      shift 2
+      ;;
+    --preset)
+      WS_PRESET="$2"
+      shift 2
+      ;;
+    --no-ssl-verify)
+      NO_SSL_VERIFY=true
+      shift
       ;;
     -c|--creditcoin)
       CREDITCOIN_DIR="$2"
@@ -142,14 +177,129 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# 대화형 모드 처리
+if [ "$INTERACTIVE" = true ]; then
+  echo -e "${BLUE}Creditcoin 모니터링 클라이언트 설정 (대화형 모드)${NC}"
+  
+  # 연결 모드 선택
+  echo -e "${YELLOW}연결 모드를 선택하세요:${NC}"
+  echo "1) 직접 URL 지정 (custom)"
+  echo "2) 호스트+프로토콜 지정 (host)"
+  echo "3) 로컬 모드 (local)"
+  echo "4) 프리셋 사용 (preset)"
+  read -p "선택 (1-4): " mode_choice
+  
+  case $mode_choice in
+    1)
+      WS_MODE="custom"
+      read -p "WebSocket URL을 입력하세요 (예: wss://192.168.0.24:8443/ws): " WS_SERVER_URL
+      read -p "SSL 인증서 검증을 건너뛰겠습니까? (y/n): " ssl_verify_choice
+      if [[ "$ssl_verify_choice" =~ ^[Yy]$ ]]; then
+        NO_SSL_VERIFY=true
+      fi
+      ;;
+    2)
+      WS_MODE="host"
+      read -p "호스트 주소를 입력하세요 (예: 192.168.0.24): " WS_SERVER_HOST
+      read -p "프로토콜을 선택하세요 (ws/wss): " WS_PROTOCOL
+      read -p "WS 포트를 입력하세요 (기본값: 8080): " ws_port_input
+      if [ ! -z "$ws_port_input" ]; then
+        WS_PORT_WS="$ws_port_input"
+      fi
+      read -p "WSS 포트를 입력하세요 (기본값: 8443): " wss_port_input
+      if [ ! -z "$wss_port_input" ]; then
+        WS_PORT_WSS="$wss_port_input"
+      fi
+      ;;
+    3)
+      WS_MODE="local"
+      echo -e "${GREEN}로컬 모드가 선택되었습니다. WebSocket 서버 연결 없이 실행됩니다.${NC}"
+      ;;
+    4)
+      WS_MODE="preset"
+      echo "프리셋을 선택하세요:"
+      echo "1) Google Cloud"
+      echo "2) AWS"
+      echo "3) Azure"
+      echo "4) 로컬 서버"
+      read -p "선택 (1-4): " preset_choice
+      
+      case $preset_choice in
+        1) WS_PRESET="gcloud" ;;
+        2) WS_PRESET="aws" ;;
+        3) WS_PRESET="azure" ;;
+        4) WS_PRESET="local" ;;
+        *) echo -e "${RED}유효하지 않은 선택입니다. 로컬 서버를 사용합니다.${NC}"; WS_PRESET="local" ;;
+      esac
+      ;;
+    *)
+      echo -e "${RED}유효하지 않은 선택입니다. 기본값(로컬 모드)을 사용합니다.${NC}"
+      WS_MODE="local"
+      ;;
+  esac
+  
+  # 기본 설정 입력
+  read -p "서버 ID를 입력하세요 (기본값: $SERVER_ID): " server_id_input
+  if [ ! -z "$server_id_input" ]; then
+    SERVER_ID="$server_id_input"
+  fi
+  
+  read -p "모니터링할 노드 이름을 입력하세요 (쉼표로 구분, 기본값: $NODE_NAMES): " node_names_input
+  if [ ! -z "$node_names_input" ]; then
+    NODE_NAMES="$node_names_input"
+  fi
+  
+  read -p "모니터링 간격(초)을 입력하세요 (기본값: $MONITOR_INTERVAL): " interval_input
+  if [ ! -z "$interval_input" ]; then
+    MONITOR_INTERVAL="$interval_input"
+  fi
+fi
+
+# 모드 검증
+if [ "$WS_MODE" = "custom" ] && [ -z "$WS_SERVER_URL" ]; then
+  echo -e "${RED}오류: custom 모드에서는 WebSocket URL이 필요합니다.${NC}"
+  exit 1
+fi
+
+if [ "$WS_MODE" = "host" ] && [ -z "$WS_SERVER_HOST" ]; then
+  echo -e "${RED}오류: host 모드에서는 WebSocket 서버 호스트가 필요합니다.${NC}"
+  exit 1
+fi
+
+if [ "$WS_MODE" = "preset" ] && [ -z "$WS_PRESET" ]; then
+  echo -e "${RED}오류: preset 모드에서는 프리셋 선택이 필요합니다.${NC}"
+  exit 1
+fi
+
+# 설정 요약 표시
 echo -e "${BLUE}Creditcoin 파이썬 모니터링 설정:${NC}"
 echo -e "${GREEN}- 서버 ID: $SERVER_ID${NC}"
 echo -e "${GREEN}- 모니터링 노드: $NODE_NAMES${NC}"
 echo -e "${GREEN}- 모니터링 간격: ${MONITOR_INTERVAL}초${NC}"
-echo -e "${GREEN}- WebSocket 모드: $WS_MODE${NC}"
-if [ -n "$WS_SERVER_URL" ]; then
-  echo -e "${GREEN}- WebSocket URL: $WS_SERVER_URL${NC}"
-fi
+echo -e "${GREEN}- 연결 모드: $WS_MODE${NC}"
+
+# 모드별 추가 정보 표시
+case $WS_MODE in
+  "custom")
+    echo -e "${GREEN}- WebSocket URL: $WS_SERVER_URL${NC}"
+    if [ "$NO_SSL_VERIFY" = true ]; then
+      echo -e "${GREEN}- SSL 검증: 비활성화${NC}"
+    fi
+    ;;
+  "host")
+    echo -e "${GREEN}- WebSocket 호스트: $WS_SERVER_HOST${NC}"
+    echo -e "${GREEN}- WebSocket 프로토콜: $WS_PROTOCOL${NC}"
+    echo -e "${GREEN}- WS 포트: $WS_PORT_WS${NC}"
+    echo -e "${GREEN}- WSS 포트: $WS_PORT_WSS${NC}"
+    ;;
+  "preset")
+    echo -e "${GREEN}- 프리셋: $WS_PRESET${NC}"
+    ;;
+  "local")
+    echo -e "${GREEN}- 로컬 모드: WebSocket 서버 연결 없음${NC}"
+    ;;
+esac
+
 echo -e "${GREEN}- Creditcoin 디렉토리: $CREDITCOIN_DIR${NC}"
 
 # 현재 디렉토리
@@ -263,7 +413,7 @@ update_env_file() {
   # 기존 .env 파일에서 mclient 관련 변수를 제외한 내용 추출
   if [ -f ".env" ]; then
     # macOS 호환성을 위해 grep에 -v 옵션 사용
-    grep -v "^SERVER_ID=\|^NODE_NAMES=\|^MONITOR_INTERVAL=\|^WS_MODE=\|^WS_SERVER_URL=\|^CREDITCOIN_DIR=" .env > .env.tmp
+    grep -v "^SERVER_ID=\|^NODE_NAMES=\|^MONITOR_INTERVAL=\|^WS_MODE=\|^WS_SERVER_URL=\|^WS_SERVER_HOST=\|^CREDITCOIN_DIR=" .env > .env.tmp
   else
     touch .env.tmp
   fi
@@ -272,10 +422,32 @@ update_env_file() {
   echo "SERVER_ID=${SERVER_ID}" >> .env.tmp
   echo "NODE_NAMES=${NODE_NAMES}" >> .env.tmp
   echo "MONITOR_INTERVAL=${MONITOR_INTERVAL}" >> .env.tmp
-  echo "WS_MODE=${WS_MODE}" >> .env.tmp
-  if [ -n "$WS_SERVER_URL" ]; then
-    echo "WS_SERVER_URL=${WS_SERVER_URL}" >> .env.tmp
-  fi
+  
+  # WebSocket 모드에 따른 설정 추가
+  case $WS_MODE in
+    "custom")
+      echo "WS_MODE=custom" >> .env.tmp
+      echo "WS_SERVER_URL=${WS_SERVER_URL}" >> .env.tmp
+      if [ "$NO_SSL_VERIFY" = true ]; then
+        echo "NO_SSL_VERIFY=true" >> .env.tmp
+      fi
+      ;;
+    "host")
+      echo "WS_MODE=${WS_PROTOCOL}" >> .env.tmp
+      echo "WS_SERVER_HOST=${WS_SERVER_HOST}" >> .env.tmp
+      echo "WS_PORT_WS=${WS_PORT_WS}" >> .env.tmp
+      echo "WS_PORT_WSS=${WS_PORT_WSS}" >> .env.tmp
+      ;;
+    "preset")
+      echo "WS_MODE=preset" >> .env.tmp
+      echo "WS_PRESET=${WS_PRESET}" >> .env.tmp
+      ;;
+    "local")
+      echo "WS_MODE=local" >> .env.tmp
+      echo "RUN_MODE=local" >> .env.tmp
+      ;;
+  esac
+  
   echo "CREDITCOIN_DIR=${CREDITCOIN_DIR}" >> .env.tmp
   
   # 임시 파일을 .env로 이동
@@ -294,12 +466,43 @@ NODE_NAMES=${NODE_NAMES}
 MONITOR_INTERVAL=${MONITOR_INTERVAL}
 
 # WebSocket 설정
-WS_MODE=${WS_MODE}
-WS_SERVER_URL=${WS_SERVER_URL}
-
-# 디렉토리 설정
-CREDITCOIN_DIR=${CREDITCOIN_DIR}
 EOF
+
+  # WebSocket 모드에 따른 설정 추가
+  case $WS_MODE in
+    "custom")
+      cat >> ./mclient/.env << EOF
+WS_MODE=custom
+WS_SERVER_URL=${WS_SERVER_URL}
+EOF
+      if [ "$NO_SSL_VERIFY" = true ]; then
+        echo "NO_SSL_VERIFY=true" >> ./mclient/.env
+      fi
+      ;;
+    "host")
+      cat >> ./mclient/.env << EOF
+WS_MODE=${WS_PROTOCOL}
+WS_SERVER_HOST=${WS_SERVER_HOST}
+WS_PORT_WS=${WS_PORT_WS}
+WS_PORT_WSS=${WS_PORT_WSS}
+EOF
+      ;;
+    "preset")
+      cat >> ./mclient/.env << EOF
+WS_MODE=preset
+WS_PRESET=${WS_PRESET}
+EOF
+      ;;
+    "local")
+      cat >> ./mclient/.env << EOF
+WS_MODE=local
+RUN_MODE=local
+EOF
+      ;;
+  esac
+
+  # 디렉토리 설정 추가
+  echo -e "\n# 디렉토리 설정\nCREDITCOIN_DIR=${CREDITCOIN_DIR}" >> ./mclient/.env
 
   echo -e "${GREEN}mclient/.env 파일이 업데이트되었습니다.${NC}"
 }
@@ -380,7 +583,69 @@ update_docker_compose() {
   networks_line=$(grep -n "^networks:" docker-compose.yml | cut -d: -f1)
   
   if [ -n "$networks_line" ]; then
-    # networks 위에 mclient 서비스 추가
+    # 모드별 환경 변수 설정
+    mclient_environment=""
+    
+    # 기본 환경 변수
+    mclient_environment+="      - SERVER_ID=${SERVER_ID}\n"
+    mclient_environment+="      - NODE_NAMES=${NODE_NAMES}\n"
+    mclient_environment+="      - MONITOR_INTERVAL=${MONITOR_INTERVAL}\n"
+    
+    # 모드별 환경 변수 추가
+    case $WS_MODE in
+      "custom")
+        mclient_environment+="      - WS_MODE=custom\n"
+        mclient_environment+="      - WS_SERVER_URL=${WS_SERVER_URL}\n"
+        if [ "$NO_SSL_VERIFY" = true ]; then
+          mclient_environment+="      - NO_SSL_VERIFY=true\n"
+        fi
+        ;;
+      "host")
+        mclient_environment+="      - WS_MODE=${WS_PROTOCOL}\n"
+        mclient_environment+="      - WS_SERVER_HOST=${WS_SERVER_HOST}\n"
+        mclient_environment+="      - WS_PORT_WS=${WS_PORT_WS}\n"
+        mclient_environment+="      - WS_PORT_WSS=${WS_PORT_WSS}\n"
+        ;;
+      "preset")
+        mclient_environment+="      - WS_MODE=preset\n"
+        mclient_environment+="      - WS_PRESET=${WS_PRESET}\n"
+        
+        # 프리셋별 추가 환경 변수
+        case $WS_PRESET in
+          "gcloud")
+            mclient_environment+="      - WS_SERVER_HOST=gcloud.example.com\n"
+            mclient_environment+="      - WS_MODE=wss\n"
+            ;;
+          "aws")
+            mclient_environment+="      - WS_SERVER_HOST=aws.example.com\n"
+            mclient_environment+="      - WS_MODE=wss\n"
+            ;;
+          "azure")
+            mclient_environment+="      - WS_SERVER_HOST=azure.example.com\n"
+            mclient_environment+="      - WS_MODE=wss\n"
+            ;;
+          "local")
+            mclient_environment+="      - WS_SERVER_HOST=localhost\n"
+            mclient_environment+="      - WS_MODE=ws\n"
+            ;;
+        esac
+        ;;
+      "local")
+        mclient_environment+="      - WS_MODE=local\n"
+        mclient_environment+="      - RUN_MODE=local\n"
+        ;;
+    esac
+    
+    # 공통 환경 변수
+    mclient_environment+="      - CREDITCOIN_DIR=/creditcoin-mac\n"
+    mclient_environment+="      # Docker 접근을 위한 환경 변수\n"
+    mclient_environment+="      - DOCKER_HOST=unix:///var/run/docker.sock\n"
+    mclient_environment+="      - DOCKER_API_VERSION=1.41\n"
+    mclient_environment+="      # 호스트 시스템 정보 접근을 위한 환경 변수\n"
+    mclient_environment+="      - HOST_PROC=/host/proc\n"
+    mclient_environment+="      - HOST_SYS=/host/sys\n"
+    
+    # networks 섹션 앞에 mclient 서비스 삽입
     mclient_service=$(cat << EOF
 
   mclient:
@@ -404,50 +669,13 @@ update_docker_compose() {
       # mclient 디렉토리 마운트
       - ./mclient:/app
     environment:
-      - SERVER_ID=${SERVER_ID}
-      - NODE_NAMES=${NODE_NAMES}
-      - MONITOR_INTERVAL=${MONITOR_INTERVAL}
-      - WS_MODE=${WS_MODE}
-EOF
-)
-
-    # WS_SERVER_URL이 있는 경우에만 추가
-    if [ -n "$WS_SERVER_URL" ]; then
-      mclient_service+=$(cat << EOF
-
-      # 사용자 지정 WebSocket URL
-      - WS_SERVER_URL=${WS_SERVER_URL}
-EOF
-)
-    else
-      # 기본 서버 URL 예시 (주석 처리)
-      mclient_service+=$(cat << EOF
-
-      # 내부 네트워크의 다른 머신 (실제 IP와 포트 확인 필요)
-      # - WS_SERVER_URL=ws://58.228.166.201:8080/ws
-      # WSS 프로토콜 필요시
-      # - NO_SSL_VERIFY=true
-      # - WS_SERVER_URL=wss://58.228.166.201:8443/ws
-EOF
-)
-    fi
-
-    # 나머지 환경 변수 추가
-    mclient_service+=$(cat << EOF
-
-      - CREDITCOIN_DIR=/creditcoin-mac
-      # Docker 접근을 위한 환경 변수
-      - DOCKER_HOST=unix:///var/run/docker.sock
-      - DOCKER_API_VERSION=1.41
-      # 호스트 시스템 정보 접근을 위한 환경 변수
-      - HOST_PROC=/host/proc
-      - HOST_SYS=/host/sys
+${mclient_environment}
 EOF
 )
     
     # networks 섹션 앞에 mclient 서비스 삽입
     head -n $((networks_line-1)) docker-compose.yml > docker-compose.yml.new
-    echo "$mclient_service" >> docker-compose.yml.new
+    echo -e "$mclient_service" >> docker-compose.yml.new
     tail -n +$((networks_line)) docker-compose.yml >> docker-compose.yml.new
     mv docker-compose.yml.new docker-compose.yml
     
@@ -479,10 +707,30 @@ echo -e "${GREEN}다음 설정으로 모니터링 클라이언트가 구성되�
 echo -e "${GREEN}- 서버 ID: ${SERVER_ID}${NC}"
 echo -e "${GREEN}- 모니터링 노드: ${NODE_NAMES}${NC}"
 echo -e "${GREEN}- 모니터링 간격: ${MONITOR_INTERVAL}초${NC}"
-echo -e "${GREEN}- WebSocket 모드: ${WS_MODE}${NC}"
-if [ -n "$WS_SERVER_URL" ]; then
-  echo -e "${GREEN}- WebSocket URL: ${WS_SERVER_URL}${NC}"
-fi
+echo -e "${GREEN}- 연결 모드: ${WS_MODE}${NC}"
+
+# 모드별 추가 정보 표시
+case $WS_MODE in
+  "custom")
+    echo -e "${GREEN}- WebSocket URL: ${WS_SERVER_URL}${NC}"
+    if [ "$NO_SSL_VERIFY" = true ]; then
+      echo -e "${GREEN}- SSL 검증: 비활성화${NC}"
+    fi
+    ;;
+  "host")
+    echo -e "${GREEN}- WebSocket 호스트: ${WS_SERVER_HOST}${NC}"
+    echo -e "${GREEN}- WebSocket 프로토콜: ${WS_PROTOCOL}${NC}"
+    echo -e "${GREEN}- WS 포트: ${WS_PORT_WS}${NC}"
+    echo -e "${GREEN}- WSS 포트: ${WS_PORT_WSS}${NC}"
+    ;;
+  "preset")
+    echo -e "${GREEN}- 프리셋: ${WS_PRESET}${NC}"
+    ;;
+  "local")
+    echo -e "${GREEN}- 로컬 모드: WebSocket 서버 연결 없음${NC}"
+    ;;
+esac
+
 echo -e "${GREEN}- Creditcoin 디렉토리: ${CREDITCOIN_DIR}${NC}"
 echo -e "${GREEN}- Docker 소켓 경로: ${DOCKER_SOCK_PATH}${NC}"
 echo -e "${BLUE}----------------------------------------------------${NC}"

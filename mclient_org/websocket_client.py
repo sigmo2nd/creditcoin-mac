@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # websocket_client.py
 import asyncio
 import json
@@ -6,6 +7,7 @@ import ssl
 import time
 import websockets
 import random
+import os
 from typing import Dict, List, Any, Optional
 
 # 로깅 설정
@@ -16,10 +18,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class WebSocketClient:
+    """WebSocket 클라이언트 클래스"""
+    
     def __init__(self, url_or_mode: str, server_id: str, ssl_verify: bool = True):
+        """WebSocket 클라이언트 초기화
+        
+        Args:
+            url_or_mode: WebSocket URL 또는 연결 모드 (ws, wss, wss_internal, auto, custom)
+            server_id: 서버 식별자
+            ssl_verify: SSL 인증서 검증 여부
+        """
         self.url_or_mode = url_or_mode
         self.server_id = server_id
-        self.ssl_verify = ssl_verify  # SSL 인증서 검증 옵션 추가
+        self.ssl_verify = ssl_verify
         self.ws = None
         self.connected = False
         self.reconnect_attempts = 0
@@ -33,12 +44,20 @@ class WebSocketClient:
         self.ping_task = None
         self.heartbeat_task = None
         
-        # 기본 URL 설정 (모두 로컬 주소로 설정)
+        # 환경 변수에서 직접 서버 호스트 가져오기
+        self.server_host = os.environ.get("WS_SERVER_HOST", "192.168.0.24")
+        
+        # 기본 URL 설정
         self.base_urls = {
-            "ws": "ws://localhost:8080/ws",
-            "wss": "wss://localhost:8443/ws",
-            "wss_internal": "wss://localhost:8443/ws"
+            "ws": f"ws://{self.server_host}:8080/ws",
+            "wss": f"wss://{self.server_host}:8443/ws",
+            "wss_internal": f"wss://{self.server_host}:8443/ws"
         }
+        
+        # 설정 정보 로깅
+        logger.info(f"WebSocket 클라이언트 초기화: 모드={url_or_mode}, 서버ID={server_id}")
+        logger.info(f"WebSocket 호스트: {self.server_host}")
+        logger.info(f"WebSocket 기본 URL: ws={self.base_urls['ws']}, wss={self.base_urls['wss']}")
     
     async def try_connect(self, url: str, ssl_context: Optional[ssl.SSLContext] = None) -> bool:
         """특정 URL로 연결 시도"""
@@ -185,41 +204,40 @@ class WebSocketClient:
             await self.reconnect()
     
     async def connect(self) -> bool:
-        """WebSocket 서버에 연결 (자동 또는 지정된 URL)"""
+        """WebSocket 서버에 연결"""
         if self.url_or_mode == "auto":
-            # 자동 모드: wss -> wss_internal -> ws 순으로 시도
+            # 자동 모드: 자동 연결 시도
+            logger.info("자동 모드: 자동 연결 시도")
             
-            # 1. WSS 내부 인증서 시도
+            # SSL 컨텍스트 생성
             ssl_context = ssl.create_default_context()
-            # 로컬호스트 또는 SSL 검증 비활성화 옵션인 경우 인증서 검증 비활성화
             ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
-            if not self.ssl_verify:
-                logger.info("SSL 인증서 검증이 비활성화되었습니다.")
+            ssl_context.verify_mode = ssl.CERT_NONE if not self.ssl_verify else ssl.CERT_REQUIRED
             
-            if await self.try_connect(self.base_urls["wss_internal"], ssl_context):
+            # WSS 자동 시도
+            wss_url = self.base_urls["wss"]
+            if await self.try_connect(wss_url, ssl_context):
                 return True
             
-            # 2. 일반 WS 시도
-            if await self.try_connect(self.base_urls["ws"]):
+            # WS 자동 시도
+            ws_url = self.base_urls["ws"]
+            if await self.try_connect(ws_url):
                 return True
             
             logger.error("모든 WebSocket 연결 시도 실패")
             return False
-        
-        elif self.url_or_mode in self.base_urls:
-            # 지정된 모드로 연결
-            url = self.base_urls[self.url_or_mode]
+            
+        elif self.url_or_mode in ["ws", "wss", "wss_internal"]:
+            # 지정된 모드: 해당 모드의 URL 사용
+            url = self.base_urls.get(self.url_or_mode)
             ssl_context = None
             
             # SSL 관련 모드인 경우
             if self.url_or_mode in ["wss", "wss_internal"]:
                 ssl_context = ssl.create_default_context()
-                # 로컬호스트 또는 SSL 검증 비활성화 옵션인 경우 인증서 검증 비활성화
                 ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
-                if not self.ssl_verify:
-                    logger.info("SSL 인증서 검증이 비활성화되었습니다.")
+                ssl_context.verify_mode = ssl.CERT_NONE if not self.ssl_verify else ssl.CERT_REQUIRED
+                logger.info("SSL 인증서 검증이 비활성화되었습니다.")
             
             return await self.try_connect(url, ssl_context)
         
@@ -227,8 +245,8 @@ class WebSocketClient:
             # 사용자 지정 URL로 간주
             if self.url_or_mode.startswith("wss"):
                 ssl_context = ssl.create_default_context()
-                # 로컬호스트 또는 SSL 검증 비활성화 옵션인 경우 인증서 검증 비활성화
-                if not self.ssl_verify or "localhost" in self.url_or_mode or "127.0.0.1" in self.url_or_mode:
+                # SSL 검증 비활성화 여부 확인
+                if not self.ssl_verify or self.server_host in self.url_or_mode or "127.0.0.1" in self.url_or_mode:
                     ssl_context.check_hostname = False
                     ssl_context.verify_mode = ssl.CERT_NONE
                     if not self.ssl_verify:
