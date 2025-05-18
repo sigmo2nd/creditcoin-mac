@@ -167,21 +167,19 @@ get_mac_address() {
   
   local mac_address=""
   
-  # macOS 환경에서 en0 네트워크 인터페이스의 MAC 주소 가져오기
-  if [[ "$(uname)" == "Darwin" ]]; then
-    # Wi-Fi(en0) 인터페이스의 MAC 주소 추출
-    mac_address=$(ifconfig en0 | grep ether | awk '{print $2}' | tr -d ':' | tr '[:lower:]' '[:upper:]')
-    
-    # en0이 없으면 en1 시도
-    if [ -z "$mac_address" ]; then
-      mac_address=$(ifconfig en1 | grep ether | awk '{print $2}' | tr -d ':' | tr '[:lower:]' '[:upper:]')
-    fi
-  fi
+  # MAC 주소 직접 추출 (더 간단한 방법)
+  mac_address=$(ifconfig en0 | grep ether | awk '{print $2}' | tr -d ':' | tr '[:lower:]' '[:upper:]')
   
-  # 여전히 MAC 주소를 찾지 못했다면, 다른 방법으로 시도
+  # 출력 확인 (디버그용)
+  echo "추출된 MAC 주소: $mac_address" >&2
+  
+  # en0에서 찾지 못한 경우 대체 방법 시도
   if [ -z "$mac_address" ]; then
-    # 모든 인터페이스에서 첫 번째 MAC 주소 찾기
+    # 모든 인터페이스 확인
     mac_address=$(ifconfig | grep -o -E '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -n 1 | tr -d ':' | tr '[:lower:]' '[:upper:]')
+    
+    # 대체 방법 결과 출력
+    echo "대체 방법으로 추출된 MAC 주소: $mac_address" >&2
   fi
   
   # MAC 주소를 찾지 못했다면 기본값 사용
@@ -192,7 +190,7 @@ get_mac_address() {
     show_success "MAC 주소: $mac_address 수집 완료"
   fi
   
-  # 반환 값으로 MAC 주소 제공
+  # 명시적으로 MAC 주소 반환
   echo "$mac_address"
 }
 
