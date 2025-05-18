@@ -23,28 +23,7 @@ NON_INTERACTIVE=false
 check_docker_env() {
   echo -e "${BLUE}Docker 환경 확인 중...${NC}" >&2
   
-  # Docker 명령어 경로 확인 및 추가
-  if ! command -v docker &>/dev/null; then
-    echo -e "${YELLOW}Docker 명령어를 찾을 수 없습니다. OrbStack에서 제공하는 Docker CLI를 PATH에 추가합니다.${NC}" >&2
-    
-    if [ -f "/Applications/OrbStack.app/Contents/MacOS/xbin/docker" ]; then
-      export PATH="/Applications/OrbStack.app/Contents/MacOS/xbin:$PATH"
-    fi
-    
-    # 다시 확인
-    if ! command -v docker &>/dev/null; then
-      echo -e "${RED}Docker CLI를 찾을 수 없습니다. OrbStack이 설치되어 있는지 확인하세요.${NC}" >&2
-      exit 1
-    fi
-  fi
-
-  # SSH 세션 호환성 설정
-  if [ -S "$HOME/.orbstack/run/docker.sock" ]; then
-    export DOCKER_HOST="unix://$HOME/.orbstack/run/docker.sock"
-    export DOCKER_CLI_NO_CREDENTIAL_STORE=1
-  fi
-  
-  # Docker 실행 상태 확인 및 시작 시도
+  # Docker 실행 상태만 확인 (환경변수와 PATH는 이미 setup.sh에서 설정됨)
   if ! docker info &> /dev/null; then
     echo -e "${YELLOW}Docker 엔진(OrbStack)이 실행 중이 아닙니다. 시작을 시도합니다...${NC}" >&2
     # OrbStack 시작 시도
@@ -165,7 +144,7 @@ detect_external_ip() {
 find_docker_sock_path() {
   echo -e "${BLUE}Docker 소켓 경로 감지 중...${NC}" >&2
   
-  # 기본 OrbStack Docker 소켓 경로
+  # 기본 OrbStack Docker 소켓 경로 (환경변수에 이미 설정됨)
   local docker_sock_path="$HOME/.orbstack/run/docker.sock"
   
   if [ -S "$docker_sock_path" ]; then
