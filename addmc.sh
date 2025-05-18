@@ -16,6 +16,7 @@ GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH
 
 # 기본값 설정
 SERVER_ID=""  # MAC 주소를 로드하여 설정
+MAC_ADDRESS=""  # MAC 주소 저장 변수 추가
 MONITOR_INTERVAL="1"  # 기본 간격 1초로 변경
 WS_MODE="auto"  # 기본값을 auto로 변경
 WS_SERVER_URL=""
@@ -92,11 +93,6 @@ load_mac_address() {
     fi
   else
     echo -e "${YELLOW}호스트 정보 파일이 없습니다. 기본값을 사용합니다.${NC}"
-  fi
-  
-  # 서버 ID가 이미 설정되어 있지 않으면 MAC 주소로 설정
-  if [ -z "$SERVER_ID" ]; then
-    SERVER_ID="$mac_address"
   fi
   
   echo "$mac_address"
@@ -571,7 +567,7 @@ run_interactive_mode() {
   echo -e "${YELLOW}엔터를 입력하면 괄호안에 기본값이 입력됩니다.${NC}"
   
   # 서버 ID 입력 (선택 사항)
-  read -p "서버 ID를 입력하세요 ($SERVER_ID): " input
+  read -p "서버 ID를 입력하세요 ($MAC_ADDRESS): " input
   if [ ! -z "$input" ]; then
     SERVER_ID="$input"
   fi
@@ -712,7 +708,10 @@ main() {
   check_docker_env
   
   # MAC 주소 로드 및 ServerID 설정
-  SERVER_ID=$(load_mac_address)
+  MAC_ADDRESS=$(load_mac_address)
+  if [ -z "$SERVER_ID" ]; then
+    SERVER_ID="$MAC_ADDRESS"
+  fi
   
   # 명령줄 인자 처리
   parse_args "$@"
