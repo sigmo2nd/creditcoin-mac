@@ -16,7 +16,7 @@ GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH
 
 # 기본값 설정
 SERVER_ID=""  # MAC 주소를 로드하여 설정
-MONITOR_INTERVAL="5"
+MONITOR_INTERVAL="1"  # 기본 간격 1초로 변경
 WS_MODE="auto"  # 기본값을 auto로 변경
 WS_SERVER_URL=""
 WS_SERVER_HOST=""
@@ -109,7 +109,7 @@ show_help() {
   echo "옵션:"
   echo "  --non-interactive   대화형 모드 비활성화"
   echo "  --server-id ID      서버 ID 설정 (기본값: MAC 주소)"
-  echo "  --interval SEC      모니터링 간격(초) 설정 (기본값: 5)"
+  echo "  --interval SEC      모니터링 간격(초) 설정 (기본값: 1)"
   echo "  --mode MODE         연결 모드: auto, custom, ws, wss, local (기본값: auto)"
   echo "  --url URL           WebSocket URL 직접 지정 (custom 모드 사용)"
   echo "  --host HOST         WebSocket 서버 호스트 지정"
@@ -567,14 +567,17 @@ run_interactive_mode() {
   # 노드 자동 감지
   NODE_NAMES=$(detect_nodes)
   
+  # 안내 메시지 추가
+  echo -e "${YELLOW}엔터를 입력하면 괄호안에 기본값이 입력됩니다.${NC}"
+  
   # 서버 ID 입력 (선택 사항)
-  read -p "서버 ID를 입력하세요 (기본값: $SERVER_ID): " input
+  read -p "서버 ID를 입력하세요 ($SERVER_ID): " input
   if [ ! -z "$input" ]; then
     SERVER_ID="$input"
   fi
   
   # 모니터링 간격 입력 (선택 사항)
-  read -p "모니터링 간격(초)을 입력하세요 (기본값: $MONITOR_INTERVAL): " input
+  read -p "모니터링 간격(초)을 입력하세요 ($MONITOR_INTERVAL): " input
   if [ ! -z "$input" ]; then
     MONITOR_INTERVAL="$input"
   fi
@@ -603,7 +606,7 @@ run_interactive_mode() {
       WS_MODE="ws"
       # 외부 IP 주소 감지
       default_host=$(detect_external_ip)
-      read -p "WebSocket 서버 호스트를 입력하세요 (기본값: $default_host): " input
+      read -p "WebSocket 서버 호스트를 입력하세요 ($default_host): " input
       WS_SERVER_HOST=${input:-$default_host}
       
       # 연결 테스트
@@ -613,7 +616,7 @@ run_interactive_mode() {
       WS_MODE="wss"
       # 외부 IP 주소 감지
       default_host=$(detect_external_ip)
-      read -p "WebSocket 서버 호스트를 입력하세요 (기본값: $default_host): " input
+      read -p "WebSocket 서버 호스트를 입력하세요 ($default_host): " input
       WS_SERVER_HOST=${input:-$default_host}
       
       read -p "SSL 인증서 검증을 건너뛰겠습니까? (y/n) [기본값: y]: " ssl_choice
@@ -634,7 +637,7 @@ run_interactive_mode() {
       WS_MODE="auto"
       # 외부 IP 주소 감지
       default_host=$(detect_external_ip)
-      read -p "WebSocket 서버 호스트를 입력하세요 (기본값: $default_host): " input
+      read -p "WebSocket 서버 호스트를 입력하세요 ($default_host): " input
       WS_SERVER_HOST=${input:-$default_host}
       
       read -p "SSL 인증서 검증을 건너뛰겠습니까? (y/n) [기본값: y]: " ssl_choice
