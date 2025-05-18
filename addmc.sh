@@ -1,5 +1,5 @@
 #!/bin/bash
-# addmclient.sh - Creditcoin 모니터링 클라이언트 추가 스크립트 (개선 버전)
+# addmc.sh - Creditcoin 모니터링 클라이언트 추가 스크립트 (단순화 버전)
 
 # 색상 정의
 GREEN='\033[0;32m'
@@ -7,12 +7,6 @@ YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
-
-# GitHub 저장소 정보
-GITHUB_REPO="sigmo2nd/creditcoin-mac"
-GITHUB_BRANCH="monitoring"
-MCLIENT_ORG_DIR="mclient_org"
-GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${MCLIENT_ORG_DIR}"
 
 # 기본값 설정
 SERVER_ID=""  # 환경 변수에서 로드
@@ -201,6 +195,31 @@ find_docker_sock_path() {
   echo "/var/run/docker.sock"
 }
 
+# 모니터링 클라이언트 디렉토리 설정 (mclient_org 직접 사용)
+setup_mclient_dir() {
+  echo -e "${BLUE}모니터링 클라이언트 디렉토리 설정 중...${NC}" >&2
+  
+  # mclient_org 디렉토리가 있는지 확인
+  if [ ! -d "./mclient_org" ]; then
+    echo -e "${RED}오류: mclient_org 디렉토리가 존재하지 않습니다.${NC}" >&2
+    echo -e "${YELLOW}Creditcoin 저장소가 올바르게 클론되었는지 확인하세요.${NC}" >&2
+    exit 1
+  else
+    echo -e "${GREEN}mclient_org 디렉토리를 사용합니다.${NC}" >&2
+    
+    # 실행 파일에 권한 부여
+    if [ -f "./mclient_org/start.sh" ]; then
+      chmod +x "./mclient_org/start.sh"
+      echo -e "${GREEN}start.sh 파일에 실행 권한을 부여했습니다.${NC}" >&2
+    fi
+    
+    if [ -f "./mclient_org/main.py" ]; then
+      chmod +x "./mclient_org/main.py"
+      echo -e "${GREEN}main.py 파일에 실행 권한을 부여했습니다.${NC}" >&2
+    fi
+  fi
+}
+
 # 도움말 출력
 show_help() {
   echo "사용법: $0 [옵션]"
@@ -269,49 +288,11 @@ parse_args() {
   done
 }
 
-# 필요한 파일 다운로드
-download_mclient_files() {
-  echo -e "${BLUE}모니터링 클라이언트 필수 파일 다운로드 중...${NC}" >&2
-  
-  # mclient 디렉토리 확인 및 생성
-  if [ ! -d "./mclient" ]; then
-    mkdir -p ./mclient
-    echo -e "${GREEN}mclient 디렉토리를 생성했습니다.${NC}" >&2
-  else
-    echo -e "${BLUE}기존 mclient 디렉토리를 사용합니다.${NC}" >&2
-  fi
-  
-  # 다운로드할 파일 목록
-  local files=("config.py" "docker_stats_client.py" "websocket_client.py" "main.py" "requirements.txt" "start.sh")
-  
-  # 각 파일 다운로드
-  for file in "${files[@]}"; do
-    echo -e "${YELLOW}다운로드 중: ${file}${NC}" >&2
-    
-    # curl로 파일 다운로드
-    if curl -s -o "./mclient/${file}" "${GITHUB_RAW_URL}/${file}"; then
-      echo -e "${GREEN}${file} 다운로드 완료${NC}" >&2
-      
-      # 실행 파일 권한 부여
-      if [[ "${file}" == *.sh ]]; then
-        chmod +x "./mclient/${file}"
-        echo -e "${GREEN}${file}에 실행 권한 부여${NC}" >&2
-      fi
-    else
-      echo -e "${RED}${file} 다운로드 실패${NC}" >&2
-      echo -e "${YELLOW}GitHub 저장소 접근 권한을 확인하세요: ${GITHUB_RAW_URL}/${NC}" >&2
-      exit 1
-    fi
-  done
-  
-  echo -e "${GREEN}모든 필수 파일 다운로드 완료${NC}" >&2
-}
-
 # Dockerfile 생성
 create_dockerfile() {
   echo -e "${BLUE}Dockerfile 생성 중...${NC}" >&2
   
-  cat > ./mclient/Dockerfile << 'EOF'
+  cat > ./mclient_org/Dockerfile << 'EOF'
 FROM python:3.11-slim
 WORKDIR /app
 
@@ -373,12 +354,15 @@ EOF
   echo -e "${GREEN}Dockerfile이 생성되었습니다.${NC}" >&2
 }
 
-# mclient/.env 파일 업데이트
+# .env 파일 업데이트 (mclient_org 디렉토리에 직접 생성)
 update_env_file() {
   echo -e "${BLUE}.env 파일 업데이트 중...${NC}" >&2
   
-  # mclient/.env 파일 생성
-  cat > ./mclient/.env << EOF
+  # mclient_org/.env 파일 생성
+  cat > ./mclient_org/.env << EOF
+# 기존 노드 설정 유지 (있는 경우)
+$(grep -E "^P2P_PORT_3NODE|^RPC_PORT_3NODE|^NODE_NAME_3NODE|^TELEMETRY_3NODE|^PRUNING_3NODE" .env 2>/dev/null || true)
+
 # 모니터링 클라이언트 기본 설정
 SERVER_ID=${SERVER_ID}
 NODE_NAMES=${NODE_NAMES}
@@ -390,20 +374,43 @@ EOF
 
   # WebSocket 모드에 따른 추가 설정
   if [ "$WS_MODE" = "custom" ] && [ ! -z "$WS_SERVER_URL" ]; then
-    echo "WS_SERVER_URL=${WS_SERVER_URL}" >> ./mclient/.env
+    echo "WS_SERVER_URL=${WS_SERVER_URL}" >> ./mclient_org/.env
   fi
   
   if [ ! -z "$WS_SERVER_HOST" ]; then
-    echo "WS_SERVER_HOST=${WS_SERVER_HOST}" >> ./mclient/.env
+    echo "WS_SERVER_HOST=${WS_SERVER_HOST}" >> ./mclient_org/.env
   fi
   
   # SSL 검증 설정
   if [ "$NO_SSL_VERIFY" = true ]; then
-    echo "NO_SSL_VERIFY=true" >> ./mclient/.env
+    echo "NO_SSL_VERIFY=true" >> ./mclient_org/.env
   fi
   
+  # Docker 관련 설정
+  echo "WS_PORT_WS=8080" >> ./mclient_org/.env
+  echo "WS_PORT_WSS=8443" >> ./mclient_org/.env
+  
   # 디렉토리 설정
-  echo -e "\n# 디렉토리 설정\nCREDITCOIN_DIR=${CREDITCOIN_DIR}" >> ./mclient/.env
+  echo "CREDITCOIN_DIR=${CREDITCOIN_DIR}" >> ./mclient_org/.env
+  
+  # 실행 모드 설정 (기본값은 local 모드 아님)
+  echo "RUN_MODE=${RUN_MODE:-normal}" >> ./mclient_org/.env
+  
+  # 디버그 및 기타 설정
+  echo "LOCAL_MODE=${LOCAL_MODE:-false}" >> ./mclient_org/.env
+  echo "DEBUG_MODE=${DEBUG_MODE:-false}" >> ./mclient_org/.env
+  echo "NO_DOCKER=${NO_DOCKER:-false}" >> ./mclient_org/.env
+  echo "MAX_RETRIES=${MAX_RETRIES:-10}" >> ./mclient_org/.env
+  echo "RETRY_INTERVAL=${RETRY_INTERVAL:-5}" >> ./mclient_org/.env
+  
+  # 호스트 정보 변수 추가 (환경 변수에서 가져옴)
+  echo "HOST_SYSTEM_NAME=\"${HOST_SYSTEM_NAME:-$(hostname)}\"" >> ./mclient_org/.env
+  echo "HOST_MODEL=\"${HOST_MODEL:-Unknown}\"" >> ./mclient_org/.env
+  echo "HOST_PROCESSOR=\"${HOST_PROCESSOR:-Unknown}\"" >> ./mclient_org/.env
+  echo "HOST_CPU_CORES=${HOST_CPU_CORES:-0}" >> ./mclient_org/.env
+  echo "HOST_CPU_PERF_CORES=${HOST_CPU_PERF_CORES:-0}" >> ./mclient_org/.env
+  echo "HOST_CPU_EFF_CORES=${HOST_CPU_EFF_CORES:-0}" >> ./mclient_org/.env
+  echo "HOST_MEMORY_GB=${HOST_MEMORY_GB:-0}" >> ./mclient_org/.env
   
   echo -e "${GREEN}.env 파일이 업데이트되었습니다.${NC}" >&2
 }
@@ -466,7 +473,7 @@ update_docker_compose() {
   mclient:
     <<: *node-defaults
     build:
-      context: ./mclient
+      context: ./mclient_org
       dockerfile: Dockerfile
     container_name: mclient
     # 호스트 프로세스 네임스페이스 공유
@@ -481,8 +488,8 @@ update_docker_compose() {
       # 호스트 시스템 정보 접근
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
-      # mclient 디렉토리 마운트
-      - ./mclient:/app
+      # mclient_org 디렉토리 마운트
+      - ./mclient_org:/app
     environment:
       - SERVER_ID=${SERVER_ID}
       - NODE_NAMES=${NODE_NAMES}
@@ -504,15 +511,26 @@ EOF
       echo "      - NO_SSL_VERIFY=true" >> mclient_service.tmp
     fi
     
-    # 공통 환경 변수
+    # 포트 및 디렉토리 설정
     cat << EOF >> mclient_service.tmp
+      - WS_PORT_WS=8080
+      - WS_PORT_WSS=8443
       - CREDITCOIN_DIR=/creditcoin-mac
+      - RUN_MODE=${RUN_MODE:-normal}
       # Docker 접근을 위한 환경 변수
       - DOCKER_HOST=unix:///var/run/docker.sock
       - DOCKER_API_VERSION=1.41
       # 호스트 시스템 정보 접근을 위한 환경 변수
       - HOST_PROC=/host/proc
       - HOST_SYS=/host/sys
+      # 호스트 정보 변수
+      - HOST_SYSTEM_NAME=${HOST_SYSTEM_NAME:-$(hostname)}
+      - HOST_MODEL=${HOST_MODEL:-Unknown}
+      - HOST_PROCESSOR=${HOST_PROCESSOR:-Unknown}
+      - HOST_CPU_CORES=${HOST_CPU_CORES:-0}
+      - HOST_CPU_PERF_CORES=${HOST_CPU_PERF_CORES:-0}
+      - HOST_CPU_EFF_CORES=${HOST_CPU_EFF_CORES:-0}
+      - HOST_MEMORY_GB=${HOST_MEMORY_GB:-0}
 EOF
     
     # networks 섹션 앞에 mclient 서비스 삽입
@@ -741,8 +759,8 @@ main() {
     fi
   fi
   
-  # 필요한 파일 다운로드
-  download_mclient_files
+  # mclient_org 디렉토리 설정
+  setup_mclient_dir
   
   # Dockerfile 생성
   create_dockerfile
