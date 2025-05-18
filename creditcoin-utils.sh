@@ -1279,3 +1279,34 @@ murl() {
   echo -e "${YELLOW}변경 사항을 적용하려면 모니터 서비스를 재시작하세요:${NC}"
   echo -e "${GREEN}mrestart${NC}"
 }
+
+# 백업 파일 정리 함수
+cleanupbak() {
+  # 백업 파일 찾기
+  local bak_files=$(find . -name "*.bak.*" | sort)
+  
+  if [ -z "$bak_files" ]; then
+    echo -e "${YELLOW}정리할 백업 파일이 없습니다.${NC}"
+    return 0
+  fi
+  
+  echo -e "${BLUE}백업 파일 정리 중...${NC}"
+  echo -e "${YELLOW}다음 백업 파일들을 삭제합니다:${NC}"
+  
+  # 파일 목록 표시
+  echo "$bak_files" | while read file; do
+    echo -e "  - $file"
+  done
+  
+  # 확인 요청 (zsh 호환 방식)
+  echo -ne "${YELLOW}이 파일들을 삭제하시겠습니까? (y/N) ${NC}"
+  read response
+  
+  if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+    # 파일 삭제
+    echo "$bak_files" | xargs rm -f
+    echo -e "${GREEN}백업 파일이 정리되었습니다.${NC}"
+  else
+    echo -e "${BLUE}작업이 취소되었습니다.${NC}"
+  fi
+}
