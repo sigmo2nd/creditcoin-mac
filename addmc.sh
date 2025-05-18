@@ -1,5 +1,5 @@
 #!/bin/bash
-# addmc.sh - Creditcoin 모니터링 클라이언트 추가 스크립트 (단순화 버전)
+# addmc.sh - Creditcoin 모니터링 클라이언트 추가 스크립트 (개선 버전)
 
 # 색상 정의
 GREEN='\033[0;32m'
@@ -199,6 +199,28 @@ setup_mclient_dir() {
   fi
 }
 
+# 진입점 스크립트 생성
+create_entrypoint_script() {
+  echo -e "${BLUE}Docker 진입점 스크립트 생성 중...${NC}" >&2
+  
+  cat > ./mclient_org/docker-entrypoint.sh << 'EOF'
+#!/bin/bash
+echo "== Creditcoin 모니터링 클라이언트 =="
+echo "서버 ID: ${SERVER_ID}"
+echo "모니터링 노드: ${NODE_NAMES}"
+echo "모니터링 간격: ${MONITOR_INTERVAL}초"
+echo "WebSocket 모드: ${WS_MODE}"
+if [ "${WS_SERVER_HOST}" != "" ]; then echo "WebSocket 호스트: ${WS_SERVER_HOST}"; fi
+if [ "${WS_SERVER_URL}" != "" ]; then echo "WebSocket URL: ${WS_SERVER_URL}"; fi
+echo "시작 중..."
+export PROCFS_PATH=/host/proc
+python /app/main.py "$@"
+EOF
+
+  chmod +x ./mclient_org/docker-entrypoint.sh
+  echo -e "${GREEN}Docker 진입점 스크립트가 생성되었습니다.${NC}" >&2
+}
+
 # 도움말 출력
 show_help() {
   echo "사용법: $0 [옵션]"
@@ -307,20 +329,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # 권한 설정
 RUN chmod +x /app/main.py
-
-# 스타트업 스크립트 생성
-RUN echo '#!/bin/bash' > /app/docker-entrypoint.sh && \
-    echo 'echo "== Creditcoin 모니터링 클라이언트 ==" ' >> /app/docker-entrypoint.sh && \
-    echo 'echo "서버 ID: ${SERVER_ID}"' >> /app/docker-entrypoint.sh && \
-    echo 'echo "모니터링 노드: ${NODE_NAMES}"' >> /app/docker-entrypoint.sh && \
-    echo 'echo "모니터링 간격: ${MONITOR_INTERVAL}초"' >> /app/docker-entrypoint.sh && \
-    echo 'echo "WebSocket 모드: ${WS_MODE}"' >> /app/docker-entrypoint.sh && \
-    echo 'if [ "${WS_SERVER_HOST}" != "" ]; then echo "WebSocket 호스트: ${WS_SERVER_HOST}"; fi' >> /app/docker-entrypoint.sh && \
-    echo 'if [ "${WS_SERVER_URL}" != "" ]; then echo "WebSocket URL: ${WS_SERVER_URL}"; fi' >> /app/docker-entrypoint.sh && \
-    echo 'echo "시작 중..."' >> /app/docker-entrypoint.sh && \
-    echo 'export PROCFS_PATH=/host/proc' >> /app/docker-entrypoint.sh && \
-    echo 'python /app/main.py "$@"' >> /app/docker-entrypoint.sh && \
-    chmod +x /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
 
 # 시작 명령어
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
@@ -740,6 +749,9 @@ main() {
   
   # mclient_org 디렉토리 설정
   setup_mclient_dir
+  
+  # 진입점 스크립트 생성
+  create_entrypoint_script
   
   # Dockerfile 생성
   create_dockerfile
