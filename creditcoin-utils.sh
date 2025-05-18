@@ -1310,3 +1310,13 @@ cleanupbak() {
     echo -e "${BLUE}작업이 취소되었습니다.${NC}"
   fi
 }
+
+# zshrc 편집 및 업데이트 함수
+editz() {
+  nano ~/.zshrc
+}
+
+updatez() {
+  source ~/.zshrc
+  echo "zshrc가 업데이트되었습니다."
+}
