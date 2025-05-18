@@ -1,5 +1,5 @@
 #!/bin/bash
-# addmc.sh - Creditcoin 모니터링 클라이언트 추가 스크립트
+# addmclient.sh - Creditcoin 모니터링 클라이언트 추가 스크립트 (개선 버전)
 
 # 색상 정의
 GREEN='\033[0;32m'
@@ -8,60 +8,27 @@ BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# GitHub 저장소 정보
+GITHUB_REPO="sigmo2nd/creditcoin-mac"
+GITHUB_BRANCH="monitoring"
+MCLIENT_ORG_DIR="mclient_org"
+GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${MCLIENT_ORG_DIR}"
+
 # 기본값 설정
-SERVER_ID="server1"
+SERVER_ID=""  # MAC 주소를 로드하여 설정
 MONITOR_INTERVAL="5"
-MODE="server"  # server 또는 local
-NODE_NAMES=""
-SERVER_URL=""
-SERVER_HOST=""
-WS_MODE="auto"  # auto, ws, wss, custom 중 하나
+WS_MODE="auto"  # 기본값을 auto로 변경
+WS_SERVER_URL=""
+WS_SERVER_HOST=""
 NO_SSL_VERIFY=false
-DEBUG_MODE=false
-FORCE=false
+CREDITCOIN_DIR=$(pwd)
+FORCE=true  # 기본적으로 설정 덮어쓰기
 NON_INTERACTIVE=false
 
-# 현재 디렉토리 저장
-CURRENT_DIR=$(pwd)
-MCLIENT_DIR="${CURRENT_DIR}/mclient"
-
-# 외부 IP 주소 가져오는 함수
-detect_external_ip() {
-  echo -e "${BLUE}외부 IP 주소 감지 중...${NC}" >&2
-  
-  # 여러 서비스 시도하여 외부 IP 가져오기
-  local external_ip=""
-  for service in "https://api.ipify.org" "https://ifconfig.me" "https://icanhazip.com"; do
-    external_ip=$(curl -s $service)
-    if [[ "$external_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      echo -e "${GREEN}외부 IP 감지됨: $external_ip${NC}" >&2
-      echo "$external_ip"
-      return
-    fi
-  done
-  
-  # 실패한 경우 로컬 네트워크 주소 가져오기 시도
-  if [ -z "$external_ip" ]; then
-    # macOS에서 활성 네트워크 인터페이스 찾기
-    local interface=$(route -n get default 2>/dev/null | grep interface | awk '{print $2}')
-    
-    if [ -n "$interface" ]; then
-      external_ip=$(ifconfig $interface 2>/dev/null | grep "inet " | awk '{print $2}')
-      if [ -n "$external_ip" ]; then
-        echo -e "${YELLOW}외부 IP를 감지할 수 없습니다. 로컬 IP를 사용합니다: $external_ip${NC}" >&2
-        echo "$external_ip"
-        return
-      fi
-    fi
-  fi
-  
-  # 마지막 시도: localhost
-  echo -e "${RED}IP 주소를 찾을 수 없습니다. localhost를 사용합니다.${NC}" >&2
-  echo "127.0.0.1"
-}
-
-# Docker 명령어 및 환경 확인 (OrbStack 호환성)
+# Docker 명령어 및 환경 확인
 check_docker_env() {
+  echo -e "${BLUE}Docker 환경 확인 중...${NC}"
+  
   # Docker 명령어 경로 확인 및 추가
   if ! command -v docker &>/dev/null; then
     echo -e "${YELLOW}Docker 명령어를 찾을 수 없습니다. OrbStack에서 제공하는 Docker CLI를 PATH에 추가합니다.${NC}"
@@ -107,29 +74,53 @@ check_docker_env() {
   echo -e "${GREEN}Docker 환경 확인 완료.${NC}"
 }
 
+# 호스트 정보 파일에서 MAC 주소 로드
+load_mac_address() {
+  local host_info_file="./mclient/host_info.env"
+  
+  # MAC 주소 기본값
+  local mac_address="server1"
+  
+  # host_info.env 파일이 있는지 확인
+  if [ -f "$host_info_file" ]; then
+    # 파일에서 MAC 주소 로드
+    if grep -q "HOST_MAC_ADDRESS" "$host_info_file"; then
+      mac_address=$(grep "HOST_MAC_ADDRESS" "$host_info_file" | cut -d "=" -f2 | tr -d '"')
+      echo -e "${BLUE}호스트 정보 파일에서 MAC 주소를 로드했습니다: ${mac_address}${NC}"
+    else
+      echo -e "${YELLOW}호스트 정보 파일에서 MAC 주소를 찾을 수 없습니다. 기본값을 사용합니다.${NC}"
+    fi
+  else
+    echo -e "${YELLOW}호스트 정보 파일이 없습니다. 기본값을 사용합니다.${NC}"
+  fi
+  
+  # 서버 ID가 이미 설정되어 있지 않으면 MAC 주소로 설정
+  if [ -z "$SERVER_ID" ]; then
+    SERVER_ID="$mac_address"
+  fi
+  
+  echo "$mac_address"
+}
+
 # 도움말 출력
 show_help() {
   echo "사용법: $0 [옵션]"
   echo ""
   echo "옵션:"
   echo "  --non-interactive   대화형 모드 비활성화"
-  echo "  --server-id ID      서버 ID 설정 (기본값: server1)"
+  echo "  --server-id ID      서버 ID 설정 (기본값: MAC 주소)"
   echo "  --interval SEC      모니터링 간격(초) 설정 (기본값: 5)"
-  echo "  --mode MODE         연결 모드: server, local (기본값: server)"
-  echo "  --url URL           WebSocket 서버 URL 직접 지정"
+  echo "  --mode MODE         연결 모드: auto, custom, ws, wss, local (기본값: auto)"
+  echo "  --url URL           WebSocket URL 직접 지정 (custom 모드 사용)"
   echo "  --host HOST         WebSocket 서버 호스트 지정"
-  echo "  --ws-mode MODE      WebSocket 모드: auto, ws, wss (기본값: auto)"
   echo "  --no-ssl-verify     SSL 인증서 검증 비활성화"
-  echo "  --debug             디버그 모드 활성화"
-  echo "  --force             기존 파일을 강제로 덮어쓰기"
   echo "  --help, -h          이 도움말 표시"
   echo ""
   echo "사용 예시:"
-  echo "  $0                              # 대화형 모드로 실행"
-  echo "  $0 --mode local                 # 로컬 모드로 설치"
-  echo "  $0 --url wss://example.com/ws   # 특정 URL 사용"
-  echo "  $0 --host monitor.example.com   # 특정 호스트 사용"
-  echo "  $0 --ws-mode wss                # WSS 모드 사용"
+  echo "  $0                                 # 대화형 모드로 실행"
+  echo "  $0 --mode custom --url wss://192.168.0.24:8443/ws  # 사용자 지정 URL 사용"
+  echo "  $0 --mode ws --host 192.168.0.24   # WS 프로토콜 + 호스트 지정"
+  echo "  $0 --mode local                    # 로컬 모드 (WebSocket 연결 없음)"
   echo ""
 }
 
@@ -150,32 +141,20 @@ parse_args() {
         shift 2
         ;;
       --mode)
-        MODE="$2"
+        WS_MODE="$2"
         shift 2
         ;;
       --url)
-        SERVER_URL="$2"
-        WS_MODE="custom"  # URL이 지정되면 WS_MODE를 custom으로 설정
+        WS_SERVER_URL="$2"
+        WS_MODE="custom"
         shift 2
         ;;
       --host)
-        SERVER_HOST="$2"
-        shift 2
-        ;;
-      --ws-mode)
-        WS_MODE="$2"
+        WS_SERVER_HOST="$2"
         shift 2
         ;;
       --no-ssl-verify)
         NO_SSL_VERIFY=true
-        shift
-        ;;
-      --debug)
-        DEBUG_MODE=true
-        shift
-        ;;
-      --force)
-        FORCE=true
         shift
         ;;
       --help|-h)
@@ -193,60 +172,78 @@ parse_args() {
 
 # 실행 중인 Docker 노드 자동 감지
 detect_nodes() {
-  echo -e "${BLUE}실행 중인 Creditcoin 노드 감지 중...${NC}" >&2
+  echo -e "${BLUE}실행 중인 Creditcoin 노드 감지 중...${NC}"
   
   # Docker 컨테이너 목록에서 node 또는 3node로 시작하는 컨테이너 찾기
   local nodes=""
   nodes=$(docker ps --format "{{.Names}}" | grep -E '^(node|3node)' | tr '\n' ',' | sed 's/,$//')
   
   if [ -z "$nodes" ]; then
-    echo -e "${YELLOW}실행 중인 Creditcoin 노드를 찾을 수 없습니다. 기본값을 사용합니다.${NC}" >&2
+    echo -e "${YELLOW}실행 중인 Creditcoin 노드를 찾을 수 없습니다. 기본값을 사용합니다.${NC}"
     echo "node,3node"
     return
   fi
   
-  echo -e "${GREEN}감지된 노드: $nodes${NC}" >&2
+  echo -e "${GREEN}감지된 노드: $nodes${NC}"
   echo "$nodes"
 }
 
-# 서버 호스트 자동 감지
-detect_server_host() {
-  echo -e "${BLUE}서버 호스트 감지 중...${NC}" >&2
+# 외부 IP 주소 감지
+detect_external_ip() {
+  echo -e "${BLUE}외부 IP 주소 감지 중...${NC}"
   
-  local default_host=""
+  # 여러 서비스를 시도하여 외부 IP 주소 찾기
+  local external_ip=""
+  external_ip=$(curl -s https://api.ipify.org || curl -s https://ifconfig.me || curl -s https://icanhazip.com)
   
-  # 환경변수가 이미 설정되어 있는지 확인
-  if [ ! -z "${SERVER_HOST}" ]; then
-    echo -e "${GREEN}환경변수에서 설정된 호스트: ${SERVER_HOST}${NC}" >&2
-    echo "${SERVER_HOST}"
+  if [ -n "$external_ip" ]; then
+    echo -e "${GREEN}외부 IP 주소: $external_ip${NC}"
+    echo "$external_ip"
     return
   fi
   
-  # 외부 IP 주소 가져오기 시도
-  default_host=$(detect_external_ip)
+  # 외부 IP를 찾지 못하면 로컬 네트워크 IP 시도
+  echo -e "${YELLOW}외부 IP 주소를 찾을 수 없습니다. 로컬 네트워크 IP 감지를 시도합니다.${NC}"
   
-  # IP를 가져오지 못했다면 기본값으로 localhost 사용
-  if [ -z "$default_host" ] || [ "$default_host" = "127.0.0.1" ]; then
-    default_host="localhost"
-    echo -e "${YELLOW}외부 IP를 감지할 수 없어 기본값(localhost)을 사용합니다.${NC}" >&2
+  # 다양한 플랫폼에서 작동하는 IP 감지 방법
+  if command -v ifconfig &> /dev/null; then
+    local local_ip=""
+    # Linux/macOS
+    local_ip=$(ifconfig | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1' | head -1 | awk '{print $2}' | sed 's/addr://')
+    if [ -n "$local_ip" ]; then
+      echo -e "${GREEN}로컬 네트워크 IP: $local_ip${NC}"
+      echo "$local_ip"
+      return
+    fi
+  elif command -v ip &> /dev/null; then
+    # 새로운 Linux 배포판
+    local local_ip=""
+    local_ip=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -1)
+    if [ -n "$local_ip" ]; then
+      echo -e "${GREEN}로컬 네트워크 IP: $local_ip${NC}"
+      echo "$local_ip"
+      return
+    fi
   fi
   
-  echo -e "${GREEN}서버 호스트 감지 완료: ${default_host}${NC}" >&2
-  echo "${default_host}"
+  echo -e "${YELLOW}IP 주소를 자동으로 감지할 수 없습니다. 기본값 'localhost'를 사용합니다.${NC}"
+  echo "localhost"
 }
 
 # Docker 소켓 경로 찾기
 find_docker_sock_path() {
-  echo -e "${BLUE}Docker 소켓 경로 감지 중...${NC}" >&2
+  echo -e "${BLUE}Docker 소켓 경로 감지 중...${NC}"
   
   # 기본 OrbStack Docker 소켓 경로
   local docker_sock_path="$HOME/.orbstack/run/docker.sock"
   
   if [ -S "$docker_sock_path" ]; then
-    echo -e "${GREEN}Docker 소켓 발견: $docker_sock_path${NC}" >&2
+    echo -e "${GREEN}Docker 소켓 발견: $docker_sock_path${NC}"
     echo "$docker_sock_path"
     return
   fi
+  
+  echo -e "${YELLOW}OrbStack Docker 소켓을 찾을 수 없습니다. 다른 경로를 시도합니다...${NC}"
   
   # 대체 가능한 Docker 소켓 경로 목록
   local possible_paths=(
@@ -257,163 +254,59 @@ find_docker_sock_path() {
   
   for path in "${possible_paths[@]}"; do
     if [ -S "$path" ]; then
-      echo -e "${GREEN}Docker 소켓 발견: $path${NC}" >&2
+      echo -e "${GREEN}Docker 소켓 발견: $path${NC}"
       echo "$path"
       return
     fi
   done
   
-  echo -e "${YELLOW}Docker 소켓을 찾을 수 없습니다. 기본 경로를 사용합니다.${NC}" >&2
+  echo -e "${RED}Docker 소켓을 찾을 수 없습니다. 기본 경로를 사용합니다.${NC}"
   echo "/var/run/docker.sock"
 }
 
-# 필요한 파일 준비
-prepare_client_files() {
-  echo -e "${BLUE}모니터링 클라이언트 파일 준비 중...${NC}"
+# 필요한 파일 다운로드
+download_mclient_files() {
+  echo -e "${BLUE}모니터링 클라이언트 필수 파일 다운로드 중...${NC}"
   
-  # mclient 디렉토리 확인/생성
-  if [ ! -d "$MCLIENT_DIR" ]; then
-    mkdir -p "$MCLIENT_DIR"
+  # mclient 디렉토리 확인 및 생성
+  if [ ! -d "./mclient" ]; then
+    mkdir -p ./mclient
     echo -e "${GREEN}mclient 디렉토리를 생성했습니다.${NC}"
   else
     echo -e "${BLUE}기존 mclient 디렉토리를 사용합니다.${NC}"
   fi
   
-  # 필요한 파일 경로들
-  local main_py="${MCLIENT_DIR}/main.py"
-  local docker_stats="${MCLIENT_DIR}/docker_stats_client.py"
-  local websocket="${MCLIENT_DIR}/websocket_client.py"
-  local requirements="${MCLIENT_DIR}/requirements.txt"
+  # 다운로드할 파일 목록
+  local files=("config.py" "docker_stats_client.py" "websocket_client.py" "main.py" "requirements.txt" "start.sh")
   
-  # 필수 파일이 모두 존재하는지 확인
-  if [ -f "$main_py" ] && [ -f "$docker_stats" ] && [ -f "$websocket" ] && [ -f "$requirements" ]; then
-    # 모든 파일이 존재하면 사용자에게 확인 요청
-    if [ "$FORCE" != true ] && [ "$NON_INTERACTIVE" != true ]; then
-      echo -e "${YELLOW}기존 모니터링 클라이언트 파일을 발견했습니다.${NC}"
-      read -p "기존 파일을 덮어쓰시겠습니까? (y/N): " override
-      if [[ ! "$override" =~ ^[Yy]$ ]]; then
-        echo -e "${GREEN}기존 파일을 유지합니다.${NC}"
-        return
+  # 각 파일 다운로드
+  for file in "${files[@]}"; do
+    echo -e "${YELLOW}다운로드 중: ${file}${NC}"
+    
+    # curl로 파일 다운로드
+    if curl -s -o "./mclient/${file}" "${GITHUB_RAW_URL}/${file}"; then
+      echo -e "${GREEN}${file} 다운로드 완료${NC}"
+      
+      # 실행 파일 권한 부여
+      if [[ "${file}" == *.sh ]]; then
+        chmod +x "./mclient/${file}"
+        echo -e "${GREEN}${file}에 실행 권한 부여${NC}"
       fi
-    fi
-  fi
-  
-  # 현재 디렉토리에서 필요한 파일들 찾기
-  local src_files=(
-    "main.py" 
-    "docker_stats_client.py" 
-    "websocket_client.py" 
-    "requirements.txt"
-  )
-  
-  local file_found=false
-  
-  # 현재 디렉토리에서 파일 찾기
-  for file in "${src_files[@]}"; do
-    if [ -f "${CURRENT_DIR}/${file}" ]; then
-      echo -e "${GREEN}파일 발견: ${CURRENT_DIR}/${file}${NC}"
-      echo -e "${YELLOW}복사 중: ${file}${NC}"
-      cp "${CURRENT_DIR}/${file}" "${MCLIENT_DIR}/${file}"
-      file_found=true
+    else
+      echo -e "${RED}${file} 다운로드 실패${NC}"
+      echo -e "${YELLOW}GitHub 저장소 접근 권한을 확인하세요: ${GITHUB_RAW_URL}/${NC}"
+      exit 1
     fi
   done
   
-  # mclient_org 디렉토리 확인
-  local mclient_org="${CURRENT_DIR}/mclient_org"
-  if [ -d "$mclient_org" ]; then
-    for file in "${src_files[@]}"; do
-      if [ -f "${mclient_org}/${file}" ]; then
-        echo -e "${GREEN}파일 발견: ${mclient_org}/${file}${NC}"
-        echo -e "${YELLOW}복사 중: ${file}${NC}"
-        cp "${mclient_org}/${file}" "${MCLIENT_DIR}/${file}"
-        file_found=true
-      fi
-    done
-  fi
-  
-  # 파일을 찾지 못한 경우
-  if [ "$file_found" = false ]; then
-    echo -e "${YELLOW}필요한 소스 파일을 찾을 수 없습니다.${NC}"
-    echo -e "${YELLOW}수동으로 필요한 파일을 ${MCLIENT_DIR} 디렉토리에 복사해야 합니다.${NC}"
-  fi
-  
-  # 스타트 스크립트 추가
-  cat > "${MCLIENT_DIR}/start.sh" << 'EOF'
-#!/bin/bash
-# 환경 변수 확인 및 기본값 설정
-echo "크레딧코인 모니터링 클라이언트 시작"
-python3 main.py "$@"
-EOF
-  
-  # 실행 권한 부여
-  chmod +x "${MCLIENT_DIR}/start.sh"
-  
-  # Docker 엔트리포인트 스크립트 직접 추가
-  cat > "${MCLIENT_DIR}/docker-entrypoint.sh" << 'EOF'
-#!/bin/bash
-echo "== Creditcoin 모니터링 클라이언트 =="
-echo "서버 ID: ${SERVER_ID}"
-echo "모니터링 노드: ${NODE_NAMES}"
-echo "모니터링 간격: ${MONITOR_INTERVAL}초"
-if [ "${LOCAL_MODE}" = "true" ]; then
-  echo "모드: 로컬 (데이터 전송 없음)"
-else
-  echo "모드: 서버 연결"
-  if [ ! -z "${SERVER_URL}" ]; then echo "서버 URL: ${SERVER_URL}"; fi
-  if [ ! -z "${SERVER_HOST}" ]; then 
-    echo "서버 호스트: ${SERVER_HOST}"
-    echo "웹소켓 모드: ${WS_MODE}"
-  fi
-fi
-echo "시작 중..."
-export PROCFS_PATH=/host/proc
-python /app/main.py "$@"
-EOF
-
-  # 실행 권한 부여
-  chmod +x "${MCLIENT_DIR}/docker-entrypoint.sh"
-
-  # kB 단위 수정 추가
-  if [ -f "${MCLIENT_DIR}/docker_stats_client.py" ]; then
-    # 'kB': 1024 항목이 없는지 확인
-    if ! grep -q "'kB': 1024" "${MCLIENT_DIR}/docker_stats_client.py"; then
-      echo -e "${YELLOW}docker_stats_client.py 파일에 kB 단위 추가 중...${NC}"
-      # 임시 파일 생성
-      temp_file=$(mktemp)
-      
-      # 파일 수정
-      awk '
-      /units = {/ {
-        print $0
-        in_units_dict = 1
-        next
-      }
-      in_units_dict && /}/ {
-        # 'kB': 1024 항목 추가 (마지막 중괄호 전에)
-        gsub(/}/, "    # 추가된 kB 형식\n            '\''kB'\'': 1024\n        }")
-        in_units_dict = 0
-        print $0
-        next
-      }
-      { print $0 }
-      ' "${MCLIENT_DIR}/docker_stats_client.py" > "$temp_file"
-      
-      # 원본 파일 대체
-      mv "$temp_file" "${MCLIENT_DIR}/docker_stats_client.py"
-      echo -e "${GREEN}docker_stats_client.py 파일에 kB 단위 추가 완료${NC}"
-    else
-      echo -e "${GREEN}docker_stats_client.py 파일에 kB 단위가 이미 설정되어 있습니다.${NC}"
-    fi
-  fi
-  
-  echo -e "${GREEN}모니터링 클라이언트 파일 준비 완료${NC}"
+  echo -e "${GREEN}모든 필수 파일 다운로드 완료${NC}"
 }
 
 # Dockerfile 생성
 create_dockerfile() {
   echo -e "${BLUE}Dockerfile 생성 중...${NC}"
   
-  cat > "${MCLIENT_DIR}/Dockerfile" << 'EOF'
+  cat > ./mclient/Dockerfile << 'EOF'
 FROM python:3.11-slim
 WORKDIR /app
 
@@ -448,7 +341,21 @@ COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 권한 설정
-RUN chmod +x /app/*.py /app/start.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/main.py
+
+# 스타트업 스크립트 생성
+RUN echo '#!/bin/bash' > /app/docker-entrypoint.sh && \
+    echo 'echo "== Creditcoin 모니터링 클라이언트 ==" ' >> /app/docker-entrypoint.sh && \
+    echo 'echo "서버 ID: ${SERVER_ID}"' >> /app/docker-entrypoint.sh && \
+    echo 'echo "모니터링 노드: ${NODE_NAMES}"' >> /app/docker-entrypoint.sh && \
+    echo 'echo "모니터링 간격: ${MONITOR_INTERVAL}초"' >> /app/docker-entrypoint.sh && \
+    echo 'echo "WebSocket 모드: ${WS_MODE}"' >> /app/docker-entrypoint.sh && \
+    echo 'if [ "${WS_SERVER_HOST}" != "" ]; then echo "WebSocket 호스트: ${WS_SERVER_HOST}"; fi' >> /app/docker-entrypoint.sh && \
+    echo 'if [ "${WS_SERVER_URL}" != "" ]; then echo "WebSocket URL: ${WS_SERVER_URL}"; fi' >> /app/docker-entrypoint.sh && \
+    echo 'echo "시작 중..."' >> /app/docker-entrypoint.sh && \
+    echo 'export PROCFS_PATH=/host/proc' >> /app/docker-entrypoint.sh && \
+    echo 'python /app/main.py "$@"' >> /app/docker-entrypoint.sh && \
+    chmod +x /app/docker-entrypoint.sh
 
 # 시작 명령어
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
@@ -461,120 +368,42 @@ EOF
   echo -e "${GREEN}Dockerfile이 생성되었습니다.${NC}"
 }
 
-# .env 파일 생성
-create_env_file() {
-  echo -e "${BLUE}.env 파일 생성 중...${NC}"
+# mclient/.env 파일 업데이트
+update_env_file() {
+  echo -e "${BLUE}.env 파일 업데이트 중...${NC}"
   
-  # .env 파일 생성
-  cat > "${MCLIENT_DIR}/.env" << EOF
+  # mclient/.env 파일 생성
+  cat > ./mclient/.env << EOF
 # 모니터링 클라이언트 기본 설정
 SERVER_ID=${SERVER_ID}
 NODE_NAMES=${NODE_NAMES}
 MONITOR_INTERVAL=${MONITOR_INTERVAL}
 
+# WebSocket 설정
+WS_MODE=${WS_MODE}
 EOF
 
-  # 모드별 설정 추가
-  if [ "$MODE" = "local" ]; then
-    echo "# 로컬 모드 설정 (전송 없음)" >> "${MCLIENT_DIR}/.env"
-    echo "LOCAL_MODE=true" >> "${MCLIENT_DIR}/.env"
-  else
-    echo "# 서버 연결 설정" >> "${MCLIENT_DIR}/.env"
-    
-    # URL이 직접 지정된 경우 (WS_MODE가 custom)
-    if [ "$WS_MODE" = "custom" ] && [ ! -z "$SERVER_URL" ]; then
-      echo "WS_MODE=custom" >> "${MCLIENT_DIR}/.env"
-      echo "SERVER_URL=${SERVER_URL}" >> "${MCLIENT_DIR}/.env"
-    # 호스트 지정 & 웹소켓 모드 지정 경우
-    elif [ ! -z "$SERVER_HOST" ]; then
-      echo "WS_SERVER_HOST=${SERVER_HOST}" >> "${MCLIENT_DIR}/.env"
-      echo "WS_MODE=${WS_MODE}" >> "${MCLIENT_DIR}/.env"
-    fi
+  # WebSocket 모드에 따른 추가 설정
+  if [ "$WS_MODE" = "custom" ] && [ ! -z "$WS_SERVER_URL" ]; then
+    echo "WS_SERVER_URL=${WS_SERVER_URL}" >> ./mclient/.env
+  fi
+  
+  if [ ! -z "$WS_SERVER_HOST" ]; then
+    echo "WS_SERVER_HOST=${WS_SERVER_HOST}" >> ./mclient/.env
   fi
   
   # SSL 검증 설정
   if [ "$NO_SSL_VERIFY" = true ]; then
-    echo "NO_SSL_VERIFY=true" >> "${MCLIENT_DIR}/.env"
+    echo "NO_SSL_VERIFY=true" >> ./mclient/.env
   fi
   
-  # 디버그 모드 설정
-  if [ "$DEBUG_MODE" = true ]; then
-    echo "DEBUG_MODE=true" >> "${MCLIENT_DIR}/.env"
-  fi
+  # 디렉토리 설정
+  echo -e "\n# 디렉토리 설정\nCREDITCOIN_DIR=${CREDITCOIN_DIR}" >> ./mclient/.env
   
-  echo -e "${GREEN}.env 파일이 생성되었습니다.${NC}"
+  echo -e "${GREEN}.env 파일이 업데이트되었습니다.${NC}"
 }
 
-# 파일 정리 함수 (기존 파일이 이상할 때 사용)
-cleanup_docker_compose() {
-  echo -e "${BLUE}docker-compose.yml 파일 구조 정리 중...${NC}"
-  
-  # docker-compose.yml 파일 확인
-  if [ ! -f "docker-compose.yml" ]; then
-    echo -e "${RED}오류: docker-compose.yml 파일이 없습니다.${NC}"
-    return 1
-  fi
-  
-  # 백업 파일 생성
-  BACKUP_FILE="docker-compose.yml.cleanup.$(date +%Y%m%d%H%M%S)"
-  cp docker-compose.yml "$BACKUP_FILE"
-  echo -e "${GREEN}docker-compose.yml 파일이 $BACKUP_FILE으로 백업되었습니다.${NC}"
-  
-  # 임시 파일 생성
-  TEMP_FILE=$(mktemp)
-  
-  # 상단 기본 설정 (x-node-defaults) 찾기
-  if grep -q "^x-node-defaults:" docker-compose.yml; then
-    # x-node-defaults 섹션 추출
-    echo -e "${YELLOW}기본 설정 섹션 추출 중...${NC}"
-    grep -B 10 "^services:" docker-compose.yml | grep -v "^services:" > "$TEMP_FILE"
-    echo "services:" >> "$TEMP_FILE"
-  else
-    # 기본 설정이 없으면 services 섹션만 시작
-    echo -e "${YELLOW}서비스 섹션만 시작...${NC}"
-    echo "services:" > "$TEMP_FILE"
-  fi
-  
-  # 3node 서비스 복사
-  echo -e "${YELLOW}3node 서비스 복사 중...${NC}"
-  for node in 3node0 3node1 3node2 3node3; do
-    if grep -q "  $node:" docker-compose.yml; then
-      echo -e "${GREEN}${node} 서비스 발견, 복사 중...${NC}"
-      
-      # 서비스 시작 라인
-      grep -A 1 "  $node:" docker-compose.yml >> "$TEMP_FILE"
-      
-      # 서비스 내용 복사 (다음 서비스 또는 networks 전까지)
-      grep -A 100 "  $node:" docker-compose.yml | grep -v "  $node:" | \
-        sed -n '/^  [a-zA-Z0-9_-]\+:/q;p' | \
-        grep -v "^networks:" >> "$TEMP_FILE"
-    fi
-  done
-  
-  # networks 섹션 재구성
-  echo -e "${YELLOW}networks 섹션 재구성 중...${NC}"
-  echo "" >> "$TEMP_FILE"  # 빈 줄 추가
-  
-  if grep -q "driver: bridge" docker-compose.yml; then
-    # 기존 networks 섹션에서 일부 정보 추출
-    echo "networks:" >> "$TEMP_FILE"
-    echo "  creditnet:" >> "$TEMP_FILE"
-    echo "    driver: bridge" >> "$TEMP_FILE"
-  else
-    # 기본 networks 정의 추가
-    echo "networks:" >> "$TEMP_FILE"
-    echo "  creditnet:" >> "$TEMP_FILE"
-    echo "    driver: bridge" >> "$TEMP_FILE"
-  fi
-  
-  # 원본 파일 대체
-  mv "$TEMP_FILE" docker-compose.yml
-  
-  echo -e "${GREEN}docker-compose.yml 파일이 정리되었습니다. 이제 mclient를 추가할 수 있습니다.${NC}"
-  return 0
-}
-
-# docker-compose.yml 파일 업데이트 (완전 재작성 버전)
+# docker-compose.yml 파일 업데이트
 update_docker_compose() {
   echo -e "${BLUE}docker-compose.yml 파일 업데이트 중...${NC}"
   
@@ -586,209 +415,149 @@ update_docker_compose() {
   fi
   
   # docker-compose.yml 파일 백업
-  BACKUP_FILE="docker-compose.yml.bak.$(date +%Y%m%d%H%M%S)"
-  cp docker-compose.yml "$BACKUP_FILE"
-  echo -e "${GREEN}docker-compose.yml 파일이 $BACKUP_FILE으로 백업되었습니다.${NC}"
+  cp docker-compose.yml docker-compose.yml.bak.$(date +%Y%m%d%H%M%S)
+  echo -e "${GREEN}docker-compose.yml 파일이 백업되었습니다.${NC}"
   
-  # Docker 소켓 경로 찾기 (메시지 출력 없음)
+  # Docker 소켓 경로 찾기
   DOCKER_SOCK_PATH=$(find_docker_sock_path)
   
-  # 임시 파일 생성
-  TEMP_FILE=$(mktemp)
-  
-  # 먼저, mclient 서비스가 있는지 확인
+  # mclient 서비스가 이미 있는지 확인
   if grep -q "  mclient:" docker-compose.yml; then
-    echo -e "${YELLOW}기존 mclient 서비스를 제거하고 새로 추가합니다.${NC}"
-    
-    # 기존 mclient 서비스를 제거 (방법 1: sed 사용)
-    sed '/^  mclient:/,/^  [a-zA-Z0-9_-]\+:/{ /^  [a-zA-Z0-9_-]\+:/!d; /^  mclient:/d; }' docker-compose.yml > "$TEMP_FILE"
-    
-    # 임시 파일 확인
-    if [ ! -s "$TEMP_FILE" ]; then
-      echo -e "${YELLOW}mclient 서비스 제거 중 문제가 발생했습니다. 파일 정리를 시도합니다.${NC}"
-      cleanup_docker_compose
-      cp docker-compose.yml "$TEMP_FILE"
+    if [ "$FORCE" = "true" ]; then
+      echo -e "${YELLOW}mclient 서비스가 이미 존재합니다. 업데이트합니다...${NC}"
+      # mclient 서비스 라인 찾기
+      mclient_line=$(grep -n "  mclient:" docker-compose.yml | cut -d: -f1)
+      
+      # mclient 서비스 블록 제거
+      # 다음 서비스나 networks 섹션 시작 위치 찾기
+      next_service_line=$(awk "/^  [a-zA-Z0-9_-]+:/ && NR > $mclient_line && !/^  mclient:/" {print NR; exit} docker-compose.yml)
+      if [ -z "$next_service_line" ]; then
+        next_service_line=$(grep -n "^networks:" docker-compose.yml | cut -d: -f1)
+      fi
+      
+      if [ -n "$next_service_line" ]; then
+        # mclient 서비스 블록 제거
+        sed -i.tmp "${mclient_line},$(($next_service_line-1))d" docker-compose.yml
+        rm -f docker-compose.yml.tmp
+      else
+        echo -e "${RED}오류: docker-compose.yml 파일 구조를 이해할 수 없습니다.${NC}"
+        exit 1
+      fi
+    else
+      echo -e "${YELLOW}mclient 서비스가 이미 존재합니다. FORCE 옵션이 꺼져 있어 업데이트를 건너뜁니다.${NC}"
+      return
     fi
-  else
-    # mclient 서비스가 없으면 전체 복사
-    cp docker-compose.yml "$TEMP_FILE"
   fi
   
-  # networks 섹션 위치 확인
-  NETWORK_LINE=$(grep -n "^networks:" "$TEMP_FILE" | head -1 | cut -d: -f1)
+  # networks 섹션 위치 찾기
+  networks_line=$(grep -n "^networks:" docker-compose.yml | cut -d: -f1)
   
-  if [ -z "$NETWORK_LINE" ]; then
-    # networks 섹션이 없으면 파일 끝에 추가
-    echo -e "${YELLOW}networks 섹션을 찾을 수 없습니다. 파일 끝에 mclient와 networks 섹션을 추가합니다.${NC}"
+  if [ -n "$networks_line" ]; then
+    # 기본 환경 변수 설정
+    mclient_environment="      - SERVER_ID=${SERVER_ID}\n"
+    mclient_environment+="      - NODE_NAMES=${NODE_NAMES}\n"
+    mclient_environment+="      - MONITOR_INTERVAL=${MONITOR_INTERVAL}\n"
+    mclient_environment+="      - WS_MODE=${WS_MODE}\n"
     
-    # mclient 서비스 추가
-    echo "" >> "$TEMP_FILE"  # 빈 줄 추가
-    echo "  mclient:" >> "$TEMP_FILE"
-    echo "    build:" >> "$TEMP_FILE"
-    echo "      context: ./mclient" >> "$TEMP_FILE"
-    echo "      dockerfile: Dockerfile" >> "$TEMP_FILE"
-    echo "    container_name: mclient" >> "$TEMP_FILE"
-    echo "    # 호스트 프로세스 네임스페이스 공유" >> "$TEMP_FILE"
-    echo "    pid: \"host\"" >> "$TEMP_FILE"
-    echo "    # 호스트 네트워크 모드 사용" >> "$TEMP_FILE"
-    echo "    network_mode: \"host\"" >> "$TEMP_FILE"
-    echo "    volumes:" >> "$TEMP_FILE"
-    echo "      # Docker 소켓 마운트" >> "$TEMP_FILE"
-    echo "      - ${DOCKER_SOCK_PATH}:/var/run/docker.sock:ro" >> "$TEMP_FILE"
-    echo "      # 호스트 시간대 정보" >> "$TEMP_FILE"
-    echo "      - /etc/localtime:/etc/localtime:ro" >> "$TEMP_FILE"
-    echo "      # 호스트 시스템 정보 접근" >> "$TEMP_FILE"
-    echo "      - /proc:/host/proc:ro" >> "$TEMP_FILE"
-    echo "      - /sys:/host/sys:ro" >> "$TEMP_FILE"
-    echo "      # mclient 디렉토리 마운트" >> "$TEMP_FILE"
-    echo "      - ./mclient:/app" >> "$TEMP_FILE"
-    echo "    environment:" >> "$TEMP_FILE"
-    echo "      - SERVER_ID=${SERVER_ID}" >> "$TEMP_FILE"
-    echo "      - NODE_NAMES=${NODE_NAMES}" >> "$TEMP_FILE"
-    echo "      - MONITOR_INTERVAL=${MONITOR_INTERVAL}" >> "$TEMP_FILE"
+    # 모드별 추가 환경 변수
+    if [ "$WS_MODE" = "custom" ] && [ ! -z "$WS_SERVER_URL" ]; then
+      mclient_environment+="      - WS_SERVER_URL=${WS_SERVER_URL}\n"
+    fi
     
-    # 호스트 시스템 하드웨어 사양 정보 (정적 데이터만)
-    echo "      # 호스트 시스템 하드웨어 사양 정보" >> "$TEMP_FILE"
-    echo "      - HOST_SYSTEM_NAME=\${HOST_SYSTEM_NAME:-\$(hostname)}" >> "$TEMP_FILE"
-    echo "      - HOST_MODEL=\${HOST_MODEL:-\"Unknown\"}" >> "$TEMP_FILE"
-    echo "      - HOST_PROCESSOR=\${HOST_PROCESSOR:-\"Unknown\"}" >> "$TEMP_FILE" 
-    echo "      - HOST_CPU_CORES=\${HOST_CPU_CORES:-0}" >> "$TEMP_FILE"
-    echo "      - HOST_CPU_PERF_CORES=\${HOST_CPU_PERF_CORES:-0}" >> "$TEMP_FILE"
-    echo "      - HOST_CPU_EFF_CORES=\${HOST_CPU_EFF_CORES:-0}" >> "$TEMP_FILE"
-    echo "      - HOST_MEMORY_GB=\${HOST_MEMORY_GB:-0}" >> "$TEMP_FILE"
-    
-    # 모드별 환경 변수
-    if [ "$MODE" = "local" ]; then
-      echo "      - LOCAL_MODE=true" >> "$TEMP_FILE"
-    else
-      # URL 직접 지정 (custom 모드)
-      if [ "$WS_MODE" = "custom" ] && [ ! -z "$SERVER_URL" ]; then
-        echo "      - WS_MODE=custom" >> "$TEMP_FILE"
-        echo "      - SERVER_URL=${SERVER_URL}" >> "$TEMP_FILE"
-      # 호스트 지정 & 웹소켓 모드 지정
-      elif [ ! -z "$SERVER_HOST" ]; then
-        echo "      - WS_SERVER_HOST=${SERVER_HOST}" >> "$TEMP_FILE"
-        echo "      - WS_MODE=${WS_MODE}" >> "$TEMP_FILE"
-      fi
+    if [ ! -z "$WS_SERVER_HOST" ]; then
+      mclient_environment+="      - WS_SERVER_HOST=${WS_SERVER_HOST}\n"
     fi
     
     # SSL 검증 비활성화 설정
     if [ "$NO_SSL_VERIFY" = true ]; then
-      echo "      - NO_SSL_VERIFY=true" >> "$TEMP_FILE"
-    fi
-    
-    # 디버그 모드 설정
-    if [ "$DEBUG_MODE" = true ]; then
-      echo "      - DEBUG_MODE=true" >> "$TEMP_FILE"
+      mclient_environment+="      - NO_SSL_VERIFY=true\n"
     fi
     
     # 공통 환경 변수
-    echo "      # Docker 접근을 위한 환경 변수" >> "$TEMP_FILE"
-    echo "      - DOCKER_HOST=unix:///var/run/docker.sock" >> "$TEMP_FILE"
-    echo "      # 호스트 시스템 정보 접근을 위한 환경 변수" >> "$TEMP_FILE"
-    echo "      - HOST_PROC=/host/proc" >> "$TEMP_FILE"
-    echo "      - HOST_SYS=/host/sys" >> "$TEMP_FILE"
+    mclient_environment+="      - CREDITCOIN_DIR=/creditcoin-mac\n"
+    mclient_environment+="      # Docker 접근을 위한 환경 변수\n"
+    mclient_environment+="      - DOCKER_HOST=unix:///var/run/docker.sock\n"
+    mclient_environment+="      - DOCKER_API_VERSION=1.41\n"
+    mclient_environment+="      # 호스트 시스템 정보 접근을 위한 환경 변수\n"
+    mclient_environment+="      - HOST_PROC=/host/proc\n"
+    mclient_environment+="      - HOST_SYS=/host/sys\n"
     
-    # networks 섹션 추가
-    echo "" >> "$TEMP_FILE"  # 빈 줄 추가
-    echo "networks:" >> "$TEMP_FILE"
-    echo "  creditnet:" >> "$TEMP_FILE"
-    echo "    driver: bridge" >> "$TEMP_FILE"
+    # mclient 서비스 블록 생성
+    mclient_service=$(cat << EOF
+
+  mclient:
+    <<: *node-defaults
+    build:
+      context: ./mclient
+      dockerfile: Dockerfile
+    container_name: mclient
+    # 호스트 프로세스 네임스페이스 공유
+    pid: "host"
+    # 호스트 네트워크 모드 사용
+    network_mode: "host"
+    volumes:
+      # Docker 소켓 마운트
+      - ${DOCKER_SOCK_PATH}:/var/run/docker.sock:ro
+      # 호스트 시간대 정보
+      - /etc/localtime:/etc/localtime:ro
+      # 호스트 시스템 정보 접근
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      # mclient 디렉토리 마운트
+      - ./mclient:/app
+    environment:
+${mclient_environment}
+EOF
+)
+    
+    # networks 섹션 앞에 mclient 서비스 삽입
+    head -n $((networks_line-1)) docker-compose.yml > docker-compose.yml.new
+    echo -e "$mclient_service" >> docker-compose.yml.new
+    tail -n +$((networks_line)) docker-compose.yml >> docker-compose.yml.new
+    mv docker-compose.yml.new docker-compose.yml
+    
+    echo -e "${GREEN}mclient 서비스가 docker-compose.yml에 추가되었습니다.${NC}"
   else
-    # networks 섹션 앞에 mclient 서비스 추가
-    NEW_TEMP_FILE=$(mktemp)
-    head -n $((NETWORK_LINE-1)) "$TEMP_FILE" > "$NEW_TEMP_FILE"
-    
-    # mclient 서비스 추가
-    echo "" >> "$NEW_TEMP_FILE"  # 빈 줄 추가
-    echo "  mclient:" >> "$NEW_TEMP_FILE"
-    echo "    build:" >> "$NEW_TEMP_FILE"
-    echo "      context: ./mclient" >> "$NEW_TEMP_FILE"
-    echo "      dockerfile: Dockerfile" >> "$NEW_TEMP_FILE"
-    echo "    container_name: mclient" >> "$NEW_TEMP_FILE"
-    echo "    # 호스트 프로세스 네임스페이스 공유" >> "$NEW_TEMP_FILE"
-    echo "    pid: \"host\"" >> "$NEW_TEMP_FILE"
-    echo "    # 호스트 네트워크 모드 사용" >> "$NEW_TEMP_FILE"
-    echo "    network_mode: \"host\"" >> "$NEW_TEMP_FILE"
-    echo "    volumes:" >> "$NEW_TEMP_FILE"
-    echo "      # Docker 소켓 마운트" >> "$NEW_TEMP_FILE"
-    echo "      - ${DOCKER_SOCK_PATH}:/var/run/docker.sock:ro" >> "$NEW_TEMP_FILE"
-    echo "      # 호스트 시간대 정보" >> "$NEW_TEMP_FILE"
-    echo "      - /etc/localtime:/etc/localtime:ro" >> "$NEW_TEMP_FILE"
-    echo "      # 호스트 시스템 정보 접근" >> "$NEW_TEMP_FILE"
-    echo "      - /proc:/host/proc:ro" >> "$NEW_TEMP_FILE"
-    echo "      - /sys:/host/sys:ro" >> "$NEW_TEMP_FILE"
-    echo "      # mclient 디렉토리 마운트" >> "$NEW_TEMP_FILE"
-    echo "      - ./mclient:/app" >> "$NEW_TEMP_FILE"
-    echo "    environment:" >> "$NEW_TEMP_FILE"
-    echo "      - SERVER_ID=${SERVER_ID}" >> "$NEW_TEMP_FILE"
-    echo "      - NODE_NAMES=${NODE_NAMES}" >> "$NEW_TEMP_FILE"
-    echo "      - MONITOR_INTERVAL=${MONITOR_INTERVAL}" >> "$NEW_TEMP_FILE"
-    
-    # 호스트 시스템 하드웨어 사양 정보 (정적 데이터만)
-    echo "      # 호스트 시스템 하드웨어 사양 정보" >> "$NEW_TEMP_FILE"
-    echo "      - HOST_SYSTEM_NAME=\${HOST_SYSTEM_NAME:-\$(hostname)}" >> "$NEW_TEMP_FILE"
-    echo "      - HOST_MODEL=\${HOST_MODEL:-\"Unknown\"}" >> "$NEW_TEMP_FILE"
-    echo "      - HOST_PROCESSOR=\${HOST_PROCESSOR:-\"Unknown\"}" >> "$NEW_TEMP_FILE" 
-    echo "      - HOST_CPU_CORES=\${HOST_CPU_CORES:-0}" >> "$NEW_TEMP_FILE"
-    echo "      - HOST_CPU_PERF_CORES=\${HOST_CPU_PERF_CORES:-0}" >> "$NEW_TEMP_FILE"
-    echo "      - HOST_CPU_EFF_CORES=\${HOST_CPU_EFF_CORES:-0}" >> "$NEW_TEMP_FILE"
-    echo "      - HOST_MEMORY_GB=\${HOST_MEMORY_GB:-0}" >> "$NEW_TEMP_FILE"
-    
-    # 모드별 환경 변수
-    if [ "$MODE" = "local" ]; then
-      echo "      - LOCAL_MODE=true" >> "$NEW_TEMP_FILE"
-    else
-      # URL 직접 지정 (custom 모드)
-      if [ "$WS_MODE" = "custom" ] && [ ! -z "$SERVER_URL" ]; then
-        echo "      - WS_MODE=custom" >> "$NEW_TEMP_FILE"
-        echo "      - SERVER_URL=${SERVER_URL}" >> "$NEW_TEMP_FILE"
-      # 호스트 지정 & 웹소켓 모드 지정
-      elif [ ! -z "$SERVER_HOST" ]; then
-        echo "      - WS_SERVER_HOST=${SERVER_HOST}" >> "$NEW_TEMP_FILE"
-        echo "      - WS_MODE=${WS_MODE}" >> "$NEW_TEMP_FILE"
-      fi
-    fi
-    
-    # SSL 검증 비활성화 설정
-    if [ "$NO_SSL_VERIFY" = true ]; then
-      echo "      - NO_SSL_VERIFY=true" >> "$NEW_TEMP_FILE"
-    fi
-    
-    # 디버그 모드 설정
-    if [ "$DEBUG_MODE" = true ]; then
-      echo "      - DEBUG_MODE=true" >> "$NEW_TEMP_FILE"
-    fi
-    
-    # 공통 환경 변수
-    echo "      # Docker 접근을 위한 환경 변수" >> "$NEW_TEMP_FILE"
-    echo "      - DOCKER_HOST=unix:///var/run/docker.sock" >> "$NEW_TEMP_FILE"
-    echo "      # 호스트 시스템 정보 접근을 위한 환경 변수" >> "$NEW_TEMP_FILE"
-    echo "      - HOST_PROC=/host/proc" >> "$NEW_TEMP_FILE"
-    echo "      - HOST_SYS=/host/sys" >> "$NEW_TEMP_FILE"
-    
-    # networks 섹션 추가
-    echo "" >> "$NEW_TEMP_FILE"  # 빈 줄 추가
-    tail -n +$NETWORK_LINE "$TEMP_FILE" >> "$NEW_TEMP_FILE"
-    
-    # 임시 파일 교체
-    mv "$NEW_TEMP_FILE" "$TEMP_FILE"
-  fi
-  
-  # 결과 확인
-  if [ ! -s "$TEMP_FILE" ]; then
-    echo -e "${RED}오류: docker-compose.yml 파일 처리 중 문제가 발생했습니다.${NC}"
-    echo -e "${YELLOW}백업 파일($BACKUP_FILE)을 확인하세요.${NC}"
-    rm -f "$TEMP_FILE"
+    echo -e "${RED}오류: docker-compose.yml 파일에서 networks 섹션을 찾을 수 없습니다.${NC}"
     exit 1
   fi
+}
+
+# 연결 테스트 함수
+test_connection() {
+  local ws_host=$1
+  local ws_port=$2
+  local protocol=$3
   
-# 원본 파일 대체
-  mv "$TEMP_FILE" docker-compose.yml
+  echo -e "${BLUE}WebSocket 서버 연결 테스트 중... (${protocol}://${ws_host}:${ws_port})${NC}"
   
-  # 성공 메시지
-  echo -e "${GREEN}mclient 서비스가 docker-compose.yml에 성공적으로 추가되었습니다.${NC}"
-  echo -e "${YELLOW}백업 파일: $BACKUP_FILE${NC}"
+  # 먼저 호스트에 ping 테스트
+  if ping -c 1 -W 2 "$ws_host" &>/dev/null; then
+    echo -e "${GREEN}호스트 ${ws_host}에 접속 가능합니다.${NC}"
+  else
+    echo -e "${YELLOW}경고: 호스트 ${ws_host}에 ping할 수 없습니다. 방화벽이 활성화되어 있거나 호스트가 다운되었을 수 있습니다.${NC}"
+  fi
+  
+  # 포트 연결 테스트
+  if command -v nc &>/dev/null; then
+    if nc -z -w 2 "$ws_host" "$ws_port" 2>/dev/null; then
+      echo -e "${GREEN}${ws_host}:${ws_port} 포트에 접속 가능합니다.${NC}"
+      return 0
+    else
+      echo -e "${YELLOW}경고: ${ws_host}:${ws_port} 포트에 접속할 수 없습니다. 방화벽이 차단하거나 해당 포트에 서비스가 실행되지 않을 수 있습니다.${NC}"
+    fi
+  elif command -v telnet &>/dev/null; then
+    if echo -n | telnet "$ws_host" "$ws_port" 2>/dev/null >/dev/null; then
+      echo -e "${GREEN}${ws_host}:${ws_port} 포트에 접속 가능합니다.${NC}"
+      return 0
+    else
+      echo -e "${YELLOW}경고: ${ws_host}:${ws_port} 포트에 접속할 수 없습니다. 방화벽이 차단하거나 해당 포트에 서비스가 실행되지 않을 수 있습니다.${NC}"
+    fi
+  else
+    echo -e "${YELLOW}경고: 포트 연결을 테스트할 도구(nc 또는 telnet)가 없습니다.${NC}"
+  fi
+  
+  return 1
 }
 
 # 대화형 모드 실행
@@ -799,111 +568,86 @@ run_interactive_mode() {
   NODE_NAMES=$(detect_nodes)
   
   # 서버 ID 입력 (선택 사항)
-  read -p "서버 ID를 입력하세요 ($SERVER_ID): " input
+  read -p "서버 ID를 입력하세요 (기본값: $SERVER_ID): " input
   if [ ! -z "$input" ]; then
     SERVER_ID="$input"
   fi
   
   # 모니터링 간격 입력 (선택 사항)
-  read -p "모니터링 간격(초)을 입력하세요 ($MONITOR_INTERVAL): " input
+  read -p "모니터링 간격(초)을 입력하세요 (기본값: $MONITOR_INTERVAL): " input
   if [ ! -z "$input" ]; then
     MONITOR_INTERVAL="$input"
   fi
   
-  # 모니터링 모드 선택
-  echo -e "${YELLOW}모니터링 모드를 선택하세요:${NC}"
-  echo "1) 서버 모드 - 중앙 모니터링 서버에 데이터 전송"
-  echo "2) 로컬 모드 - 화면에만 표시 (데이터 전송 없음)"
-  read -p "선택 (1/2) [1]: " mode_choice
+  # 연결 모드 선택
+  echo -e "${YELLOW}연결 모드를 선택하세요:${NC}"
+  echo "1) 자동 모드 (auto) - 자동으로 적절한 연결 방식 선택"
+  echo "2) 사용자 지정 URL (custom) - WebSocket URL 직접 지정"
+  echo "3) WS 프로토콜 (ws) - 암호화되지 않은 WebSocket 사용"
+  echo "4) WSS 프로토콜 (wss) - 암호화된 WebSocket 사용"
+  echo "5) 로컬 모드 (local) - WebSocket 서버 연결 없이 실행"
+  read -p "선택 (1-5) [기본값: 1]: " mode_choice
   
   case $mode_choice in
     2)
-      MODE="local"
-      echo -e "${GREEN}로컬 모드가 선택되었습니다. 데이터가 중앙 서버로 전송되지 않습니다.${NC}"
-      ;;
-    *)
-      MODE="server"
-      # 연결 설정
-      echo -e "${YELLOW}연결 설정 방식을 선택하세요:${NC}"
-      echo "1) 호스트만 지정 - 서버의 호스트 이름이나 IP만 입력 (포트와 경로는 자동 구성)"
-      echo "   예: monitor.example.com 또는 192.168.1.100"
-      echo "2) 전체 URL 직접 지정 - 프로토콜, 호스트, 포트, 경로를 포함한 전체 URL 입력"
-      echo "   예: wss://monitor.example.com:8443/ws"
-      read -p "선택 (1/2) [1]: " conn_choice
-      
-      case $conn_choice in
-        2)
-          # URL 직접 지정 모드
-          read -p "WebSocket URL을 입력하세요 (예: wss://monitor.example.com/ws): " input_url
-          # URL 형식 확인 및 수정
-          if [[ ! "$input_url" =~ ^(ws|wss):// ]]; then
-            # 프로토콜이 없는 경우, 기본값으로 ws:// 추가
-            input_url="ws://$input_url"
-            echo -e "${YELLOW}프로토콜이 지정되지 않아 'ws://'를 기본값으로 추가했습니다.${NC}"
-          fi
-          # 경로가 없는 경우 /ws 추가
-          if [[ ! "$input_url" =~ /[^/]+$ ]]; then
-            # URL 끝에 슬래시가 없으면 추가
-            if [[ ! "$input_url" =~ /$ ]]; then
-              input_url="$input_url/"
-            fi
-            input_url="${input_url}ws"
-            echo -e "${YELLOW}경로가 지정되지 않아 '/ws'를 기본값으로 추가했습니다.${NC}"
-          fi
-          SERVER_URL="$input_url"
-          WS_MODE="custom"  # URL이 직접 지정되면 WS_MODE를 custom으로 설정
-          echo -e "${GREEN}설정된 WebSocket URL: $SERVER_URL${NC}"
-          echo -e "${GREEN}WebSocket 모드: custom${NC}"
-          ;;
-        *)
-          # 호스트 지정 모드
-          # 외부 IP 주소 자동 감지
-          default_host=$(detect_external_ip)
-          read -p "서버 호스트를 입력하세요 ($default_host): " input
-          SERVER_HOST=${input:-$default_host}
-          
-          # WebSocket 모드 선택 (새로 추가된 부분)
-          echo -e "${YELLOW}WebSocket 연결 방식을 선택하세요:${NC}"
-          echo "1) 자동 (서버 환경에 따라 자동 선택) [기본값]"
-          echo "2) ws (비보안 WebSocket)"
-          echo "3) wss (보안 WebSocket)"
-          read -p "선택 (1/2/3) [1]: " ws_mode_choice
-          
-          case $ws_mode_choice in
-            2)
-              WS_MODE="ws"
-              echo -e "${GREEN}WebSocket 모드: ws (비보안)${NC}"
-              ;;
-            3)
-              WS_MODE="wss"
-              echo -e "${GREEN}WebSocket 모드: wss (보안)${NC}"
-              ;;
-            *)
-              WS_MODE="auto"
-              echo -e "${GREEN}WebSocket 모드: auto (자동)${NC}"
-              ;;
-          esac
-          ;;
-      esac
-      
-      # SSL 검증 설정 (기본값은 활성화 = Yes)
-      read -p "SSL 인증서 검증을 활성화하시겠습니까? (Y/n): " ssl_choice
-      if [[ "$ssl_choice" =~ ^[Nn]$ ]]; then
+      WS_MODE="custom"
+      read -p "WebSocket URL을 입력하세요 (예: wss://192.168.0.24:8443/ws): " WS_SERVER_URL
+      read -p "SSL 인증서 검증을 건너뛰겠습니까? (y/n) [기본값: y]: " ssl_choice
+      if [[ -z "$ssl_choice" || "$ssl_choice" =~ ^[Yy]$ ]]; then
         NO_SSL_VERIFY=true
-        echo -e "${GREEN}SSL 인증서 검증이 비활성화되었습니다.${NC}"
       else
         NO_SSL_VERIFY=false
-        echo -e "${GREEN}SSL 인증서 검증이 활성화되었습니다.${NC}"
+      fi
+      ;;
+    3)
+      WS_MODE="ws"
+      # 외부 IP 주소 감지
+      default_host=$(detect_external_ip)
+      read -p "WebSocket 서버 호스트를 입력하세요 (기본값: $default_host): " input
+      WS_SERVER_HOST=${input:-$default_host}
+      
+      # 연결 테스트
+      test_connection "$WS_SERVER_HOST" "8080" "ws"
+      ;;
+    4)
+      WS_MODE="wss"
+      # 외부 IP 주소 감지
+      default_host=$(detect_external_ip)
+      read -p "WebSocket 서버 호스트를 입력하세요 (기본값: $default_host): " input
+      WS_SERVER_HOST=${input:-$default_host}
+      
+      read -p "SSL 인증서 검증을 건너뛰겠습니까? (y/n) [기본값: y]: " ssl_choice
+      if [[ -z "$ssl_choice" || "$ssl_choice" =~ ^[Yy]$ ]]; then
+        NO_SSL_VERIFY=true
+      else
+        NO_SSL_VERIFY=false
       fi
       
-      # 디버그 모드 설정 (기본값은 비활성화 = No)
-      read -p "디버그 모드를 활성화하시겠습니까? (y/N): " debug_choice
-      if [[ "$debug_choice" =~ ^[Yy]$ ]]; then
-        DEBUG_MODE=true
-        echo -e "${GREEN}디버그 모드가 활성화되었습니다.${NC}"
+      # 연결 테스트
+      test_connection "$WS_SERVER_HOST" "8443" "wss"
+      ;;
+    5)
+      WS_MODE="local"
+      echo -e "${GREEN}로컬 모드가 선택되었습니다. WebSocket 서버 연결 없이 실행됩니다.${NC}"
+      ;;
+    *)
+      WS_MODE="auto"
+      # 외부 IP 주소 감지
+      default_host=$(detect_external_ip)
+      read -p "WebSocket 서버 호스트를 입력하세요 (기본값: $default_host): " input
+      WS_SERVER_HOST=${input:-$default_host}
+      
+      read -p "SSL 인증서 검증을 건너뛰겠습니까? (y/n) [기본값: y]: " ssl_choice
+      if [[ -z "$ssl_choice" || "$ssl_choice" =~ ^[Yy]$ ]]; then
+        NO_SSL_VERIFY=true
       else
-        DEBUG_MODE=false
-        echo -e "${GREEN}디버그 모드가 비활성화되었습니다.${NC}"
+        NO_SSL_VERIFY=false
+      fi
+      
+      # 연결 테스트
+      test_connection "$WS_SERVER_HOST" "8443" "wss"
+      if [ $? -ne 0 ]; then
+        test_connection "$WS_SERVER_HOST" "8080" "ws"
       fi
       ;;
   esac
@@ -913,40 +657,43 @@ run_interactive_mode() {
   echo -e "${GREEN}서버 ID: $SERVER_ID${NC}"
   echo -e "${GREEN}모니터링 노드: $NODE_NAMES${NC}"
   echo -e "${GREEN}모니터링 간격: ${MONITOR_INTERVAL}초${NC}"
+  echo -e "${GREEN}연결 모드: $WS_MODE${NC}"
   
-  # 호스트 시스템 정보가 있으면 표시
-  if [ -n "${HOST_SYSTEM_NAME}" ]; then
-    echo -e "${GREEN}호스트 시스템: ${HOST_SYSTEM_NAME}${NC}"
-    echo -e "${GREEN}모델: ${HOST_MODEL}${NC}"
-    echo -e "${GREEN}프로세서: ${HOST_PROCESSOR}${NC}"
-    [ -n "${HOST_CPU_CORES}" ] && echo -e "${GREEN}CPU 코어: ${HOST_CPU_CORES}${NC}"
-    [ -n "${HOST_MEMORY_GB}" ] && echo -e "${GREEN}메모리: ${HOST_MEMORY_GB}GB${NC}"
-  fi
-  
-  if [ "$MODE" = "local" ]; then
-    echo -e "${GREEN}모드: 로컬 (데이터 전송 없음)${NC}"
-  else
-    echo -e "${GREEN}모드: 서버 연결${NC}"
-    if [ "$WS_MODE" = "custom" ] && [ ! -z "$SERVER_URL" ]; then
-      echo -e "${GREEN}WebSocket URL: $SERVER_URL${NC}"
-      echo -e "${GREEN}WebSocket 모드: custom (URL 직접 지정)${NC}"
-    fi
-    if [ ! -z "$SERVER_HOST" ]; then
-      echo -e "${GREEN}WebSocket 호스트: $SERVER_HOST${NC}"
-      echo -e "${GREEN}WebSocket 모드: $WS_MODE${NC}"
-    fi
-    if [ "$NO_SSL_VERIFY" = true ]; then
-      echo -e "${GREEN}SSL 검증: 비활성화${NC}"
-    else
-      echo -e "${GREEN}SSL 검증: 활성화${NC}"
-    fi
-  fi
-  
-  if [ "$DEBUG_MODE" = true ]; then
-    echo -e "${GREEN}디버그 모드: 활성화${NC}"
-  else
-    echo -e "${GREEN}디버그 모드: 비활성화${NC}"
-  fi
+  case $WS_MODE in
+    "custom")
+      echo -e "${GREEN}WebSocket URL: $WS_SERVER_URL${NC}"
+      if [ "$NO_SSL_VERIFY" = true ]; then
+        echo -e "${GREEN}SSL 검증: 비활성화${NC}"
+      else
+        echo -e "${GREEN}SSL 검증: 활성화${NC}"
+      fi
+      ;;
+    "ws")
+      echo -e "${GREEN}WebSocket 호스트: $WS_SERVER_HOST${NC}"
+      echo -e "${GREEN}WebSocket 포트: 8080${NC}"
+      ;;
+    "wss")
+      echo -e "${GREEN}WebSocket 호스트: $WS_SERVER_HOST${NC}"
+      echo -e "${GREEN}WebSocket 포트: 8443${NC}"
+      if [ "$NO_SSL_VERIFY" = true ]; then
+        echo -e "${GREEN}SSL 검증: 비활성화${NC}"
+      else
+        echo -e "${GREEN}SSL 검증: 활성화${NC}"
+      fi
+      ;;
+    "auto")
+      echo -e "${GREEN}WebSocket 호스트: $WS_SERVER_HOST${NC}"
+      echo -e "${GREEN}자동 모드: ws(8080) 또는 wss(8443) 자동 선택${NC}"
+      if [ "$NO_SSL_VERIFY" = true ]; then
+        echo -e "${GREEN}SSL 검증: 비활성화${NC}"
+      else
+        echo -e "${GREEN}SSL 검증: 활성화${NC}"
+      fi
+      ;;
+    "local")
+      echo -e "${GREEN}로컬 모드: WebSocket 서버 연결 없음${NC}"
+      ;;
+  esac
   
   # 확인 및 진행
   read -p "위 설정으로 진행하시겠습니까? (Y/n): " confirm
@@ -961,6 +708,9 @@ main() {
   # Docker 환경 확인
   check_docker_env
   
+  # MAC 주소 로드 및 ServerID 설정
+  SERVER_ID=$(load_mac_address)
+  
   # 명령줄 인자 처리
   parse_args "$@"
   
@@ -974,30 +724,19 @@ main() {
     fi
     
     # 비대화형 모드에서 호스트 자동 감지 (설정되지 않은 경우)
-    if [ -z "$SERVER_HOST" ] && [ "$MODE" = "server" ] && [ -z "$SERVER_URL" ]; then
-      SERVER_HOST=$(detect_external_ip)
-    fi
-    
-    # URL이 지정되었을 때 WS_MODE를 custom으로 설정
-    if [ ! -z "$SERVER_URL" ]; then
-      WS_MODE="custom"
+    if [ -z "$WS_SERVER_HOST" ] && [ "$WS_MODE" != "local" ] && [ "$WS_MODE" != "custom" ]; then
+      WS_SERVER_HOST=$(detect_external_ip)
     fi
   fi
   
-  # 필요한 파일 준비
-  prepare_client_files
+  # 필요한 파일 다운로드
+  download_mclient_files
   
   # Dockerfile 생성
   create_dockerfile
   
-  # .env 파일 생성
-  create_env_file
-  
-  # docker-compose.yml 파일이 이상하면 정리 먼저 시도
-  if grep -q "creditnet:" docker-compose.yml && ! grep -q "networks:" docker-compose.yml; then
-    echo -e "${YELLOW}docker-compose.yml 파일이 잘못된 형식입니다. 정리 시도...${NC}"
-    cleanup_docker_compose
-  fi
+  # 환경 변수 파일 업데이트
+  update_env_file
   
   # docker-compose.yml 파일 업데이트
   update_docker_compose
@@ -1007,7 +746,7 @@ main() {
   
   # 컨테이너 시작 여부 확인
   read -p "모니터링 클라이언트를 지금 시작하시겠습니까? (Y/n): " start_now
-  if [[ -z "$start_now" || ! "$start_now" =~ ^[Nn]$ ]]; then
+  if [[ -z "$start_now" || "$start_now" =~ ^[Yy]$ ]]; then
     echo -e "${BLUE}이전 mclient 컨테이너 확인 및 제거 중...${NC}"
     # 기존 mclient 컨테이너 제거
     if docker ps -a --format "{{.Names}}" | grep -q "mclient$"; then
@@ -1023,7 +762,7 @@ main() {
     if [ $? -eq 0 ]; then
       echo -e "${GREEN}모니터링 클라이언트가 성공적으로 시작되었습니다.${NC}"
       echo -e "${YELLOW}로그 확인: ${GREEN}docker compose -p creditcoin3 logs -f mclient${NC}"
-      echo -e "${YELLOW}또는 명령어 사용: ${GREEN}mclogs${NC}"
+      echo -e "${YELLOW}또는 셸 함수 사용: ${GREEN}mclog${NC}"
     else
       echo -e "${RED}모니터링 클라이언트 시작에 실패했습니다.${NC}"
       echo -e "${YELLOW}로그를 확인하여 문제를 진단하세요.${NC}"
@@ -1032,7 +771,7 @@ main() {
     echo -e "${YELLOW}모니터링 클라이언트를 시작하지 않았습니다.${NC}"
     echo -e "${YELLOW}나중에 다음 명령어로 시작할 수 있습니다:${NC}"
     echo -e "${GREEN}docker compose -p creditcoin3 up -d mclient${NC}"
-    echo -e "${YELLOW}또는 간단히: ${GREEN}mcstart${NC}"
+    echo -e "${YELLOW}또는 셸 함수 사용: ${GREEN}mcstart${NC}"
   fi
   
   echo -e "${BLUE}===================================================${NC}"
@@ -1040,9 +779,10 @@ main() {
   echo -e "${GREEN}mcstart${NC}     - 모니터링 클라이언트 시작"
   echo -e "${GREEN}mcstop${NC}      - 모니터링 클라이언트 중지"
   echo -e "${GREEN}mcrestart${NC}   - 모니터링 클라이언트 재시작"
-  echo -e "${GREEN}mclogs${NC}      - 모니터링 클라이언트 로그 표시"
+  echo -e "${GREEN}mclog${NC}       - 모니터링 클라이언트 로그 표시"
   echo -e "${GREEN}mcstatus${NC}    - 모니터링 클라이언트 상태 확인"
   echo -e "${GREEN}mclocal${NC}     - 로컬 모드로 모니터링 클라이언트 실행"
+  echo -e "${GREEN}cleanupbak${NC}  - 백업 파일 정리"
   echo -e "${BLUE}===================================================${NC}"
 }
 

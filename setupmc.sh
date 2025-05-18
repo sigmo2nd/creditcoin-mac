@@ -161,9 +161,47 @@ EOF
   fi
 }
 
+# 시스템 MAC 주소 수집
+get_mac_address() {
+  show_step "MAC 주소 수집"
+  
+  local mac_address=""
+  
+  # macOS 환경에서 en0 네트워크 인터페이스의 MAC 주소 가져오기
+  if [[ "$(uname)" == "Darwin" ]]; then
+    # Wi-Fi(en0) 인터페이스의 MAC 주소 추출
+    mac_address=$(ifconfig en0 | grep ether | awk '{print $2}' | tr -d ':' | tr '[:lower:]' '[:upper:]')
+    
+    # en0이 없으면 en1 시도
+    if [ -z "$mac_address" ]; then
+      mac_address=$(ifconfig en1 | grep ether | awk '{print $2}' | tr -d ':' | tr '[:lower:]' '[:upper:]')
+    fi
+  fi
+  
+  # 여전히 MAC 주소를 찾지 못했다면, 다른 방법으로 시도
+  if [ -z "$mac_address" ]; then
+    # 모든 인터페이스에서 첫 번째 MAC 주소 찾기
+    mac_address=$(ifconfig | grep -o -E '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -n 1 | tr -d ':' | tr '[:lower:]' '[:upper:]')
+  fi
+  
+  # MAC 주소를 찾지 못했다면 기본값 사용
+  if [ -z "$mac_address" ]; then
+    show_warning "MAC 주소를 찾을 수 없습니다. 임의의 식별자를 사용합니다."
+    mac_address="SERVER$(date +%Y%m%d%H%M%S)"
+  else
+    show_success "MAC 주소: $mac_address 수집 완료"
+  fi
+  
+  # 반환 값으로 MAC 주소 제공
+  echo "$mac_address"
+}
+
 # 호스트 시스템 정보 수집
 collect_host_info() {
   show_step "호스트 시스템 정보 수집"
+  
+  # MAC 주소 수집
+  local mac_address=$(get_mac_address)
   
   # 호스트명 수집
   local hostname=$(hostname)
@@ -186,6 +224,16 @@ collect_host_info() {
     rm -f "${SHELL_PROFILE}.tmp"
   fi
   
+  # host_info.env 파일 생성
+  local host_info_file="${SCRIPT_DIR}/mclient/host_info.env"
+  
+  # 파일 초기화
+  cat > "$host_info_file" << EOT
+# Creditcoin 호스트 시스템 정보 - $(date)
+HOST_SYSTEM_NAME="${hostname_local}"
+HOST_MAC_ADDRESS="${mac_address}"
+EOT
+  
   # macOS 시스템 정보 수집
   if [[ "$(uname)" == "Darwin" ]]; then
     # 시스템 모델 및 프로세서 정보
@@ -205,11 +253,22 @@ collect_host_info() {
     # 메모리 정보
     memory_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo "0") / 1024 / 1024 / 1024 ))
     
+    # host_info.env 파일에 추가
+    cat >> "$host_info_file" << EOT
+HOST_MODEL="${model_name}"
+HOST_PROCESSOR="${processor_info}"
+HOST_CPU_CORES=${cpu_cores}
+HOST_CPU_PERF_CORES=${perf_cores}
+HOST_CPU_EFF_CORES=${eff_cores}
+HOST_MEMORY_GB=${memory_gb}
+EOT
+    
     # 셸 프로필에 추가
     cat >> "$SHELL_PROFILE" << EOT
 $marker
 # Creditcoin 호스트 시스템 정보
 export HOST_SYSTEM_NAME="${hostname_local}"
+export HOST_MAC_ADDRESS="${mac_address}"
 export HOST_MODEL="${model_name}"
 export HOST_PROCESSOR="${processor_info}"
 export HOST_CPU_CORES=${cpu_cores}
@@ -220,8 +279,11 @@ $endmarker
 EOT
 
     show_success "호스트 시스템 정보가 $SHELL_PROFILE에 추가되었습니다"
+    show_success "호스트 시스템 정보가 $host_info_file에 저장되었습니다"
+    
     # 결과 출력
     show_success "호스트명: $hostname_local"
+    show_success "MAC 주소: $mac_address"
     show_success "모델명: $model_name"
     show_success "프로세서: $processor_info"
     show_success "CPU 코어: $cpu_cores 코어 (성능: $perf_cores, 효율: $eff_cores)"
@@ -229,7 +291,14 @@ EOT
   else
     # 비-macOS 환경
     show_warning "이 스크립트는 현재 macOS에 최적화되어 있습니다."
-    # 기본 정보 수집 추가...
+    
+    # 기본 정보만 파일에 추가
+    cat >> "$host_info_file" << EOT
+HOST_OS="$(uname -s)"
+HOST_KERNEL="$(uname -r)"
+EOT
+    
+    show_success "기본 호스트 시스템 정보가 $host_info_file에 저장되었습니다"
   fi
 }
 
@@ -286,7 +355,7 @@ function mclient-restart() {
   docker compose -p creditcoin3 restart mclient
 }
 
-function mclient-logs() {
+function mclient-log() {
   echo -e "${BLUE}모니터링 클라이언트 로그 표시 중...${NC}"
   docker compose -p creditcoin3 logs -f mclient
 }
@@ -310,11 +379,34 @@ function mclient-local() {
   cd "\$MCLIENT_DIR" && python3 main.py --local
 }
 
+function cleanupbak() {
+  echo -e "${BLUE}백업 파일 정리 중...${NC}"
+  local backup_files=(\$(find . -name "docker-compose.yml.bak.*" -type f))
+  
+  if [ \${#backup_files[@]} -eq 0 ]; then
+    echo -e "${GREEN}정리할 백업 파일이 없습니다.${NC}"
+    return
+  fi
+  
+  echo -e "${YELLOW}다음 백업 파일들을 삭제합니다:${NC}"
+  for file in "\${backup_files[@]}"; do
+    echo "  - \$file"
+  done
+  
+  read -p "계속하시겠습니까? (y/n) " confirm
+  if [[ "\$confirm" =~ ^[Yy]$ ]]; then
+    rm -f "\${backup_files[@]}"
+    echo -e "${GREEN}백업 파일 \${#backup_files[@]}개를 삭제했습니다.${NC}"
+  else
+    echo -e "${YELLOW}작업이 취소되었습니다.${NC}"
+  fi
+}
+
 # 짧은 형태의 명령어 추가
 alias mcstart="mclient-start"
 alias mcstop="mclient-stop"
 alias mcrestart="mclient-restart"
-alias mclogs="mclient-logs"
+alias mclog="mclient-log"
 alias mcstatus="mclient-status"
 alias mclocal="mclient-local"
 $endmarker
@@ -424,9 +516,10 @@ main() {
   echo -e "${GREEN}mcstart${NC}     - 모니터링 클라이언트 시작"
   echo -e "${GREEN}mcstop${NC}      - 모니터링 클라이언트 중지"
   echo -e "${GREEN}mcrestart${NC}   - 모니터링 클라이언트 재시작"
-  echo -e "${GREEN}mclogs${NC}      - 모니터링 클라이언트 로그 표시"
+  echo -e "${GREEN}mclog${NC}       - 모니터링 클라이언트 로그 표시"
   echo -e "${GREEN}mcstatus${NC}    - 모니터링 클라이언트 상태 확인"
   echo -e "${GREEN}mclocal${NC}     - 로컬 모드로 모니터링 클라이언트 실행"
+  echo -e "${GREEN}cleanupbak${NC}  - 백업 파일 정리"
 }
 
 # 스크립트 실행
