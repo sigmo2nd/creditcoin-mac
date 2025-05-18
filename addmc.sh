@@ -15,10 +15,9 @@ MCLIENT_ORG_DIR="mclient_org"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${MCLIENT_ORG_DIR}"
 
 # 기본값 설정
-SERVER_ID=""  # MAC 주소를 로드하여 설정
-MAC_ADDRESS=""  # MAC 주소 저장 변수 추가
-MONITOR_INTERVAL="1"  # 기본 간격 1초로 변경
-WS_MODE="auto"  # 기본값을 auto로 변경
+SERVER_ID=""  # 환경 변수에서 로드
+MONITOR_INTERVAL="1"  # 기본 간격 1초
+WS_MODE="auto"  # 기본값을 auto
 WS_SERVER_URL=""
 WS_SERVER_HOST=""
 NO_SSL_VERIFY=false
@@ -75,95 +74,37 @@ check_docker_env() {
   echo -e "${GREEN}Docker 환경 확인 완료.${NC}" >&2
 }
 
-# 호스트 정보 파일에서 MAC 주소 로드
-load_mac_address() {
-  local host_info_file="./mclient/host_info.env"
+# MAC 주소 가져오기 - 환경 변수 사용
+get_server_id() {
+  echo -e "${BLUE}서버 ID 설정 중...${NC}" >&2
   
-  # MAC 주소 기본값
-  local mac_address="server1"
+  # HOST_MAC_ADDRESS 환경 변수에서 가져오기
+  local mac_address="$HOST_MAC_ADDRESS"
   
-  # host_info.env 파일이 있는지 확인
-  if [ -f "$host_info_file" ]; then
-    # 파일에서 MAC 주소 로드
-    if grep -q "HOST_MAC_ADDRESS" "$host_info_file"; then
-      mac_address=$(grep "HOST_MAC_ADDRESS" "$host_info_file" | cut -d "=" -f2 | tr -d '"')
-      echo -e "${BLUE}호스트 정보 파일에서 MAC 주소를 로드했습니다: ${mac_address}${NC}" >&2
+  # 환경 변수가 없으면 시스템에서 직접 추출
+  if [ -z "$mac_address" ]; then
+    echo -e "${YELLOW}환경 변수에서 MAC 주소를 찾을 수 없습니다. 시스템에서 직접 추출합니다.${NC}" >&2
+    
+    # en0 인터페이스에서 MAC 주소 직접 추출
+    mac_address=$(ifconfig en0 2>/dev/null | grep ether | awk '{print $2}' | tr -d ':' | tr '[:lower:]' '[:upper:]')
+    
+    # en0에서 찾지 못한 경우 다른 인터페이스 시도
+    if [ -z "$mac_address" ]; then
+      mac_address=$(ifconfig 2>/dev/null | grep -o -E '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -n 1 | tr -d ':' | tr '[:lower:]' '[:upper:]')
+    fi
+    
+    # 그래도 찾지 못하면 기본값 사용
+    if [ -z "$mac_address" ]; then
+      mac_address="server1"
+      echo -e "${YELLOW}MAC 주소를 찾을 수 없습니다. 기본값(${mac_address})을 사용합니다.${NC}" >&2
     else
-      echo -e "${YELLOW}호스트 정보 파일에서 MAC 주소를 찾을 수 없습니다. 기본값을 사용합니다.${NC}" >&2
+      echo -e "${GREEN}시스템에서 MAC 주소(${mac_address})를 추출했습니다.${NC}" >&2
     fi
   else
-    echo -e "${YELLOW}호스트 정보 파일이 없습니다. 기본값을 사용합니다.${NC}" >&2
+    echo -e "${GREEN}환경 변수에서 MAC 주소(${mac_address})를 로드했습니다.${NC}" >&2
   fi
   
   echo "$mac_address"
-}
-
-# 도움말 출력
-show_help() {
-  echo "사용법: $0 [옵션]"
-  echo ""
-  echo "옵션:"
-  echo "  --non-interactive   대화형 모드 비활성화"
-  echo "  --server-id ID      서버 ID 설정 (기본값: MAC 주소)"
-  echo "  --interval SEC      모니터링 간격(초) 설정 (기본값: 1)"
-  echo "  --mode MODE         연결 모드: auto, custom, ws, wss, local (기본값: auto)"
-  echo "  --url URL           WebSocket URL 직접 지정 (custom 모드 사용)"
-  echo "  --host HOST         WebSocket 서버 호스트 지정"
-  echo "  --no-ssl-verify     SSL 인증서 검증 비활성화"
-  echo "  --help, -h          이 도움말 표시"
-  echo ""
-  echo "사용 예시:"
-  echo "  $0                                 # 대화형 모드로 실행"
-  echo "  $0 --mode custom --url wss://192.168.0.24:8443/ws  # 사용자 지정 URL 사용"
-  echo "  $0 --mode ws --host 192.168.0.24   # WS 프로토콜 + 호스트 지정"
-  echo "  $0 --mode local                    # 로컬 모드 (WebSocket 연결 없음)"
-  echo ""
-}
-
-# 명령줄 인자 처리
-parse_args() {
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --non-interactive)
-        NON_INTERACTIVE=true
-        shift
-        ;;
-      --server-id)
-        SERVER_ID="$2"
-        shift 2
-        ;;
-      --interval)
-        MONITOR_INTERVAL="$2"
-        shift 2
-        ;;
-      --mode)
-        WS_MODE="$2"
-        shift 2
-        ;;
-      --url)
-        WS_SERVER_URL="$2"
-        WS_MODE="custom"
-        shift 2
-        ;;
-      --host)
-        WS_SERVER_HOST="$2"
-        shift 2
-        ;;
-      --no-ssl-verify)
-        NO_SSL_VERIFY=true
-        shift
-        ;;
-      --help|-h)
-        show_help
-        exit 0
-        ;;
-      *)
-        echo -e "${RED}알 수 없는 옵션: $1${NC}" >&2
-        show_help
-        exit 1
-        ;;
-    esac
-  done
 }
 
 # 실행 중인 Docker 노드 자동 감지
@@ -258,6 +199,74 @@ find_docker_sock_path() {
   
   echo -e "${RED}Docker 소켓을 찾을 수 없습니다. 기본 경로를 사용합니다.${NC}" >&2
   echo "/var/run/docker.sock"
+}
+
+# 도움말 출력
+show_help() {
+  echo "사용법: $0 [옵션]"
+  echo ""
+  echo "옵션:"
+  echo "  --non-interactive   대화형 모드 비활성화"
+  echo "  --server-id ID      서버 ID 설정 (기본값: MAC 주소)"
+  echo "  --interval SEC      모니터링 간격(초) 설정 (기본값: 1)"
+  echo "  --mode MODE         연결 모드: auto, custom, ws, wss, local (기본값: auto)"
+  echo "  --url URL           WebSocket URL 직접 지정 (custom 모드 사용)"
+  echo "  --host HOST         WebSocket 서버 호스트 지정"
+  echo "  --no-ssl-verify     SSL 인증서 검증 비활성화"
+  echo "  --help, -h          이 도움말 표시"
+  echo ""
+  echo "사용 예시:"
+  echo "  $0                                 # 대화형 모드로 실행"
+  echo "  $0 --mode custom --url wss://192.168.0.24:8443/ws  # 사용자 지정 URL 사용"
+  echo "  $0 --mode ws --host 192.168.0.24   # WS 프로토콜 + 호스트 지정"
+  echo "  $0 --mode local                    # 로컬 모드 (WebSocket 서버 연결 없음)"
+  echo ""
+}
+
+# 명령줄 인자 처리
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --non-interactive)
+        NON_INTERACTIVE=true
+        shift
+        ;;
+      --server-id)
+        SERVER_ID="$2"
+        shift 2
+        ;;
+      --interval)
+        MONITOR_INTERVAL="$2"
+        shift 2
+        ;;
+      --mode)
+        WS_MODE="$2"
+        shift 2
+        ;;
+      --url)
+        WS_SERVER_URL="$2"
+        WS_MODE="custom"
+        shift 2
+        ;;
+      --host)
+        WS_SERVER_HOST="$2"
+        shift 2
+        ;;
+      --no-ssl-verify)
+        NO_SSL_VERIFY=true
+        shift
+        ;;
+      --help|-h)
+        show_help
+        exit 0
+        ;;
+      *)
+        echo -e "${RED}알 수 없는 옵션: $1${NC}" >&2
+        show_help
+        exit 1
+        ;;
+    esac
+  done
 }
 
 # 필요한 파일 다운로드
@@ -414,17 +423,20 @@ update_docker_compose() {
   cp docker-compose.yml docker-compose.yml.bak.$(date +%Y%m%d%H%M%S)
   echo -e "${GREEN}docker-compose.yml 파일이 백업되었습니다.${NC}" >&2
   
-  # Docker 소켓 경로 찾기 - 디버그 메시지는 stderr로, 결과만 stdout으로
+  # Docker 소켓 경로 찾기
   DOCKER_SOCK_PATH=$(find_docker_sock_path)
   
   # mclient 서비스가 이미 있는지 확인
   if grep -q "  mclient:" docker-compose.yml; then
     if [ "$FORCE" = "true" ]; then
       echo -e "${YELLOW}mclient 서비스가 이미 존재합니다. 업데이트합니다...${NC}" >&2
+      
+      # networks 섹션 추출
+      NETWORKS_BLOCK=$(sed -n '/^networks:/,$p' docker-compose.yml)
+      
       # mclient 서비스 라인 찾기
       mclient_line=$(grep -n "  mclient:" docker-compose.yml | cut -d: -f1)
       
-      # mclient 서비스 블록 제거
       # 다음 서비스나 networks 섹션 시작 위치 찾기
       next_service_line=$(awk "/^  [a-zA-Z0-9_-]+:/ && NR > $mclient_line && !/^  mclient:/" {print NR; exit} docker-compose.yml)
       if [ -z "$next_service_line" ]; then
@@ -449,9 +461,8 @@ update_docker_compose() {
   networks_line=$(grep -n "^networks:" docker-compose.yml | cut -d: -f1)
   
   if [ -n "$networks_line" ]; then
-    # mclient 서비스 블록 생성 - 환경 변수는 직접 입력
+    # mclient 서비스 블록 생성 - 빈줄 없이 깔끔하게 작성
     cat << EOF > mclient_service.tmp
-
   mclient:
     <<: *node-defaults
     build:
@@ -507,6 +518,7 @@ EOF
     # networks 섹션 앞에 mclient 서비스 삽입
     head -n $((networks_line-1)) docker-compose.yml > docker-compose.yml.new
     cat mclient_service.tmp >> docker-compose.yml.new
+    echo "" >> docker-compose.yml.new  # 한 줄 공백 추가
     tail -n +$((networks_line)) docker-compose.yml >> docker-compose.yml.new
     mv docker-compose.yml.new docker-compose.yml
     rm mclient_service.tmp
@@ -559,14 +571,14 @@ test_connection() {
 run_interactive_mode() {
   echo -e "${BLUE}=== Creditcoin 모니터링 클라이언트 설정 ====${NC}" >&2
   
-  # 노드 자동 감지 - 디버그 메시지는 stderr로, 결과만 stdout으로
+  # 노드 자동 감지
   NODE_NAMES=$(detect_nodes)
   
   # 안내 메시지 추가
   echo -e "${YELLOW}엔터를 입력하면 괄호안에 기본값이 입력됩니다.${NC}" >&2
   
   # 서버 ID 입력 (선택 사항)
-  read -p "서버 ID를 입력하세요 ($MAC_ADDRESS): " input
+  read -p "서버 ID를 입력하세요 ($SERVER_ID): " input
   if [ ! -z "$input" ]; then
     SERVER_ID="$input"
   fi
@@ -599,17 +611,17 @@ run_interactive_mode() {
       ;;
     3)
       WS_MODE="ws"
-      # 외부 IP 주소 감지 - 디버그 메시지는 stderr로, 결과만 stdout으로
+      # 외부 IP 주소 감지
       default_host=$(detect_external_ip)
       read -p "WebSocket 서버 호스트를 입력하세요 ($default_host): " input
       WS_SERVER_HOST=${input:-$default_host}
       
       # 연결 테스트
-      test_connection "$WS_SERVER_HOST" "8080" "ws" >&2
+      test_connection "$WS_SERVER_HOST" "8080" "ws"
       ;;
     4)
       WS_MODE="wss"
-      # 외부 IP 주소 감지 - 디버그 메시지는 stderr로, 결과만 stdout으로
+      # 외부 IP 주소 감지
       default_host=$(detect_external_ip)
       read -p "WebSocket 서버 호스트를 입력하세요 ($default_host): " input
       WS_SERVER_HOST=${input:-$default_host}
@@ -622,7 +634,7 @@ run_interactive_mode() {
       fi
       
       # 연결 테스트
-      test_connection "$WS_SERVER_HOST" "8443" "wss" >&2
+      test_connection "$WS_SERVER_HOST" "8443" "wss"
       ;;
     5)
       WS_MODE="local"
@@ -630,7 +642,7 @@ run_interactive_mode() {
       ;;
     *)
       WS_MODE="auto"
-      # 외부 IP 주소 감지 - 디버그 메시지는 stderr로, 결과만 stdout으로
+      # 외부 IP 주소 감지
       default_host=$(detect_external_ip)
       read -p "WebSocket 서버 호스트를 입력하세요 ($default_host): " input
       WS_SERVER_HOST=${input:-$default_host}
@@ -643,9 +655,9 @@ run_interactive_mode() {
       fi
       
       # 연결 테스트
-      test_connection "$WS_SERVER_HOST" "8443" "wss" >&2
+      test_connection "$WS_SERVER_HOST" "8443" "wss"
       if [ $? -ne 0 ]; then
-        test_connection "$WS_SERVER_HOST" "8080" "ws" >&2
+        test_connection "$WS_SERVER_HOST" "8080" "ws"
       fi
       ;;
   esac
@@ -706,14 +718,13 @@ main() {
   # Docker 환경 확인
   check_docker_env
   
-  # MAC 주소 로드 및 ServerID 설정
-  MAC_ADDRESS=$(load_mac_address)
-  if [ -z "$SERVER_ID" ]; then
-    SERVER_ID="$MAC_ADDRESS"
-  fi
-  
   # 명령줄 인자 처리
   parse_args "$@"
+  
+  # MAC 주소/서버 ID 설정
+  if [ -z "$SERVER_ID" ]; then
+    SERVER_ID=$(get_server_id)
+  fi
   
   # 기본적으로 대화형 모드 실행 (--non-interactive 옵션이 없을 때)
   if [ "$NON_INTERACTIVE" = false ]; then

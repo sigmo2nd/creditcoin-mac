@@ -163,34 +163,35 @@ EOF
 
 # 시스템 MAC 주소 수집
 get_mac_address() {
-  show_step "MAC 주소 수집"
+  # 표준 에러로 출력하여 반환값에 로그 메시지가 포함되지 않도록 함
+  show_step "MAC 주소 수집" >&2
   
   local mac_address=""
   
-  # MAC 주소 직접 추출 (더 간단한 방법)
-  mac_address=$(ifconfig en0 | grep ether | awk '{print $2}' | tr -d ':' | tr '[:lower:]' '[:upper:]')
+  # MAC 주소 직접 추출 (en0 인터페이스에서)
+  mac_address=$(ifconfig en0 2>/dev/null | grep ether | awk '{print $2}' | tr -d ':' | tr '[:lower:]' '[:upper:]')
   
-  # 출력 확인 (디버그용)
+  # 디버그 메시지는 표준 에러로 출력
   echo "추출된 MAC 주소: $mac_address" >&2
   
   # en0에서 찾지 못한 경우 대체 방법 시도
   if [ -z "$mac_address" ]; then
-    # 모든 인터페이스 확인
-    mac_address=$(ifconfig | grep -o -E '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -n 1 | tr -d ':' | tr '[:lower:]' '[:upper:]')
+    # 모든 인터페이스에서 첫 번째 MAC 주소 찾기
+    mac_address=$(ifconfig 2>/dev/null | grep -o -E '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -n 1 | tr -d ':' | tr '[:lower:]' '[:upper:]')
     
-    # 대체 방법 결과 출력
+    # 대체 방법 결과 출력 (표준 에러로)
     echo "대체 방법으로 추출된 MAC 주소: $mac_address" >&2
   fi
   
   # MAC 주소를 찾지 못했다면 기본값 사용
   if [ -z "$mac_address" ]; then
-    show_warning "MAC 주소를 찾을 수 없습니다. 임의의 식별자를 사용합니다."
+    show_warning "MAC 주소를 찾을 수 없습니다. 임의의 식별자를 사용합니다." >&2
     mac_address="SERVER$(date +%Y%m%d%H%M%S)"
   else
-    show_success "MAC 주소: $mac_address 수집 완료"
+    show_success "MAC 주소: $mac_address 수집 완료" >&2
   fi
   
-  # 명시적으로 MAC 주소 반환
+  # MAC 주소만 명시적으로 반환 (다른 메시지 없이)
   echo "$mac_address"
 }
 
@@ -198,14 +199,14 @@ get_mac_address() {
 collect_host_info() {
   show_step "호스트 시스템 정보 수집"
   
-  # MAC 주소 수집
+  # MAC 주소 수집 - 표준 출력으로 반환된 값만 저장
   local mac_address=$(get_mac_address)
   
   # 호스트명 수집
   local hostname=$(hostname)
   local hostname_local=$(hostname -f 2>/dev/null || echo "$hostname.local")
   
-  # 마커 문자열 설정
+  # 마커 문자열 설정 - 시작과 끝 표시를 위한 주석
   local marker="# === Creditcoin Host System Info ==="
   local endmarker="# === End Creditcoin Host System Info ==="
   
@@ -216,21 +217,13 @@ collect_host_info() {
     SHELL_PROFILE="$HOME/.bash_profile"
   fi
   
-  # 이미 추가되었는지 확인하고 제거
+  # 이미 추가되었는지 확인하고 제거 (업데이트 기능)
   if grep -q "$marker" "$SHELL_PROFILE" 2>/dev/null; then
+    show_warning "이미 $SHELL_PROFILE에 호스트 정보가 있습니다. 업데이트합니다."
     sed -i.tmp "/$marker/,/$endmarker/d" "$SHELL_PROFILE"
     rm -f "${SHELL_PROFILE}.tmp"
+    show_success "기존 호스트 정보가 제거되었습니다."
   fi
-  
-  # host_info.env 파일 생성
-  local host_info_file="${SCRIPT_DIR}/mclient/host_info.env"
-  
-  # 파일 초기화
-  cat > "$host_info_file" << EOT
-# Creditcoin 호스트 시스템 정보 - $(date)
-HOST_SYSTEM_NAME="${hostname_local}"
-HOST_MAC_ADDRESS="${mac_address}"
-EOT
   
   # macOS 시스템 정보 수집
   if [[ "$(uname)" == "Darwin" ]]; then
@@ -251,17 +244,7 @@ EOT
     # 메모리 정보
     memory_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo "0") / 1024 / 1024 / 1024 ))
     
-    # host_info.env 파일에 추가
-    cat >> "$host_info_file" << EOT
-HOST_MODEL="${model_name}"
-HOST_PROCESSOR="${processor_info}"
-HOST_CPU_CORES=${cpu_cores}
-HOST_CPU_PERF_CORES=${perf_cores}
-HOST_CPU_EFF_CORES=${eff_cores}
-HOST_MEMORY_GB=${memory_gb}
-EOT
-    
-    # 셸 프로필에 추가
+    # 셸 프로필에 추가 - 시작/끝 마커와 함께 명확하게 구분
     cat >> "$SHELL_PROFILE" << EOT
 $marker
 # Creditcoin 호스트 시스템 정보
@@ -277,7 +260,6 @@ $endmarker
 EOT
 
     show_success "호스트 시스템 정보가 $SHELL_PROFILE에 추가되었습니다"
-    show_success "호스트 시스템 정보가 $host_info_file에 저장되었습니다"
     
     # 결과 출력
     show_success "호스트명: $hostname_local"
@@ -290,13 +272,18 @@ EOT
     # 비-macOS 환경
     show_warning "이 스크립트는 현재 macOS에 최적화되어 있습니다."
     
-    # 기본 정보만 파일에 추가
-    cat >> "$host_info_file" << EOT
-HOST_OS="$(uname -s)"
-HOST_KERNEL="$(uname -r)"
+    # 기본 정보만 프로필에 추가
+    cat >> "$SHELL_PROFILE" << EOT
+$marker
+# Creditcoin 호스트 시스템 정보
+export HOST_SYSTEM_NAME="${hostname_local}"
+export HOST_MAC_ADDRESS="${mac_address}"
+export HOST_OS="$(uname -s)"
+export HOST_KERNEL="$(uname -r)"
+$endmarker
 EOT
     
-    show_success "기본 호스트 시스템 정보가 $host_info_file에 저장되었습니다"
+    show_success "기본 호스트 시스템 정보가 $SHELL_PROFILE에 저장되었습니다"
   fi
 }
 
@@ -304,18 +291,18 @@ EOT
 create_client_utils() {
   show_step "클라이언트 유틸리티 함수 생성"
   
-  # 셸 프로필 파일 결정
+  # 쉘 프로필 파일 결정
   if [[ "$SHELL" == *"zsh"* ]]; then
     SHELL_PROFILE="$HOME/.zshrc"
   else
     SHELL_PROFILE="$HOME/.bash_profile"
   fi
   
-  # 마커 문자열 설정
+  # 마커 문자열 설정 - 명확한 시작/끝 구분
   local marker="# === Creditcoin Monitor Client Utils ==="
   local endmarker="# === End Creditcoin Monitor Client Utils ==="
   
-  # 이미 추가되었는지 확인
+  # 이미 추가되었는지 확인 (업데이트 기능)
   if grep -q "$marker" "$SHELL_PROFILE" 2>/dev/null; then
     show_warning "이미 $SHELL_PROFILE에 모니터링 클라이언트 설정이 추가되어 있습니다."
     
@@ -335,7 +322,6 @@ create_client_utils() {
 $marker
 # Creditcoin 모니터링 클라이언트 설정
 MCLIENT_DIR="$SCRIPT_DIR/mclient"
-HOST_INFO_ENV="\$MCLIENT_DIR/host_info.env"
 
 # 모니터링 클라이언트 유틸리티 함수
 function mclient-start() {
@@ -370,10 +356,6 @@ function mclient-status() {
 
 function mclient-local() {
   echo -e "${BLUE}모니터링 클라이언트 로컬 실행 중...${NC}"
-  # 호스트 정보 환경 변수 먼저 로드
-  if [ -f "\$HOST_INFO_ENV" ]; then
-    source "\$HOST_INFO_ENV"
-  fi
   cd "\$MCLIENT_DIR" && python3 main.py --local
 }
 
@@ -430,20 +412,44 @@ update_docker_compose() {
     cp "$compose_file" "${compose_file}.bak.$(date +%Y%m%d%H%M%S)"
     show_success "docker-compose.yml 백업 완료"
     
-    # 파일 마지막에 mclient 서비스 추가
-    cat >> "$compose_file" << EOT
+    # networks 부분을 임시로 저장
+    NETWORKS_BLOCK=$(sed -n '/^networks:/,$p' "$compose_file")
+    
+    # networks 부분 제거한 파일 생성
+    sed '/^networks:/,$d' "$compose_file" > "$compose_file.tmp"
+    
+    # mclient 서비스 추가 - 빈줄 관리에 주의
+    cat >> "$compose_file.tmp" << EOT
 
   mclient:
     build:
       context: ./mclient
       dockerfile: Dockerfile
-    env_file:
-      - ./mclient/.env
-      - ./mclient/host_info.env
+    container_name: mclient
+    pid: "host"
+    network_mode: "host"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    restart: unless-stopped
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - ./mclient:/app
+    environment:
+      - SERVER_ID=\${HOST_MAC_ADDRESS:-server1}
+      - MONITOR_INTERVAL=1
+      - WS_MODE=auto
+      - CREDITCOIN_DIR=/creditcoin-mac
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - DOCKER_API_VERSION=1.41
+      - HOST_PROC=/host/proc
+      - HOST_SYS=/host/sys
 EOT
+    
+    # networks 부분 다시 추가
+    echo "$NETWORKS_BLOCK" >> "$compose_file.tmp"
+    
+    # 임시 파일을 원래 파일로 이동
+    mv "$compose_file.tmp" "$compose_file"
     
     show_success "docker-compose.yml에 mclient 서비스가 추가되었습니다."
   fi
@@ -508,7 +514,7 @@ main() {
   echo -e "\n${YELLOW}변경 사항을 적용하려면 다음 명령어를 실행하세요:${NC}"
   echo -e "${BLUE}source $SHELL_PROFILE${NC}"
   
-  echo -e "\n${YELLOW}다음 단계로 addmc.sh를 실행하여 모니터링 클라이언트 설정을 완료하세요.${NC}"
+  echo -e "\n${YELLOW}다음 단계로 addmclient.sh를 실행하여 모니터링 클라이언트 설정을 완료하세요.${NC}"
   
   echo -e "\n${YELLOW}사용 가능한 명령어:${NC}"
   echo -e "${GREEN}mcstart${NC}     - 모니터링 클라이언트 시작"
