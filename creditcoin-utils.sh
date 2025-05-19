@@ -1235,15 +1235,15 @@ mrestart() {
 # 모니터 로그 확인
 mlog() {
   echo -e "${BLUE}파이썬 모니터 서비스 로그 확인 중...${NC}"
-  docker logs -f creditcoin-mclient
+  docker logs -f mclient
 }
 
 # 모니터 상태 확인
 mstatus() {
   echo -e "${BLUE}파이썬 모니터 서비스 상태 확인 중...${NC}"
-  if docker ps | grep -q "creditcoin-mclient"; then
+  if docker ps | grep -q "mclient"; then
     echo -e "${GREEN}파이썬 모니터 서비스가 실행 중입니다.${NC}"
-    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep "creditcoin-mclient"
+    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep "mclient"
   else
     echo -e "${RED}파이썬 모니터 서비스가 실행 중이 아닙니다.${NC}"
   fi

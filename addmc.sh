@@ -1,6 +1,19 @@
 #!/bin/bash
 # addmc.sh - Creditcoin 모니터링 클라이언트 추가 스크립트 (개선 버전)
 
+# .zshrc에서 환경변수 로드
+if [ -f "$HOME/.zshrc" ]; then
+  source "$HOME/.zshrc" 2>/dev/null || true
+fi
+
+# 디버그: 환경변수 확인
+echo "환경변수 디버그:"
+echo "HOST_PROCESSOR = $HOST_PROCESSOR"
+echo "HOST_MODEL = $HOST_MODEL"
+echo "HOST_CPU_CORES = $HOST_CPU_CORES"
+echo "HOST_MAC_ADDRESS = $HOST_MAC_ADDRESS"
+echo "HOST_DISK_TOTAL_GB = $HOST_DISK_TOTAL_GB"
+
 # 색상 정의
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -174,26 +187,26 @@ find_docker_sock_path() {
   echo "/var/run/docker.sock"
 }
 
-# 모니터링 클라이언트 디렉토리 설정 (mclient_org 직접 사용)
+# 모니터링 클라이언트 디렉토리 설정 (mclient 직접 사용)
 setup_mclient_dir() {
   echo -e "${BLUE}모니터링 클라이언트 디렉토리 설정 중...${NC}" >&2
   
-  # mclient_org 디렉토리가 있는지 확인
-  if [ ! -d "./mclient_org" ]; then
-    echo -e "${RED}오류: mclient_org 디렉토리가 존재하지 않습니다.${NC}" >&2
+  # mclient 디렉토리가 있는지 확인
+  if [ ! -d "./mclient" ]; then
+    echo -e "${RED}오류: mclient 디렉토리가 존재하지 않습니다.${NC}" >&2
     echo -e "${YELLOW}Creditcoin 저장소가 올바르게 클론되었는지 확인하세요.${NC}" >&2
     exit 1
   else
-    echo -e "${GREEN}mclient_org 디렉토리를 사용합니다.${NC}" >&2
+    echo -e "${GREEN}mclient 디렉토리를 사용합니다.${NC}" >&2
     
     # 실행 파일에 권한 부여
-    if [ -f "./mclient_org/start.sh" ]; then
-      chmod +x "./mclient_org/start.sh"
+    if [ -f "./mclient/start.sh" ]; then
+      chmod +x "./mclient/start.sh"
       echo -e "${GREEN}start.sh 파일에 실행 권한을 부여했습니다.${NC}" >&2
     fi
     
-    if [ -f "./mclient_org/main.py" ]; then
-      chmod +x "./mclient_org/main.py"
+    if [ -f "./mclient/main.py" ]; then
+      chmod +x "./mclient/main.py"
       echo -e "${GREEN}main.py 파일에 실행 권한을 부여했습니다.${NC}" >&2
     fi
   fi
@@ -203,7 +216,7 @@ setup_mclient_dir() {
 create_entrypoint_script() {
   echo -e "${BLUE}Docker 진입점 스크립트 생성 중...${NC}" >&2
   
-  cat > ./mclient_org/docker-entrypoint.sh << 'EOF'
+  cat > ./mclient/docker-entrypoint.sh << 'EOF'
 #!/bin/bash
 echo "== Creditcoin 모니터링 클라이언트 =="
 echo "서버 ID: ${SERVER_ID}"
@@ -217,7 +230,7 @@ export PROCFS_PATH=/host/proc
 python /app/main.py "$@"
 EOF
 
-  chmod +x ./mclient_org/docker-entrypoint.sh
+  chmod +x ./mclient/docker-entrypoint.sh
   echo -e "${GREEN}Docker 진입점 스크립트가 생성되었습니다.${NC}" >&2
 }
 
@@ -293,7 +306,7 @@ parse_args() {
 create_dockerfile() {
   echo -e "${BLUE}Dockerfile 생성 중...${NC}" >&2
   
-  cat > ./mclient_org/Dockerfile << 'EOF'
+  cat > ./mclient/Dockerfile << 'EOF'
 FROM python:3.11-slim
 WORKDIR /app
 
@@ -346,8 +359,8 @@ EOF
 update_env_file() {
   echo -e "${BLUE}.env 파일 업데이트 중...${NC}" >&2
   
-  # mclient_org/.env 파일 생성
-  cat > ./mclient_org/.env << EOF
+  # mclient/.env 파일 생성
+  cat > ./mclient/.env << EOF
 # 기존 노드 설정 유지 (있는 경우)
 $(grep -E "^P2P_PORT_3NODE|^RPC_PORT_3NODE|^NODE_NAME_3NODE|^TELEMETRY_3NODE|^PRUNING_3NODE" .env 2>/dev/null || true)
 
@@ -399,6 +412,7 @@ EOF
   echo "HOST_CPU_PERF_CORES=${HOST_CPU_PERF_CORES:-0}" >> ./mclient_org/.env
   echo "HOST_CPU_EFF_CORES=${HOST_CPU_EFF_CORES:-0}" >> ./mclient_org/.env
   echo "HOST_MEMORY_GB=${HOST_MEMORY_GB:-0}" >> ./mclient_org/.env
+  echo "HOST_DISK_TOTAL_GB=${HOST_DISK_TOTAL_GB:-0}" >> ./mclient_org/.env
   
   echo -e "${GREEN}.env 파일이 업데이트되었습니다.${NC}" >&2
 }
@@ -476,8 +490,8 @@ update_docker_compose() {
       # 호스트 시스템 정보 접근
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
-      # mclient_org 디렉토리 마운트
-      - ./mclient_org:/app
+      # mclient 디렉토리 마운트
+      - ./mclient:/app
     environment:
       - SERVER_ID=${SERVER_ID}
       - NODE_NAMES=${NODE_NAMES}
@@ -519,6 +533,7 @@ EOF
       - HOST_CPU_PERF_CORES=${HOST_CPU_PERF_CORES:-0}
       - HOST_CPU_EFF_CORES=${HOST_CPU_EFF_CORES:-0}
       - HOST_MEMORY_GB=${HOST_MEMORY_GB:-0}
+      - HOST_DISK_TOTAL_GB=${HOST_DISK_TOTAL_GB:-0}
 EOF
     
     # networks 섹션 앞에 mclient 서비스 삽입
@@ -783,7 +798,7 @@ main() {
     if [ $? -eq 0 ]; then
       echo -e "${GREEN}모니터링 클라이언트가 성공적으로 시작되었습니다.${NC}" >&2
       echo -e "${YELLOW}로그 확인: ${GREEN}docker compose -p creditcoin3 logs -f mclient${NC}" >&2
-      echo -e "${YELLOW}또는 셸 함수 사용: ${GREEN}mclog${NC}" >&2
+      echo -e "${YELLOW}또는 셸 함수 사용: ${GREEN}mlog${NC}" >&2
     else
       echo -e "${RED}모니터링 클라이언트 시작에 실패했습니다.${NC}" >&2
       echo -e "${YELLOW}로그를 확인하여 문제를 진단하세요.${NC}" >&2
@@ -792,17 +807,17 @@ main() {
     echo -e "${YELLOW}모니터링 클라이언트를 시작하지 않았습니다.${NC}" >&2
     echo -e "${YELLOW}나중에 다음 명령어로 시작할 수 있습니다:${NC}" >&2
     echo -e "${GREEN}docker compose -p creditcoin3 up -d mclient${NC}" >&2
-    echo -e "${YELLOW}또는 셸 함수 사용: ${GREEN}mcstart${NC}" >&2
+    echo -e "${YELLOW}또는 셸 함수 사용: ${GREEN}mstart${NC}" >&2
   fi
   
   echo -e "${BLUE}===================================================${NC}" >&2
   echo -e "${YELLOW}사용 가능한 명령어:${NC}" >&2
-  echo -e "${GREEN}mcstart${NC}     - 모니터링 클라이언트 시작" >&2
-  echo -e "${GREEN}mcstop${NC}      - 모니터링 클라이언트 중지" >&2
-  echo -e "${GREEN}mcrestart${NC}   - 모니터링 클라이언트 재시작" >&2
-  echo -e "${GREEN}mclog${NC}       - 모니터링 클라이언트 로그 표시" >&2
-  echo -e "${GREEN}mcstatus${NC}    - 모니터링 클라이언트 상태 확인" >&2
-  echo -e "${GREEN}mclocal${NC}     - 로컬 모드로 모니터링 클라이언트 실행" >&2
+  echo -e "${GREEN}mstart${NC}     - 모니터링 클라이언트 시작" >&2
+  echo -e "${GREEN}mstop${NC}      - 모니터링 클라이언트 중지" >&2
+  echo -e "${GREEN}mrestart${NC}   - 모니터링 클라이언트 재시작" >&2
+  echo -e "${GREEN}mlog${NC}       - 모니터링 클라이언트 로그 표시" >&2
+  echo -e "${GREEN}mstatus${NC}    - 모니터링 클라이언트 상태 확인" >&2
+  echo -e "${GREEN}mlocal${NC}     - 로컬 모드로 모니터링 클라이언트 실행" >&2
   echo -e "${GREEN}cleanupbak${NC}  - 백업 파일 정리" >&2
   echo -e "${BLUE}===================================================${NC}" >&2
 }
