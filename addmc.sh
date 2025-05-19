@@ -355,7 +355,7 @@ EOF
   echo -e "${GREEN}Dockerfile이 생성되었습니다.${NC}" >&2
 }
 
-# .env 파일 업데이트 (mclient_org 디렉토리에 직접 생성)
+# .env 파일 업데이트 (mclient 디렉토리에 직접 생성)
 update_env_file() {
   echo -e "${BLUE}.env 파일 업데이트 중...${NC}" >&2
   
@@ -375,44 +375,44 @@ EOF
 
   # WebSocket 모드에 따른 추가 설정
   if [ "$WS_MODE" = "custom" ] && [ ! -z "$WS_SERVER_URL" ]; then
-    echo "WS_SERVER_URL=${WS_SERVER_URL}" >> ./mclient_org/.env
+    echo "WS_SERVER_URL=${WS_SERVER_URL}" >> ./mclient/.env
   fi
   
   if [ ! -z "$WS_SERVER_HOST" ]; then
-    echo "WS_SERVER_HOST=${WS_SERVER_HOST}" >> ./mclient_org/.env
+    echo "WS_SERVER_HOST=${WS_SERVER_HOST}" >> ./mclient/.env
   fi
   
   # SSL 검증 설정
   if [ "$NO_SSL_VERIFY" = true ]; then
-    echo "NO_SSL_VERIFY=true" >> ./mclient_org/.env
+    echo "NO_SSL_VERIFY=true" >> ./mclient/.env
   fi
   
   # Docker 관련 설정
-  echo "WS_PORT_WS=8080" >> ./mclient_org/.env
-  echo "WS_PORT_WSS=8443" >> ./mclient_org/.env
+  echo "WS_PORT_WS=8080" >> ./mclient/.env
+  echo "WS_PORT_WSS=8443" >> ./mclient/.env
   
   # 디렉토리 설정
-  echo "CREDITCOIN_DIR=${CREDITCOIN_DIR}" >> ./mclient_org/.env
+  echo "CREDITCOIN_DIR=${CREDITCOIN_DIR}" >> ./mclient/.env
   
   # 실행 모드 설정 (기본값은 local 모드 아님)
-  echo "RUN_MODE=${RUN_MODE:-normal}" >> ./mclient_org/.env
+  echo "RUN_MODE=${RUN_MODE:-normal}" >> ./mclient/.env
   
   # 디버그 및 기타 설정
-  echo "LOCAL_MODE=${LOCAL_MODE:-false}" >> ./mclient_org/.env
-  echo "DEBUG_MODE=${DEBUG_MODE:-false}" >> ./mclient_org/.env
-  echo "NO_DOCKER=${NO_DOCKER:-false}" >> ./mclient_org/.env
-  echo "MAX_RETRIES=${MAX_RETRIES:-10}" >> ./mclient_org/.env
-  echo "RETRY_INTERVAL=${RETRY_INTERVAL:-5}" >> ./mclient_org/.env
+  echo "LOCAL_MODE=${LOCAL_MODE:-false}" >> ./mclient/.env
+  echo "DEBUG_MODE=${DEBUG_MODE:-false}" >> ./mclient/.env
+  echo "NO_DOCKER=${NO_DOCKER:-false}" >> ./mclient/.env
+  echo "MAX_RETRIES=${MAX_RETRIES:-10}" >> ./mclient/.env
+  echo "RETRY_INTERVAL=${RETRY_INTERVAL:-5}" >> ./mclient/.env
   
   # 호스트 정보 변수 추가 (환경 변수에서 가져옴)
-  echo "HOST_SYSTEM_NAME=\"${HOST_SYSTEM_NAME:-$(hostname)}\"" >> ./mclient_org/.env
-  echo "HOST_MODEL=\"${HOST_MODEL:-Unknown}\"" >> ./mclient_org/.env
-  echo "HOST_PROCESSOR=\"${HOST_PROCESSOR:-Unknown}\"" >> ./mclient_org/.env
-  echo "HOST_CPU_CORES=${HOST_CPU_CORES:-0}" >> ./mclient_org/.env
-  echo "HOST_CPU_PERF_CORES=${HOST_CPU_PERF_CORES:-0}" >> ./mclient_org/.env
-  echo "HOST_CPU_EFF_CORES=${HOST_CPU_EFF_CORES:-0}" >> ./mclient_org/.env
-  echo "HOST_MEMORY_GB=${HOST_MEMORY_GB:-0}" >> ./mclient_org/.env
-  echo "HOST_DISK_TOTAL_GB=${HOST_DISK_TOTAL_GB:-0}" >> ./mclient_org/.env
+  echo "HOST_SYSTEM_NAME=\"${HOST_SYSTEM_NAME:-$(hostname)}\"" >> ./mclient/.env
+  echo "HOST_MODEL=\"${HOST_MODEL:-Unknown}\"" >> ./mclient/.env
+  echo "HOST_PROCESSOR=\"${HOST_PROCESSOR:-Unknown}\"" >> ./mclient/.env
+  echo "HOST_CPU_CORES=${HOST_CPU_CORES:-0}" >> ./mclient/.env
+  echo "HOST_CPU_PERF_CORES=${HOST_CPU_PERF_CORES:-0}" >> ./mclient/.env
+  echo "HOST_CPU_EFF_CORES=${HOST_CPU_EFF_CORES:-0}" >> ./mclient/.env
+  echo "HOST_MEMORY_GB=${HOST_MEMORY_GB:-0}" >> ./mclient/.env
+  echo "HOST_DISK_TOTAL_GB=${HOST_DISK_TOTAL_GB:-0}" >> ./mclient/.env
   
   echo -e "${GREEN}.env 파일이 업데이트되었습니다.${NC}" >&2
 }
@@ -762,7 +762,7 @@ main() {
     fi
   fi
   
-  # mclient_org 디렉토리 설정
+  # mclient 디렉토리 설정
   setup_mclient_dir
   
   # 진입점 스크립트 생성
