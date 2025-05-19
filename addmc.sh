@@ -475,7 +475,7 @@ update_docker_compose() {
   mclient:
     <<: *node-defaults
     build:
-      context: ./mclient_org
+      context: ./mclient
       dockerfile: Dockerfile
     container_name: mclient
     # 호스트 프로세스 네임스페이스 공유
