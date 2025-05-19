@@ -300,6 +300,10 @@ add_to_shell_profile() {
     show_success "기존 Creditcoin Docker Utils 설정이 제거되었습니다."
   fi
   
+  # 시스템 정보 수집 스크립트 실행
+  chmod +x "$SCRIPT_DIR/host_info.sh"
+  HOST_INFO_OUTPUT=$("$SCRIPT_DIR/host_info.sh")
+  
   # 프로필 파일에 추가
   cat >> "$SHELL_PROFILE" << EOT
 $marker
@@ -308,17 +312,7 @@ CREDITCOIN_DIR="$SCRIPT_DIR"
 CREDITCOIN_UTILS="\$CREDITCOIN_DIR/creditcoin-utils.sh"
 
 # 시스템 정보 변수 설정
-export HOST_SYSTEM_NAME="$(hostname)"
-export HOST_MODEL="$(sysctl -n hw.model 2>/dev/null || echo "MacBook")"
-export HOST_PROCESSOR="$(system_profiler SPHardwareDataType 2>/dev/null | grep "Chip:" | head -1 | cut -d: -f2 | xargs || sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown CPU")"
-export HOST_CPU_CORES=$(sysctl -n hw.ncpu 2>/dev/null || echo "4")
-export HOST_CPU_PERF_CORES=$(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null || echo "$(sysctl -n hw.ncpu 2>/dev/null || echo "4")")
-export HOST_CPU_EFF_CORES=$(sysctl -n hw.perflevel1.logicalcpu 2>/dev/null || echo "0")
-mem_bytes=$(sysctl -n hw.memsize 2>/dev/null)
-export HOST_MEMORY_GB=$(( mem_bytes / 1024 / 1024 / 1024 ))
-disk_total=$(df -k / | tail -1 | awk '{print \$2}')
-export HOST_DISK_TOTAL_GB=$(( disk_total / 1024 / 1024 ))
-export HOST_MAC_ADDRESS=$(ifconfig en0 2>/dev/null | grep ether | awk '{print \$2}' | tr -d ':' | tr '[:lower:]' '[:upper:]' || ifconfig 2>/dev/null | grep -o -E '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -n 1 | tr -d ':' | tr '[:lower:]' '[:upper:]')
+$HOST_INFO_OUTPUT
 
 # OrbStack Docker CLI 경로 추가
 if [ -f "/Applications/OrbStack.app/Contents/MacOS/xbin/docker" ]; then
