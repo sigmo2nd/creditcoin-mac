@@ -31,6 +31,60 @@ show_error() {
   echo -e "${RED}✗ $1${NC}"
 }
 
+# 시스템 정보 수집 함수 (host_info.sh에서 통합)
+collect_host_info() {
+  # 시스템 이름
+  HOST_SYSTEM_NAME=$(hostname)
+
+  # 모델 정보
+  if [ "$(uname -m)" = "arm64" ]; then
+      # Apple Silicon
+      HOST_MODEL=$(sysctl -n hw.model 2>/dev/null || echo "MacBook")
+      PROCESSOR_INFO=$(system_profiler SPHardwareDataType 2>/dev/null)
+      HOST_PROCESSOR=$(echo "$PROCESSOR_INFO" | grep "Chip:" | head -1 | cut -d: -f2 | xargs || echo "Apple Silicon")
+      
+      # CPU 코어 수
+      HOST_CPU_CORES=$(sysctl -n hw.ncpu 2>/dev/null || echo "4")
+      HOST_CPU_PERF_CORES=$(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null || echo "$HOST_CPU_CORES")
+      HOST_CPU_EFF_CORES=$(sysctl -n hw.perflevel1.logicalcpu 2>/dev/null || echo "0")
+  else
+      # Intel Mac
+      HOST_MODEL=$(sysctl -n hw.model 2>/dev/null || echo "MacBook")
+      HOST_PROCESSOR=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Intel CPU")
+      HOST_CPU_CORES=$(sysctl -n hw.ncpu 2>/dev/null || echo "4")
+      HOST_CPU_PERF_CORES=$HOST_CPU_CORES
+      HOST_CPU_EFF_CORES=0
+  fi
+
+  # 메모리 정보
+  MEM_BYTES=$(sysctl -n hw.memsize 2>/dev/null)
+  HOST_MEMORY_GB=$(( MEM_BYTES / 1024 / 1024 / 1024 ))
+
+  # 디스크 정보
+  DISK_TOTAL=$(df -k / | tail -1 | awk '{print $2}')
+  HOST_DISK_TOTAL_GB=$(( DISK_TOTAL / 1024 / 1024 ))
+
+  # MAC 주소 (서버 ID로 사용)
+  HOST_MAC_ADDRESS=$(ifconfig en0 2>/dev/null | grep ether | awk '{print $2}' | tr -d ':' | tr '[:lower:]' '[:upper:]')
+  if [ -z "$HOST_MAC_ADDRESS" ]; then
+      HOST_MAC_ADDRESS=$(ifconfig 2>/dev/null | grep -o -E '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -n 1 | tr -d ':' | tr '[:lower:]' '[:upper:]')
+  fi
+
+  # 환경 변수 설정 코드 생성
+  cat << EOF
+# 시스템 정보 변수 설정
+export HOST_SYSTEM_NAME="$HOST_SYSTEM_NAME"
+export HOST_MODEL="$HOST_MODEL"
+export HOST_PROCESSOR="$HOST_PROCESSOR"
+export HOST_CPU_CORES=$HOST_CPU_CORES
+export HOST_CPU_PERF_CORES=$HOST_CPU_PERF_CORES
+export HOST_CPU_EFF_CORES=$HOST_CPU_EFF_CORES
+export HOST_MEMORY_GB=$HOST_MEMORY_GB
+export HOST_DISK_TOTAL_GB=$HOST_DISK_TOTAL_GB
+export HOST_MAC_ADDRESS="$HOST_MAC_ADDRESS"
+EOF
+}
+
 # 환경 확인
 check_environment() {
   show_step "시스템 환경 확인"
@@ -300,9 +354,8 @@ add_to_shell_profile() {
     show_success "기존 Creditcoin Docker Utils 설정이 제거되었습니다."
   fi
   
-  # 시스템 정보 수집 스크립트 실행
-  chmod +x "$SCRIPT_DIR/host_info.sh"
-  HOST_INFO_OUTPUT=$("$SCRIPT_DIR/host_info.sh")
+  # 시스템 정보 수집
+  HOST_INFO_OUTPUT=$(collect_host_info)
   
   # 프로필 파일에 추가
   cat >> "$SHELL_PROFILE" << EOT
