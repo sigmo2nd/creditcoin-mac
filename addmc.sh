@@ -447,7 +447,7 @@ update_docker_compose() {
       mclient_line=$(grep -n "  mclient:" docker-compose.yml | cut -d: -f1)
       
       # 다음 서비스나 networks 섹션 시작 위치 찾기
-      next_service_line=$(awk "/^  [a-zA-Z0-9_-]+:/ && NR > $mclient_line && !/^  mclient:/" { print NR; exit }" docker-compose.yml)
+      next_service_line=$(awk "/^  [a-zA-Z0-9_-]+:/ && NR > $mclient_line && !/^  mclient:/{ print NR; exit }" docker-compose.yml)
       if [ -z "$next_service_line" ]; then
         next_service_line=$(grep -n "^networks:" docker-compose.yml | cut -d: -f1)
       fi
