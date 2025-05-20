@@ -1,5 +1,5 @@
 #!/bin/bash
-# addmc.sh - Creditcoin 모니터링 클라이언트 추가 스크립트 (개선 버전)
+# addmc.sh - Creditcoin 모니터링 클라이언트 추가 스크립트 (개선 버전 - 버그 수정)
 
 # .zshrc에서 환경변수 로드
 if [ -f "$HOME/.zshrc" ]; then
@@ -421,7 +421,7 @@ EOF
   echo -e "${GREEN}.env 파일이 업데이트되었습니다.${NC}" >&2
 }
 
-# docker-compose.yml 파일 업데이트
+# docker-compose.yml 파일 업데이트 - 버그 수정 버전
 update_docker_compose() {
   echo -e "${BLUE}docker-compose.yml 파일 업데이트 중...${NC}" >&2
   
@@ -444,38 +444,46 @@ update_docker_compose() {
     if [ "$FORCE" = "true" ]; then
       echo -e "${YELLOW}mclient 서비스가 이미 존재합니다. 업데이트합니다...${NC}" >&2
       
-      # networks 섹션 추출
-      NETWORKS_BLOCK=$(sed -n '/^networks:/,$p' docker-compose.yml)
-      
       # mclient 서비스 라인 찾기
       mclient_line=$(grep -n "  mclient:" docker-compose.yml | cut -d: -f1)
       
-      # 다음 서비스나 networks 섹션 시작 위치 찾기
-      next_service_line=$(awk "/^  [a-zA-Z0-9_-]+:/ && NR > $mclient_line && !/^  mclient:/{ print NR; exit }" docker-compose.yml)
-      if [ -z "$next_service_line" ]; then
-        next_service_line=$(grep -n "^networks:" docker-compose.yml | cut -d: -f1)
-      fi
-      
-      if [ -n "$next_service_line" ]; then
-        # mclient 서비스 블록 제거
-        sed -i.tmp "${mclient_line},$(($next_service_line-1))d" docker-compose.yml
-        rm -f docker-compose.yml.tmp
+      if [ -n "$mclient_line" ]; then
+        # docker-compose.yml에서 mclient 서비스 제거
+        echo -e "${YELLOW}mclient 서비스 제거 중...${NC}" >&2
+        
+        # 파일을 두 부분으로 나누기
+        # 1. mclient 위 부분
+        head -n $((mclient_line-1)) docker-compose.yml > docker-compose.yml.part1
+        
+        # 2. 다음 서비스 또는 끝 부분 찾기 (앞쪽에 공백 2개 있는 새 서비스 라인)
+        next_service_line=$(awk "/^  [a-zA-Z0-9_-]+:/ && NR > $mclient_line && !/^  mclient:/{ print NR; exit }" docker-compose.yml)
+        
+        if [ -n "$next_service_line" ]; then
+          # 다음 서비스 이후 부분
+          tail -n +$next_service_line docker-compose.yml > docker-compose.yml.part2
+          # 두 부분 합치기
+          cat docker-compose.yml.part1 docker-compose.yml.part2 > docker-compose.yml.new
+        else
+          # 다음 서비스가 없으면 mclient 이전 부분만 사용
+          cp docker-compose.yml.part1 docker-compose.yml.new
+        fi
+        
+        # 파일 교체
+        mv docker-compose.yml.new docker-compose.yml
+        rm -f docker-compose.yml.part1 docker-compose.yml.part2 2>/dev/null
       else
-        echo -e "${RED}오류: docker-compose.yml 파일 구조를 이해할 수 없습니다.${NC}" >&2
-        exit 1
+        echo -e "${RED}오류: mclient 서비스를 찾을 수 없습니다.${NC}" >&2
       fi
     else
       echo -e "${YELLOW}mclient 서비스가 이미 존재합니다. FORCE 옵션이 꺼져 있어 업데이트를 건너뜁니다.${NC}" >&2
       return
     fi
+  else
+    echo -e "${GREEN}mclient 서비스가 아직 없습니다. 새로 추가합니다.${NC}" >&2
   fi
   
-  # networks 섹션 위치 찾기
-  networks_line=$(grep -n "^networks:" docker-compose.yml | cut -d: -f1)
-  
-  if [ -n "$networks_line" ]; then
-    # mclient 서비스 블록 생성 - 빈줄 없이 깔끔하게 작성
-    cat << EOF > mclient_service.tmp
+  # mclient 서비스 블록 생성 - 빈줄 없이 깔끔하게 작성
+  cat << EOF > mclient_service.tmp
   mclient:
     <<: *node-defaults
     build:
@@ -503,22 +511,22 @@ update_docker_compose() {
       - WS_MODE=${WS_MODE}
 EOF
 
-    # WebSocket 모드에 따른 추가 설정
-    if [ "$WS_MODE" = "custom" ] && [ ! -z "$WS_SERVER_URL" ]; then
-      echo "      - WS_SERVER_URL=${WS_SERVER_URL}" >> mclient_service.tmp
-    fi
-    
-    if [ ! -z "$WS_SERVER_HOST" ]; then
-      echo "      - WS_SERVER_HOST=${WS_SERVER_HOST}" >> mclient_service.tmp
-    fi
-    
-    # SSL 검증 설정
-    if [ "$NO_SSL_VERIFY" = true ]; then
-      echo "      - NO_SSL_VERIFY=true" >> mclient_service.tmp
-    fi
-    
-    # 포트 및 디렉토리 설정
-    cat << EOF >> mclient_service.tmp
+  # WebSocket 모드에 따른 추가 설정
+  if [ "$WS_MODE" = "custom" ] && [ ! -z "$WS_SERVER_URL" ]; then
+    echo "      - WS_SERVER_URL=${WS_SERVER_URL}" >> mclient_service.tmp
+  fi
+  
+  if [ ! -z "$WS_SERVER_HOST" ]; then
+    echo "      - WS_SERVER_HOST=${WS_SERVER_HOST}" >> mclient_service.tmp
+  fi
+  
+  # SSL 검증 설정
+  if [ "$NO_SSL_VERIFY" = true ]; then
+    echo "      - NO_SSL_VERIFY=true" >> mclient_service.tmp
+  fi
+  
+  # 포트 및 디렉토리 설정
+  cat << EOF >> mclient_service.tmp
       - WS_PORT_WS=8080
       - WS_PORT_WSS=8443
       - CREDITCOIN_DIR=/creditcoin-mac
@@ -539,20 +547,43 @@ EOF
       - HOST_MEMORY_GB=${HOST_MEMORY_GB:-0}
       - HOST_DISK_TOTAL_GB=${HOST_DISK_TOTAL_GB:-0}
 EOF
-    
+  
+  # networks 섹션 위치 확인 (있으면 그 앞에 삽입, 없으면 파일 끝에 추가)
+  networks_line=$(grep -n "^networks:" docker-compose.yml | cut -d: -f1)
+  
+  if [ -n "$networks_line" ]; then
     # networks 섹션 앞에 mclient 서비스 삽입
+    echo -e "${GREEN}networks 섹션 앞에 mclient 서비스 삽입 중...${NC}" >&2
     head -n $((networks_line-1)) docker-compose.yml > docker-compose.yml.new
     cat mclient_service.tmp >> docker-compose.yml.new
     echo "" >> docker-compose.yml.new  # 한 줄 공백 추가
     tail -n +$((networks_line)) docker-compose.yml >> docker-compose.yml.new
     mv docker-compose.yml.new docker-compose.yml
-    rm mclient_service.tmp
-    
-    echo -e "${GREEN}mclient 서비스가 docker-compose.yml에 추가되었습니다.${NC}" >&2
   else
-    echo -e "${RED}오류: docker-compose.yml 파일에서 networks 섹션을 찾을 수 없습니다.${NC}" >&2
-    exit 1
+    # networks 섹션이 없는 경우: 파일 끝에 추가
+    echo -e "${YELLOW}networks 섹션이 없습니다. 파일 끝에 mclient 서비스 추가 중...${NC}" >&2
+    
+    # 파일 끝에 빈 줄 확인/추가
+    last_line=$(tail -n 1 docker-compose.yml)
+    if [ ! -z "$last_line" ]; then
+      echo "" >> docker-compose.yml  # 마지막에 빈 줄이 없으면 추가
+    fi
+    
+    # mclient 서비스 블록 추가
+    cat mclient_service.tmp >> docker-compose.yml
+    
+    # 기본 networks 섹션 추가
+    echo -e "${YELLOW}networks 섹션이 없으므로 기본 networks 섹션 추가 중...${NC}" >&2
+    cat << EOF >> docker-compose.yml
+
+networks:
+  default:
+    name: creditcoin_network
+EOF
   fi
+  
+  rm mclient_service.tmp
+  echo -e "${GREEN}mclient 서비스가 docker-compose.yml에 추가되었습니다.${NC}" >&2
 }
 
 # 연결 테스트 함수
