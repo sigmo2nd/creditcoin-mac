@@ -421,7 +421,7 @@ EOF
   echo -e "${GREEN}.env 파일이 업데이트되었습니다.${NC}" >&2
 }
 
-# docker-compose.yml 파일 업데이트 - 버그 수정 버전
+# docker-compose.yml 파일 업데이트 - 개선된 버전
 update_docker_compose() {
   echo -e "${BLUE}docker-compose.yml 파일 업데이트 중...${NC}" >&2
   
@@ -441,61 +441,50 @@ update_docker_compose() {
   
   # mclient 서비스가 이미 있는지 확인
   if grep -q "  mclient:" docker-compose.yml; then
-    if [ "$FORCE" = "true" ]; then
-      echo -e "${YELLOW}mclient 서비스가 이미 존재합니다. 업데이트합니다...${NC}" >&2
-
-      # services 섹션과 networks 섹션 경계 확인
-      services_start=$(grep -n "^services:" docker-compose.yml | cut -d: -f1)
-      networks_start=$(grep -n "^networks:" docker-compose.yml | cut -d: -f1)
-
-      if [ -z "$services_start" ]; then
-        echo -e "${RED}오류: docker-compose.yml 파일에서 services 섹션을 찾을 수 없습니다.${NC}" >&2
-        return 1
-      fi
-
-      if [ -z "$networks_start" ]; then
-        echo -e "${YELLOW}경고: networks 섹션을 찾을 수 없습니다. 파일 끝까지를 services 섹션으로 간주합니다.${NC}" >&2
-        networks_start=$(wc -l < docker-compose.yml)
-      fi
-
-      # mclient 서비스 라인 찾기
-      mclient_line=$(grep -n "  mclient:" docker-compose.yml | cut -d: -f1)
-
-      if [ -n "$mclient_line" ]; then
-        # mclient 서비스가 services 섹션 내에 있는지 확인
-        if [ "$mclient_line" -gt "$services_start" ] && [ "$mclient_line" -lt "$networks_start" ]; then
-          echo -e "${YELLOW}mclient 서비스를 제거 중...${NC}" >&2
-
-          # 다음 서비스 또는 networks 섹션 시작 위치 찾기
-          next_section=$(awk "/^  [a-zA-Z0-9_-]+:/ && NR > $mclient_line && !/^  mclient:/{ print NR; exit }" docker-compose.yml)
-          
-          if [ -z "$next_section" ] || [ "$next_section" -gt "$networks_start" ]; then
-            next_section=$networks_start
-          fi
-
-          # 파일 재구성
-          (
-            head -n $((mclient_line-1)) docker-compose.yml  # mclient 전까지
-            tail -n +$next_section docker-compose.yml       # 다음 섹션부터 끝까지
-          ) > docker-compose.yml.new
-          
-          mv docker-compose.yml.new docker-compose.yml
-        else
-          echo -e "${RED}오류: mclient 서비스가 services 섹션 외부에 있습니다.${NC}" >&2
-        fi
-      else
-        echo -e "${RED}오류: mclient 서비스를 찾을 수 없습니다.${NC}" >&2
-      fi
-    else
-      echo -e "${YELLOW}mclient 서비스가 이미 존재합니다. FORCE 옵션이 꺼져 있어 업데이트를 건너뜁니다.${NC}" >&2
-      return
+    echo -e "${YELLOW}mclient 서비스가 이미 존재합니다. 교체합니다...${NC}" >&2
+    
+    # mclient 영역 찾기: 시작 라인과 끝 라인
+    mclient_start=$(grep -n "  mclient:" docker-compose.yml | cut -d: -f1)
+    
+    # networks 라인 찾기
+    networks_line=$(grep -n "^networks:" docker-compose.yml | cut -d: -f1)
+    
+    if [ -z "$mclient_start" ]; then
+      echo -e "${RED}오류: mclient 서비스를 찾을 수 없습니다.${NC}" >&2
+      return 1
     fi
-  else
-    echo -e "${GREEN}mclient 서비스가 아직 없습니다. 새로 추가합니다.${NC}" >&2
-  fi
-  
-  # mclient 서비스 블록 생성 - 빈줄 없이 깔끔하게 작성
-  cat << EOF > mclient_service.tmp
+    
+    # mclient 서비스의 끝을 찾기
+    mclient_end=$mclient_start
+    
+    # 파일 끝이나 다음 서비스 또는 networks 섹션을 찾을 때까지 계속
+    while true; do
+      next_line=$((mclient_end + 1))
+      
+      # 파일 끝에 도달했는지 확인
+      if [ "$next_line" -gt "$(wc -l < docker-compose.yml)" ]; then
+        break
+      fi
+      
+      # 다음 줄 내용 확인
+      next_line_content=$(sed -n "${next_line}p" docker-compose.yml)
+      
+      # 다음 서비스나 networks 섹션 시작인지 확인
+      if [[ "$next_line_content" =~ ^[[:space:]]{2}[a-zA-Z0-9_-]+: && ! "$next_line_content" =~ ^[[:space:]]{2}mclient: ]]; then
+        break
+      fi
+      
+      # networks 섹션 시작이면 종료
+      if [[ "$next_line_content" =~ ^networks: ]]; then
+        break
+      fi
+      
+      # 그 외의 경우 mclient 서비스의 일부로 간주
+      mclient_end=$next_line
+    done
+    
+    # 새로운 mclient 서비스 블록 생성
+    cat << EOF > mclient_service.tmp
   mclient:
     <<: *node-defaults
     build:
@@ -523,22 +512,22 @@ update_docker_compose() {
       - WS_MODE=${WS_MODE}
 EOF
 
-  # WebSocket 모드에 따른 추가 설정
-  if [ "$WS_MODE" = "custom" ] && [ ! -z "$WS_SERVER_URL" ]; then
-    echo "      - WS_SERVER_URL=${WS_SERVER_URL}" >> mclient_service.tmp
-  fi
-  
-  if [ ! -z "$WS_SERVER_HOST" ]; then
-    echo "      - WS_SERVER_HOST=${WS_SERVER_HOST}" >> mclient_service.tmp
-  fi
-  
-  # SSL 검증 설정
-  if [ "$NO_SSL_VERIFY" = true ]; then
-    echo "      - NO_SSL_VERIFY=true" >> mclient_service.tmp
-  fi
-  
-  # 포트 및 디렉토리 설정
-  cat << EOF >> mclient_service.tmp
+    # WebSocket 모드에 따른 추가 설정
+    if [ "$WS_MODE" = "custom" ] && [ ! -z "$WS_SERVER_URL" ]; then
+      echo "      - WS_SERVER_URL=${WS_SERVER_URL}" >> mclient_service.tmp
+    fi
+    
+    if [ ! -z "$WS_SERVER_HOST" ]; then
+      echo "      - WS_SERVER_HOST=${WS_SERVER_HOST}" >> mclient_service.tmp
+    fi
+    
+    # SSL 검증 설정
+    if [ "$NO_SSL_VERIFY" = true ]; then
+      echo "      - NO_SSL_VERIFY=true" >> mclient_service.tmp
+    fi
+    
+    # 포트 및 디렉토리 설정
+    cat << EOF >> mclient_service.tmp
       - WS_PORT_WS=8080
       - WS_PORT_WSS=8443
       - CREDITCOIN_DIR=/creditcoin-mac
@@ -559,107 +548,193 @@ EOF
       - HOST_MEMORY_GB=${HOST_MEMORY_GB:-0}
       - HOST_DISK_TOTAL_GB=${HOST_DISK_TOTAL_GB:-0}
 EOF
-  
-  # 서비스와 네트워크 섹션의 경계 찾기
-  services_line=$(grep -n "^services:" docker-compose.yml | cut -d: -f1)
-  networks_line=$(grep -n "^networks:" docker-compose.yml | cut -d: -f1)
-  
-  if [ -z "$services_line" ]; then
-    echo -e "${RED}오류: docker-compose.yml 파일에서 services 섹션을 찾을 수 없습니다.${NC}" >&2
-    return 1
-  fi
-  
-  # services 섹션에 마지막 서비스 찾기
-  if [ -n "$networks_line" ]; then
-    # 네트워크 섹션이 있는 경우, services 섹션과 networks 섹션 사이의 마지막 서비스 찾기
-    last_service_line=$(awk -v start="$services_line" -v end="$networks_line" \
-      'NR > start && NR < end && /^  [a-zA-Z0-9_-]+:/ {last = NR} END {print last}' docker-compose.yml)
-  else
-    # 네트워크 섹션이 없는 경우, 파일 끝까지 검색
-    last_service_line=$(awk -v start="$services_line" \
-      'NR > start && /^  [a-zA-Z0-9_-]+:/ {last = NR} END {print last}' docker-compose.yml)
-  fi
-  
-  if [ -n "$last_service_line" ]; then
-    # 마지막 서비스 이후, 해당 서비스의 끝을 찾기
-    service_end_line=$last_service_line
-    while true; do
-      next_line=$((service_end_line + 1))
-      if [ "$next_line" -ge "$(wc -l < docker-compose.yml)" ]; then
-        # 파일 끝에 도달
-        break
+    
+    # 파일 재구성: mclient 서비스 교체
+    (
+      head -n $((mclient_start - 1)) docker-compose.yml  # mclient 서비스 이전 부분
+      cat mclient_service.tmp                          # 새 mclient 서비스
+      if [ "$mclient_end" -lt "$(wc -l < docker-compose.yml)" ]; then
+        tail -n +$((mclient_end + 1)) docker-compose.yml  # mclient 서비스 이후 부분
       fi
+    ) > docker-compose.yml.new
+    
+    mv docker-compose.yml.new docker-compose.yml
+    rm mclient_service.tmp
+    
+    echo -e "${GREEN}mclient 서비스가 업데이트되었습니다.${NC}" >&2
+  else
+    echo -e "${GREEN}mclient 서비스가 없습니다. 새로 추가합니다.${NC}" >&2
+    
+    # mclient 서비스 블록 생성
+    cat << EOF > mclient_service.tmp
+  mclient:
+    <<: *node-defaults
+    build:
+      context: ./mclient
+      dockerfile: Dockerfile
+    container_name: mclient
+    # 호스트 프로세스 네임스페이스 공유
+    pid: "host"
+    # 호스트 네트워크 모드 사용
+    network_mode: "host"
+    volumes:
+      # Docker 소켓 마운트
+      - ${DOCKER_SOCK_PATH}:/var/run/docker.sock:ro
+      # 호스트 시간대 정보
+      - /etc/localtime:/etc/localtime:ro
+      # 호스트 시스템 정보 접근
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      # mclient 디렉토리 마운트
+      - ./mclient:/app
+    environment:
+      - SERVER_ID=${SERVER_ID}
+      - NODE_NAMES=${NODE_NAMES}
+      - MONITOR_INTERVAL=${MONITOR_INTERVAL}
+      - WS_MODE=${WS_MODE}
+EOF
+
+    # WebSocket 모드에 따른 추가 설정
+    if [ "$WS_MODE" = "custom" ] && [ ! -z "$WS_SERVER_URL" ]; then
+      echo "      - WS_SERVER_URL=${WS_SERVER_URL}" >> mclient_service.tmp
+    fi
+    
+    if [ ! -z "$WS_SERVER_HOST" ]; then
+      echo "      - WS_SERVER_HOST=${WS_SERVER_HOST}" >> mclient_service.tmp
+    fi
+    
+    # SSL 검증 설정
+    if [ "$NO_SSL_VERIFY" = true ]; then
+      echo "      - NO_SSL_VERIFY=true" >> mclient_service.tmp
+    fi
+    
+    # 포트 및 디렉토리 설정
+    cat << EOF >> mclient_service.tmp
+      - WS_PORT_WS=8080
+      - WS_PORT_WSS=8443
+      - CREDITCOIN_DIR=/creditcoin-mac
+      - RUN_MODE=${RUN_MODE:-normal}
+      # Docker 접근을 위한 환경 변수
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - DOCKER_API_VERSION=1.41
+      # 호스트 시스템 정보 접근을 위한 환경 변수
+      - HOST_PROC=/host/proc
+      - HOST_SYS=/host/sys
+      # 호스트 정보 변수
+      - HOST_SYSTEM_NAME=${HOST_SYSTEM_NAME:-$(hostname)}
+      - HOST_MODEL=${HOST_MODEL:-Unknown}
+      - HOST_PROCESSOR=${HOST_PROCESSOR:-Unknown}
+      - HOST_CPU_CORES=${HOST_CPU_CORES:-0}
+      - HOST_CPU_PERF_CORES=${HOST_CPU_PERF_CORES:-0}
+      - HOST_CPU_EFF_CORES=${HOST_CPU_EFF_CORES:-0}
+      - HOST_MEMORY_GB=${HOST_MEMORY_GB:-0}
+      - HOST_DISK_TOTAL_GB=${HOST_DISK_TOTAL_GB:-0}
+EOF
+
+    # networks 섹션 위치 찾기
+    networks_line=$(grep -n "^networks:" docker-compose.yml | cut -d: -f1)
+    
+    # 마지막 서비스 위치 찾기
+    services_line=$(grep -n "^services:" docker-compose.yml | cut -d: -f1)
+    
+    if [ -z "$services_line" ]; then
+      echo -e "${RED}오류: docker-compose.yml 파일에서 services 섹션을 찾을 수 없습니다.${NC}" >&2
+      return 1
+    fi
+    
+    # 마지막 서비스 찾기
+    if [ -n "$networks_line" ]; then
+      # networks 섹션이 있는 경우
+      last_service_line=$(awk -v start="$services_line" -v end="$networks_line" \
+        'NR > start && NR < end && /^  [a-zA-Z0-9_-]+:/ {last = NR} END {print last}' docker-compose.yml)
+    else
+      # networks 섹션이 없는 경우
+      last_service_line=$(awk -v start="$services_line" \
+        'NR > start && /^  [a-zA-Z0-9_-]+:/ {last = NR} END {print last}' docker-compose.yml)
+    fi
+    
+    # 마지막 서비스의 끝을 찾기
+    if [ -n "$last_service_line" ]; then
+      service_end_line=$last_service_line
       
-      next_content=$(sed -n "${next_line}p" docker-compose.yml)
-      if [[ "$next_content" =~ ^[[:space:]]{2}[a-zA-Z] ]]; then
-        # 여전히 서비스 내용이면 계속 진행
+      # 마지막 서비스의 끝을 찾기
+      while true; do
+        next_line=$((service_end_line + 1))
+        
+        # 파일 끝에 도달
+        if [ "$next_line" -gt "$(wc -l < docker-compose.yml)" ]; then
+          break
+        fi
+        
+        # networks 섹션에 도달
+        if [ -n "$networks_line" ] && [ "$next_line" -ge "$networks_line" ]; then
+          break
+        fi
+        
+        next_content=$(sed -n "${next_line}p" docker-compose.yml)
+        
+        # 다음 서비스 시작인지 확인
+        if [[ "$next_content" =~ ^[[:space:]]{2}[a-zA-Z0-9_-]+: ]]; then
+          break
+        fi
+        
+        # 다른 최상위 키워드인지 확인
+        if [[ "$next_content" =~ ^[a-zA-Z0-9_-]+: ]]; then
+          break
+        fi
+        
+        # 그 외의 경우 서비스의 일부로 간주
         service_end_line=$next_line
-      elif [[ "$next_content" =~ ^[[:space:]]*$ ]]; then
-        # 빈 줄이면 계속 진행
-        service_end_line=$next_line
-      elif [[ "$next_content" =~ ^networks: ]]; then
-        # networks 섹션 시작이면 중단
-        break
-      else
-        # 다른 최상위 키워드면 중단
-        break
-      fi
-    done
-    
-    # mclient 서비스 삽입 위치: 마지막 서비스 다음
-    insertion_line=$((service_end_line + 1))
-    
-    echo -e "${GREEN}마지막 서비스 다음에 mclient 서비스 삽입 중...${NC}" >&2
-    
-    # 파일 나누고 mclient 서비스 추가
-    head -n $service_end_line docker-compose.yml > docker-compose.yml.new
-    echo "" >> docker-compose.yml.new  # 빈 줄 추가
-    cat mclient_service.tmp >> docker-compose.yml.new
-    
-    # networks 섹션이 있으면 그 이후부터 추가
-    if [ -n "$networks_line" ]; then
-      echo "" >> docker-compose.yml.new  # 빈 줄 추가
-      tail -n +$networks_line docker-compose.yml >> docker-compose.yml.new
+      done
+      
+      # mclient 서비스 삽입
+      echo -e "${GREEN}마지막 서비스 다음에 mclient 서비스 삽입 중...${NC}" >&2
+      
+      # 파일 재구성
+      (
+        head -n $service_end_line docker-compose.yml  # 마지막 서비스까지
+        echo "" # 빈 줄 추가
+        cat mclient_service.tmp  # mclient 서비스 추가
+        
+        # networks 섹션이 있으면 추가
+        if [ -n "$networks_line" ]; then
+          echo "" # 빈 줄 추가
+          tail -n +$networks_line docker-compose.yml
+        else
+          # networks 섹션이 없으면 추가
+          echo -e "\nnetworks:\n  creditnet:\n    driver: bridge"
+        fi
+      ) > docker-compose.yml.new
+      
+      mv docker-compose.yml.new docker-compose.yml
     else
-      # networks 섹션이 없고, creditnet도 없으면 추가
-      if ! grep -q "creditnet:" docker-compose.yml; then
-        echo -e "${YELLOW}networks 섹션 추가 중...${NC}" >&2
-        cat << EOF >> docker-compose.yml.new
-
-networks:
-  creditnet:
-    driver: bridge
-EOF
-      fi
+      # 서비스가 없는 경우
+      echo -e "${GREEN}services 섹션에 첫 번째 서비스로 mclient 추가 중...${NC}" >&2
+      
+      # services 섹션 다음 줄
+      services_next_line=$((services_line + 1))
+      
+      # 파일 재구성
+      (
+        head -n $services_next_line docker-compose.yml  # services 섹션까지
+        cat mclient_service.tmp  # mclient 서비스 추가
+        
+        # networks 섹션이 있으면 추가
+        if [ -n "$networks_line" ]; then
+          echo ""  # 빈 줄 추가
+          tail -n +$networks_line docker-compose.yml
+        else
+          # networks 섹션이 없으면 추가
+          echo -e "\nnetworks:\n  creditnet:\n    driver: bridge"
+        fi
+      ) > docker-compose.yml.new
+      
+      mv docker-compose.yml.new docker-compose.yml
     fi
     
-    mv docker-compose.yml.new docker-compose.yml
-  else
-    # 서비스가 없는 경우, services 키워드 바로 다음에 삽입
-    echo -e "${GREEN}services 섹션에 첫 번째 서비스로 mclient 추가 중...${NC}" >&2
-    
-    services_end_line=$((services_line + 1))
-    head -n $services_end_line docker-compose.yml > docker-compose.yml.new
-    cat mclient_service.tmp >> docker-compose.yml.new
-    
-    # networks 섹션이 있으면 그 이후부터 추가
-    if [ -n "$networks_line" ]; then
-      tail -n +$((networks_line)) docker-compose.yml >> docker-compose.yml.new
-    else
-      # networks 섹션이 없으면 추가
-      cat << EOF >> docker-compose.yml.new
-
-networks:
-  creditnet:
-    driver: bridge
-EOF
-    fi
-    
-    mv docker-compose.yml.new docker-compose.yml
+    rm mclient_service.tmp
+    echo -e "${GREEN}mclient 서비스가 docker-compose.yml에 추가되었습니다.${NC}" >&2
   fi
-  
-  rm mclient_service.tmp
-  echo -e "${GREEN}mclient 서비스가 docker-compose.yml에 추가되었습니다.${NC}" >&2
 }
 
 # 연결 테스트 함수
