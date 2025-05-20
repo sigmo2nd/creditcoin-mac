@@ -657,7 +657,6 @@ EOF
     
     mv docker-compose.yml.new docker-compose.yml
   fi
-  fi
   
   rm mclient_service.tmp
   echo -e "${GREEN}mclient 서비스가 docker-compose.yml에 추가되었습니다.${NC}" >&2
