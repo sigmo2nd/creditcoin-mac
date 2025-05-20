@@ -577,8 +577,8 @@ EOF
     cat << EOF >> docker-compose.yml
 
 networks:
-  default:
-    name: creditcoin_network
+  creditnet:
+    driver: bridge
 EOF
   fi
   
