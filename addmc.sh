@@ -572,14 +572,25 @@ EOF
     # mclient 서비스 블록 추가
     cat mclient_service.tmp >> docker-compose.yml
     
-    # 기본 networks 섹션 추가
-    echo -e "${YELLOW}networks 섹션이 없으므로 기본 networks 섹션 추가 중...${NC}" >&2
-    cat << EOF >> docker-compose.yml
+    # creditnet 네트워크가 이미 정의되어 있는지 확인
+    if ! grep -q "creditnet:" docker-compose.yml; then
+      # 네트워크 섹션과 creditnet 추가
+      echo -e "${YELLOW}creditnet 네트워크가 없으므로 추가 중...${NC}" >&2
+      if grep -q "^networks:" docker-compose.yml; then
+        # networks 섹션은 있지만 creditnet이 없는 경우, creditnet만 추가
+        sed -i '' -e '/^networks:/a\\
+  creditnet:\\
+    driver: bridge' docker-compose.yml
+      else
+        # networks 섹션 자체가 없는 경우, 전체 추가
+        cat << EOF >> docker-compose.yml
 
 networks:
   creditnet:
     driver: bridge
 EOF
+      fi
+    fi
   fi
   
   rm mclient_service.tmp
