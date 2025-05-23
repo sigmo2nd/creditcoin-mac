@@ -15,6 +15,35 @@ AUTH_USER=""
 AUTH_PASS=""
 CUSTOM_VERSION=""
 
+# docker-compose.yml과 docker-compose-legacy.yml에서 등록된 노드 추출
+get_registered_nodes() {
+  local nodes=""
+  local legacy_nodes=""
+  
+  # 3.x 노드 확인
+  if [ -f "docker-compose.yml" ]; then
+    # 3node로 시작하는 서비스들 찾기
+    nodes=$(grep -E "^  3node[0-9]+:" docker-compose.yml 2>/dev/null | sed 's/://g' | sed 's/  //' | tr '\n' ',' | sed 's/,$//')
+  fi
+  
+  # 2.x 레거시 노드 확인
+  if [ -f "docker-compose-legacy.yml" ]; then
+    # node로 시작하는 서비스들 찾기
+    legacy_nodes=$(grep -E "^  node[0-9]+:" docker-compose-legacy.yml 2>/dev/null | sed 's/://g' | sed 's/  //' | tr '\n' ',' | sed 's/,$//')
+  fi
+  
+  # 두 목록 합치기
+  if [ -n "$nodes" ] && [ -n "$legacy_nodes" ]; then
+    echo "${nodes},${legacy_nodes}"
+  elif [ -n "$nodes" ]; then
+    echo "$nodes"
+  elif [ -n "$legacy_nodes" ]; then
+    echo "$legacy_nodes"
+  else
+    echo ""
+  fi
+}
+
 # 실행 중인 Docker 노드 자동 감지
 detect_nodes() {
   echo -e "${BLUE}실행 중인 Creditcoin 노드 감지 중...${NC}" >&2
@@ -193,26 +222,7 @@ echo -e "${GREEN}- mclient 버전: ${MCLIENT_VERSION}${NC}"
 echo -e "${GREEN}- 이미지 이름: ${IMAGE_NAME}${NC}"
 echo ""
 
-# mclient가 이미 실행 중인지 확인
-if docker ps | grep -q "mclient"; then
-  echo -e "${YELLOW}mclient가 이미 실행 중입니다.${NC}"
-  echo -e "${YELLOW}기존 mclient를 중지하고 다시 시작하시겠습니까? (y/N)${NC}"
-  read -r response
-  if [[ "$response" =~ ^[Yy]$ ]]; then
-    echo -e "${BLUE}기존 mclient 중지 중...${NC}"
-    # docker-compose로 시작된 mclient 중지
-    docker compose -f docker-compose-mclient.yml down 2>/dev/null || true
-    # 이름에 mclient가 포함된 모든 컨테이너 중지 및 제거
-    for container in $(docker ps -a | grep "mclient" | awk '{print $1}'); do
-      docker stop "$container" 2>/dev/null || true
-      docker rm "$container" 2>/dev/null || true
-    done
-    echo -e "${GREEN}모든 mclient 컨테이너가 중지되었습니다.${NC}"
-  else
-    echo -e "${GREEN}작업을 취소합니다.${NC}"
-    exit 0
-  fi
-fi
+# 이전 mclient 체크 로직은 아래의 더 스마트한 로직으로 대체됨
 
 # 시스템 정보를 먼저 수집
 collect_system_info
@@ -539,11 +549,145 @@ RETRY_INTERVAL="5"
 RUN_MODE="normal"
 NO_DOCKER="false"
 
-# 대화형 설정 실행
-interactive_setup
-
-# .env.mclient 파일 업데이트
-update_env_file
+# mclient 실행 상태 및 노드 변경 확인
+if docker ps | grep -q mclient; then
+  echo -e "${YELLOW}mclient가 이미 실행 중입니다.${NC}"
+  
+  # 현재 설정된 노드와 docker-compose.yml의 노드 비교
+  CURRENT_NODES=""
+  if [ -f ".env.mclient" ]; then
+    CURRENT_NODES=$(grep "^NODE_NAMES=" .env.mclient | cut -d'=' -f2)
+  fi
+  
+  REGISTERED_NODES=$(get_registered_nodes)
+  
+  # 노드 목록이 다른 경우
+  if [ "$CURRENT_NODES" != "$REGISTERED_NODES" ] && [ -n "$REGISTERED_NODES" ]; then
+    echo ""
+    echo -e "${YELLOW}=====================================================${NC}"
+    echo -e "${YELLOW}        노드 구성 변경 감지!${NC}"
+    echo -e "${YELLOW}=====================================================${NC}"
+    echo ""
+    echo -e "${BLUE}현재 mclient에 설정된 노드:${NC}"
+    echo -e "  ${CURRENT_NODES:-없음}"
+    echo ""
+    echo -e "${GREEN}docker-compose 파일에서 감지된 노드:${NC}"
+    echo -e "  ${REGISTERED_NODES}"
+    echo ""
+    echo -e "${YELLOW}노드 구성이 변경되어 업데이트가 필요합니다.${NC}"
+    echo ""
+    echo "어떻게 하시겠습니까?"
+    echo "1) 노드 목록만 업데이트 (기존 설정 유지)"
+    echo "2) 전체 재설정"
+    echo "3) 취소"
+    echo ""
+    read -p "선택 (1): " update_choice
+    
+    # 기본값 처리
+    if [ -z "$update_choice" ]; then
+      update_choice="1"
+    fi
+    
+    case $update_choice in
+      1)
+        echo -e "${BLUE}노드 목록을 업데이트합니다...${NC}"
+        # 기존 설정 로드
+        if [ -f ".env.mclient" ]; then
+          source .env.mclient
+        fi
+        # NODE_NAMES만 새로운 값으로 설정
+        NODE_NAMES="$REGISTERED_NODES"
+        # .env.mclient 업데이트
+        update_env_file
+        # mclient 재시작
+        echo -e "${BLUE}mclient를 재시작합니다...${NC}"
+        echo -e "${YELLOW}다음 명령어를 실행합니다:${NC}"
+        echo -e "${BLUE}mcdown && mcup${NC}"
+        # 직접 실행
+        docker compose -f docker-compose-mclient.yml down
+        # 이미지 제거하여 리빌드 강제
+        docker rmi mclient:${MCLIENT_VERSION} -f 2>/dev/null
+        # 계속 진행
+        ;;
+      2)
+        echo -e "${BLUE}전체 재설정을 진행합니다...${NC}"
+        echo -e "${YELLOW}다음 명령어를 실행합니다:${NC}"
+        echo -e "${BLUE}mcdown${NC}"
+        docker compose -f docker-compose-mclient.yml down
+        interactive_setup
+        update_env_file
+        ;;
+      3)
+        echo -e "${GREEN}취소되었습니다.${NC}"
+        exit 0
+        ;;
+      *)
+        echo -e "${RED}잘못된 선택입니다. 종료합니다.${NC}"
+        exit 1
+        ;;
+    esac
+  else
+    # 노드 목록이 같은 경우
+    echo ""
+    echo "무엇을 하시겠습니까?"
+    echo "1) mclient 재시작"
+    echo "2) 전체 재설정"
+    echo "3) 취소"
+    echo ""
+    read -p "선택 (3): " action_choice
+    
+    # 기본값 처리
+    if [ -z "$action_choice" ]; then
+      action_choice="3"
+    fi
+    
+    case $action_choice in
+      1)
+        echo -e "${BLUE}mclient를 재시작합니다...${NC}"
+        echo -e "${YELLOW}다음 명령어를 실행합니다:${NC}"
+        echo -e "${BLUE}mcrestart${NC}"
+        docker compose -f docker-compose-mclient.yml restart mclient
+        echo -e "${GREEN}mclient가 재시작되었습니다.${NC}"
+        exit 0
+        ;;
+      2)
+        echo -e "${BLUE}전체 재설정을 진행합니다...${NC}"
+        echo -e "${YELLOW}다음 명령어를 실행합니다:${NC}"
+        echo -e "${BLUE}mcdown${NC}"
+        docker compose -f docker-compose-mclient.yml down
+        interactive_setup
+        update_env_file
+        ;;
+      3)
+        echo -e "${GREEN}취소되었습니다.${NC}"
+        exit 0
+        ;;
+      *)
+        echo -e "${RED}잘못된 선택입니다. 종료합니다.${NC}"
+        exit 1
+        ;;
+    esac
+  fi
+else
+  # mclient가 실행 중이지 않은 경우
+  echo -e "${BLUE}mclient가 실행 중이지 않습니다.${NC}"
+  
+  # 등록된 노드 정보 표시
+  REGISTERED_NODES=$(get_registered_nodes)
+  if [ -n "$REGISTERED_NODES" ]; then
+    echo ""
+    echo -e "${GREEN}docker-compose 파일에서 감지된 노드:${NC}"
+    echo -e "  ${REGISTERED_NODES}"
+    echo ""
+  else
+    echo -e "${YELLOW}docker-compose 파일에서 노드를 찾을 수 없습니다.${NC}"
+    echo -e "${YELLOW}addnode.sh 스크립트로 먼저 노드를 생성하세요.${NC}"
+  fi
+  
+  # 정상 진행
+  interactive_setup
+  update_env_file
+fi
 
 # mclient_data 디렉토리 생성
 if [ ! -d "mclient_data" ]; then
@@ -582,15 +726,36 @@ EOF
   echo -e "${GREEN}docker-compose-mclient.yml 파일이 생성되었습니다.${NC}"
 fi
 
+# mclient 버전 파일 읽기
+MCLIENT_FILE_VERSION="unknown"
+if [ -f "mclient/VERSION" ]; then
+  MCLIENT_FILE_VERSION=$(cat mclient/VERSION | tr -d '\n')
+fi
+
 # Docker 이미지 빌드 체크
-if ! docker images | grep -q "mclient" | grep -q "${MCLIENT_VERSION}"; then
-  echo -e "${YELLOW}이미지 ${IMAGE_NAME}가 존재하지 않습니다. 새로 빌드합니다...${NC}"
-  
+NEED_BUILD=false
+
+# 1. 이미지가 없으면 빌드 필요
+if ! docker images | grep -q "^mclient " | grep -q "${MCLIENT_VERSION}"; then
+  echo -e "${YELLOW}이미지 ${IMAGE_NAME}가 존재하지 않습니다.${NC}"
+  NEED_BUILD=true
+# 2. VERSION 파일의 버전이 환경변수 버전과 다르면 빌드 필요
+elif [ "$MCLIENT_FILE_VERSION" != "$MCLIENT_VERSION" ]; then
+  echo -e "${YELLOW}mclient 버전이 변경되었습니다 (${MCLIENT_FILE_VERSION} -> ${MCLIENT_VERSION}).${NC}"
+  NEED_BUILD=true
+else
+  echo -e "${GREEN}이미지 ${IMAGE_NAME}가 이미 존재하고 버전이 동일합니다. 빌드를 건너뜁니다.${NC}"
+fi
+
+if [ "$NEED_BUILD" = true ]; then
   # mclient 디렉토리 확인
   if [ ! -d "mclient" ]; then
     echo -e "${RED}mclient 디렉토리가 없습니다.${NC}"
     exit 1
   fi
+  
+  # VERSION 파일 업데이트
+  echo "$MCLIENT_VERSION" > mclient/VERSION
   
   echo -e "${BLUE}mclient 이미지 ${IMAGE_NAME} 빌드 중...${NC}"
   docker build -t "${IMAGE_NAME}" ./mclient
@@ -601,8 +766,6 @@ if ! docker images | grep -q "mclient" | grep -q "${MCLIENT_VERSION}"; then
     echo -e "${RED}이미지 빌드 실패${NC}"
     exit 1
   fi
-else
-  echo -e "${GREEN}이미지 ${IMAGE_NAME}가 이미 존재합니다. 빌드를 건너뜁니다.${NC}"
 fi
 
 # mauth 실행 (인증)
@@ -618,11 +781,18 @@ if [ $? -eq 0 ]; then
   docker compose -f docker-compose-mclient.yml up -d mclient
   
   echo ""
-  echo -e "${YELLOW}mclient 모니터링 명령어:${NC}"
-  echo -e "${GREEN}mstatus${NC}  - mclient 상태 확인"
-  echo -e "${GREEN}mlog${NC}     - mclient 로그 확인"
-  echo -e "${GREEN}mstop${NC}    - 모니터링 중지"
-  echo -e "${GREEN}mrestart${NC} - 모니터링 재시작"
+  echo -e "${YELLOW}mclient 관리 명령어:${NC}"
+  echo -e "${GREEN}mcstatus${NC}    - mclient 상태 확인"
+  echo -e "${GREEN}mclog${NC}       - mclient 로그 확인"
+  echo -e "${GREEN}mcdown${NC}      - mclient 중지"
+  echo -e "${GREEN}mcup${NC}        - mclient 시작"
+  echo -e "${GREEN}mcrestart${NC}   - mclient 재시작"
+  echo ""
+  echo -e "${YELLOW}인증 관리:${NC}"
+  echo -e "${GREEN}mauth${NC}       - 인증 다시 실행"
+  echo ""
+  echo -e "${YELLOW}명령어가 작동하지 않으면:${NC}"
+  echo -e "${BLUE}updatez${NC}"
 else
   echo -e "${RED}mclient 인증에 실패했습니다.${NC}"
   exit 1

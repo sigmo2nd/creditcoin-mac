@@ -261,6 +261,8 @@ class Settings:
     def __init__(self, args=None):
         # 환경변수 로드 (.env)
         load_dotenv()
+        self.last_reload_time = time.time()
+        self.reload_interval = 10  # 10초마다 확인
         
         # 기본 설정
         self.SERVER_ID = os.environ.get("SERVER_ID", "")
@@ -384,6 +386,11 @@ class Settings:
         logger.info(f"Creditcoin 디렉토리: {self.CREDITCOIN_DIR}")
         logger.info(f"디버그 모드: {'활성화' if self.DEBUG_MODE else '비활성화'}")
         logger.info("================")
+    
+    def reload_if_needed(self):
+        """향후 동적 설정 업데이트를 위한 메서드 (현재는 비활성화)"""
+        # 10초마다 호출되지만 현재는 아무것도 하지 않음
+        return False
 
 def get_websocket_url(settings):
     """설정에 따라 WebSocket URL 결정"""
@@ -1310,9 +1317,8 @@ async def run_websocket_mode(settings, node_names: List[str]):
     connected = False
     retry_count = 0
     max_retries = settings.MAX_RETRIES
-    retry_interval = settings.RETRY_INTERVAL
     
-    # 연결 시도 로직
+    # 연결 시도 로직 (지수 백오프 적용)
     while not connected and not shutdown_event.is_set():
         connected = await websocket_client.connect()
         
@@ -1324,9 +1330,24 @@ async def run_websocket_mode(settings, node_names: List[str]):
                 logger.error("로컬 모드로 전환하려면 --local 옵션을 사용하여 다시 시작하세요.")
                 return  # 함수 종료
             
+            # 지수 백오프 적용 (websocket_client와 동일한 로직)
+            max_backoff = 1024
+            if retry_count == 1:
+                backoff = 1
+            else:
+                backoff = min(max_backoff, 2 ** (retry_count - 1))
+            
+            # 시간 표시 형식 개선
+            if backoff >= 60:
+                minutes = int(backoff // 60)
+                seconds = int(backoff % 60)
+                time_str = f"{minutes}분 {seconds}초" if seconds > 0 else f"{minutes}분"
+            else:
+                time_str = f"{int(backoff)}초"
+                
             logger.warning(f"WebSocket 서버 연결 실패 ({retry_count}번째 시도)")
-            logger.info(f"{retry_interval}초 후 다시 시도합니다...")
-            await asyncio.sleep(retry_interval)
+            logger.info(f"{time_str} 후 다시 시도합니다...")
+            await asyncio.sleep(backoff)
             
             # 종료 요청 확인
             if shutdown_event.is_set():
@@ -1341,6 +1362,9 @@ async def run_websocket_mode(settings, node_names: List[str]):
     # 모니터링 루프
     try:
         while not shutdown_event.is_set():
+            # 환경변수 재로드 확인 (10초마다)
+            settings.reload_if_needed()
+            
             loop_start_time = time.time()
             
             # 시스템 정보 수집
@@ -1390,7 +1414,9 @@ async def run_websocket_mode(settings, node_names: List[str]):
             
             # 전송
             t_start = time.time()
-            if await websocket_client.send_stats(json_data):
+            send_success = await websocket_client.send_stats(json_data)
+            
+            if send_success:
                 t_end = time.time()
                 send_time = t_end - t_start
                 
@@ -1416,10 +1442,22 @@ async def run_websocket_mode(settings, node_names: List[str]):
             loop_end_time = time.time()
             execution_time = loop_end_time - loop_start_time
             
-            # 다음 간격까지 대기 (음수가 되지 않도록)
-            wait_time = max(0.1, settings.MONITOR_INTERVAL - execution_time)
-            if wait_time < settings.MONITOR_INTERVAL * 0.5:  # 대기 시간이 설정 간격의 절반 미만인 경우
-                logger.debug(f"대기 시간 줄어듦: {wait_time:.2f}초 (설정 간격: {settings.MONITOR_INTERVAL}초)")
+            # 다음 루프 시작 시간 계산
+            # 설정된 간격대로 정확히 실행되도록 함
+            next_loop_time = loop_start_time + settings.MONITOR_INTERVAL
+            current_time = time.time()
+            wait_time = max(0, next_loop_time - current_time)
+            
+            logger.debug(f"루프 시간: 시작={loop_start_time:.3f}, 현재={current_time:.3f}, 다음={next_loop_time:.3f}")
+            logger.debug(f"실행 시간={execution_time:.3f}초, 대기 시간={wait_time:.3f}초")
+            
+            if wait_time == 0:
+                logger.debug(f"실행 시간({execution_time:.2f}초)이 설정 간격({settings.MONITOR_INTERVAL}초)을 초과")
+            
+            # 재연결 중이면 추가 대기
+            if websocket_client.reconnecting and wait_time < 5.0:
+                wait_time = 5.0
+                logger.debug("WebSocket 재연결 중... 5초 대기")
             
             # 종료 이벤트가 설정될 때까지 또는 대기 시간 동안 대기
             try:

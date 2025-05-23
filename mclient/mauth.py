@@ -30,9 +30,10 @@ TOKEN_FILE_PATH = "/app/data/.auth_token"
 
 async def handle_tty_authentication(auth_api_url: str) -> Optional[str]:
     """TTY 모드에서 인증 처리 (토큰 확인 및 로그인)"""
-    print(f"{COLOR_BLUE}{'='*50}{COLOR_RESET}")
-    print(f"{COLOR_GREEN}     Creditcoin 모니터링 서버 인증{COLOR_RESET}")
-    print(f"{COLOR_BLUE}{'='*50}{COLOR_RESET}")
+    print("")
+    print(f"{COLOR_YELLOW}====================================================={COLOR_RESET}")
+    print(f"{COLOR_YELLOW}        Creditcoin 모니터링 서버 인증{COLOR_RESET}")
+    print(f"{COLOR_YELLOW}====================================================={COLOR_RESET}")
     print("")
     
     # 기존 토큰 확인
@@ -41,18 +42,22 @@ async def handle_tty_authentication(auth_api_url: str) -> Optional[str]:
             with open(TOKEN_FILE_PATH, 'r') as f:
                 token = f.read().strip()
                 if token:
-                    print(f"{COLOR_YELLOW}기존 인증 토큰을 발견했습니다.{COLOR_RESET}")
-                    print(f"토큰: {token[:20]}...")
+                    print(f"{COLOR_GREEN}기존 인증 정보 확인:{COLOR_RESET}")
+                    print(f"  토큰: {token[:20]}...")
+                    print("")
                     
                     # 토큰 검증
-                    print(f"{COLOR_CYAN}토큰 유효성 검증 중...{COLOR_RESET}")
+                    print(f"{COLOR_BLUE}토큰 유효성 검증 중...{COLOR_RESET}")
                     is_valid = await verify_token(auth_api_url, token)
                     
                     if is_valid:
-                        print(f"{COLOR_GREEN}✓ 토큰이 유효합니다. 인증이 완료되었습니다.{COLOR_RESET}")
+                        print(f"{COLOR_GREEN}✓ 인증 성공!{COLOR_RESET}")
+                        print(f"{COLOR_GREEN}기존 토큰이 유효하여 재사용합니다.{COLOR_RESET}")
+                        print("")
                         return token
                     else:
                         print(f"{COLOR_RED}✗ 토큰이 만료되었거나 유효하지 않습니다.{COLOR_RESET}")
+                        print(f"{COLOR_YELLOW}새로 로그인이 필요합니다.{COLOR_RESET}")
                         print("")
         except Exception as e:
             logger.debug(f"토큰 파일 읽기 오류: {e}")
@@ -60,31 +65,72 @@ async def handle_tty_authentication(auth_api_url: str) -> Optional[str]:
     # URL 정보 출력
     from urllib.parse import urlparse
     parsed_url = urlparse(auth_api_url)
-    print(f"{COLOR_CYAN}인증 서버: {parsed_url.hostname}:{parsed_url.port}{COLOR_RESET}")
+    print(f"{COLOR_BLUE}서버 정보:{COLOR_RESET}")
+    print(f"  주소: {parsed_url.hostname}")
+    print(f"  포트: {parsed_url.port}")
+    print(f"  프로토콜: {parsed_url.scheme.upper()}")
+    print("")
     
     # 로그인 시도
     max_attempts = 3
     for attempt in range(max_attempts):
-        print(f"로그인 시도 {attempt + 1}/{max_attempts}")
+        print(f"{COLOR_YELLOW}====================================================={COLOR_RESET}")
+        print(f"{COLOR_YELLOW}로그인 [{attempt + 1}/{max_attempts}]{COLOR_RESET}")
+        print(f"{COLOR_YELLOW}====================================================={COLOR_RESET}")
+        print("")
+        print(f"{COLOR_CYAN}💡 Tab 키로 다음 필드로 이동할 수 있습니다.{COLOR_RESET}")
         print("")
         
-        # 사용자 입력
+        # 사용자 입력 (prompt_toolkit 사용)
         try:
-            email = input(f"{COLOR_CYAN}이메일: {COLOR_RESET}")
-            if not email:
-                print(f"{COLOR_RED}이메일을 입력해주세요.{COLOR_RESET}")
-                continue
+            # prompt_toolkit import
+            try:
+                from prompt_toolkit import prompt
+                from prompt_toolkit.key_binding import KeyBindings
+                from prompt_toolkit.keys import Keys
                 
-            password = getpass.getpass(f"{COLOR_CYAN}비밀번호: {COLOR_RESET}")
-            if not password:
-                print(f"{COLOR_RED}비밀번호를 입력해주세요.{COLOR_RESET}")
-                continue
+                # Tab 키 바인딩 설정
+                bindings = KeyBindings()
+                
+                @bindings.add(Keys.Tab)
+                def _(event):
+                    # Tab을 누르면 현재 입력값을 유지하고 다음 필드로
+                    event.app.exit(result=event.app.current_buffer.text)
+                
+                # 이메일 입력
+                email = prompt(f"{COLOR_CYAN}이메일: {COLOR_RESET}", key_bindings=bindings).strip()
+                if not email:
+                    print(f"{COLOR_RED}이메일을 입력해주세요.{COLOR_RESET}")
+                    continue
+                
+                # 비밀번호 입력
+                password = prompt(f"{COLOR_CYAN}비밀번호: {COLOR_RESET}", is_password=True, key_bindings=bindings).strip()
+                if not password:
+                    print(f"{COLOR_RED}비밀번호를 입력해주세요.{COLOR_RESET}")
+                    continue
+                    
+            except ImportError:
+                # prompt_toolkit이 없으면 기본 input 사용
+                print(f"{COLOR_YELLOW}주의: prompt_toolkit이 설치되지 않아 기본 입력 모드를 사용합니다.{COLOR_RESET}")
+                print(f"{COLOR_YELLOW}한글 입력 시 백스페이스가 제대로 작동하지 않을 수 있습니다.{COLOR_RESET}")
+                
+                email = input(f"{COLOR_CYAN}이메일: {COLOR_RESET}")
+                if not email:
+                    print(f"{COLOR_RED}이메일을 입력해주세요.{COLOR_RESET}")
+                    continue
+                    
+                password = getpass.getpass(f"{COLOR_CYAN}비밀번호: {COLOR_RESET}")
+                if not password:
+                    print(f"{COLOR_RED}비밀번호를 입력해주세요.{COLOR_RESET}")
+                    continue
+                    
         except (KeyboardInterrupt, EOFError):
             print(f"\n{COLOR_YELLOW}로그인이 취소되었습니다.{COLOR_RESET}")
             return None
         
         # 로그인 요청
-        print(f"{COLOR_CYAN}인증 중...{COLOR_RESET}")
+        print("")
+        print(f"{COLOR_BLUE}인증 서버에 연결 중...{COLOR_RESET}")
         token = await login_request(auth_api_url, email, password)
         
         if token:
@@ -94,19 +140,32 @@ async def handle_tty_authentication(auth_api_url: str) -> Optional[str]:
                 with open(TOKEN_FILE_PATH, 'w') as f:
                     f.write(token)
                 os.chmod(TOKEN_FILE_PATH, 0o600)  # 읽기 권한 제한
-                print(f"{COLOR_GREEN}✓ 인증 성공! 토큰이 저장되었습니다.{COLOR_RESET}")
+                print("")
+                print(f"{COLOR_GREEN}====================================================={COLOR_RESET}")
+                print(f"{COLOR_GREEN}✓ 인증 성공!{COLOR_RESET}")
+                print(f"{COLOR_GREEN}====================================================={COLOR_RESET}")
+                print("")
+                print(f"{COLOR_GREEN}토큰이 안전하게 저장되었습니다.{COLOR_RESET}")
+                print(f"  경로: {TOKEN_FILE_PATH}")
                 print("")
                 return token
             except Exception as e:
                 logger.error(f"토큰 저장 실패: {e}")
-                print(f"{COLOR_YELLOW}토큰을 저장할 수 없지만 계속 진행합니다.{COLOR_RESET}")
+                print(f"{COLOR_YELLOW}⚠️  토큰을 저장할 수 없지만 계속 진행합니다.{COLOR_RESET}")
                 return token
         else:
-            print(f"{COLOR_RED}✗ 인증 실패. 사용자명 또는 비밀번호를 확인하세요.{COLOR_RESET}")
+            print("")
+            print(f"{COLOR_RED}✗ 인증 실패{COLOR_RESET}")
+            print(f"{COLOR_RED}이메일 또는 비밀번호를 확인하세요.{COLOR_RESET}")
             if attempt < max_attempts - 1:
                 print("")
+                print(f"{COLOR_YELLOW}다시 시도하려면 엔터를 누르세요...{COLOR_RESET}")
+                input()
     
+    print("")
+    print(f"{COLOR_RED}====================================================={COLOR_RESET}")
     print(f"{COLOR_RED}최대 로그인 시도 횟수를 초과했습니다.{COLOR_RESET}")
+    print(f"{COLOR_RED}====================================================={COLOR_RESET}")
     return None
 
 async def verify_token(auth_api_url: str, token: str) -> bool:
@@ -207,11 +266,23 @@ async def main():
     token = await handle_tty_authentication(auth_api_url)
     
     if token:
-        print(f"{COLOR_GREEN}인증이 완료되었습니다.{COLOR_RESET}")
-        print(f"{COLOR_CYAN}이제 'mstart' 명령으로 모니터링을 시작할 수 있습니다.{COLOR_RESET}")
+        print(f"{COLOR_GREEN}====================================================={COLOR_RESET}")
+        print(f"{COLOR_GREEN}모든 준비가 완료되었습니다!{COLOR_RESET}")
+        print(f"{COLOR_GREEN}====================================================={COLOR_RESET}")
+        print("")
+        print(f"{COLOR_YELLOW}다음 명령어로 모니터링을 시작하세요:{COLOR_RESET}")
+        print(f"{COLOR_BLUE}mcup{COLOR_RESET}")
+        print("")
+        print(f"{COLOR_CYAN}명령어가 작동하지 않으면:{COLOR_RESET}")
+        print(f"{COLOR_BLUE}updatez{COLOR_RESET}")
+        print("")
         sys.exit(0)
     else:
+        print("")
         print(f"{COLOR_RED}인증에 실패했습니다.{COLOR_RESET}")
+        print(f"{COLOR_YELLOW}다시 시도하려면:{COLOR_RESET}")
+        print(f"{COLOR_BLUE}mauth{COLOR_RESET}")
+        print("")
         sys.exit(1)
 
 if __name__ == "__main__":

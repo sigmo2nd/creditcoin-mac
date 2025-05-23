@@ -44,6 +44,49 @@ class DockerStatsClient:
                 logger.error("Docker 사용 불가: %s", result.stderr)
         except Exception as e:
             logger.error("Docker 확인 중 오류: %s", str(e))
+        
+        # 컨테이너별 환경변수 캐시 및 타임스탬프
+        self.container_env_cache = {}
+        self.env_cache_timestamps = {}
+        self.env_cache_ttl = 1.0  # 1초 캐시 유효 시간
+    
+    async def get_container_env(self, container_name: str) -> Dict[str, str]:
+        """컨테이너의 환경변수를 가져옴"""
+        current_time = time.time()
+        
+        # 캐시 유효성 확인
+        if container_name in self.container_env_cache:
+            cache_time = self.env_cache_timestamps.get(container_name, 0)
+            if current_time - cache_time < self.env_cache_ttl:
+                return self.container_env_cache[container_name]
+        
+        try:
+            # docker inspect로 환경변수 가져오기
+            result = await asyncio.create_subprocess_exec(
+                "docker", "inspect", container_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await result.communicate()
+            
+            if result.returncode == 0:
+                container_info = json.loads(stdout.decode())
+                if container_info and len(container_info) > 0:
+                    env_list = container_info[0].get("Config", {}).get("Env", [])
+                    env_dict = {}
+                    for env_str in env_list:
+                        if "=" in env_str:
+                            key, value = env_str.split("=", 1)
+                            env_dict[key] = value
+                    
+                    # 캐시에 저장 (타임스탬프와 함께)
+                    self.container_env_cache[container_name] = env_dict
+                    self.env_cache_timestamps[container_name] = current_time
+                    return env_dict
+        except Exception as e:
+            logger.error(f"컨테이너 {container_name} 환경변수 가져오기 실패: {e}")
+        
+        return {}
     
     async def start_stats_monitoring(self, node_patterns: List[str]=None):
         """스트림 모드로 Docker stats 모니터링 시작"""
@@ -119,6 +162,9 @@ class DockerStatsClient:
             buffer = ""
             
             try:
+                last_cleanup_time = time.time()
+                cleanup_interval = 1.0  # 1초마다 정리
+                
                 while self.running:
                     # 데이터 읽기
                     try:
@@ -137,6 +183,9 @@ class DockerStatsClient:
                         json_objects = self._extract_json_objects(buffer)
                         buffer = json_objects.get('remainder', '')
                         
+                        # 현재 업데이트 주기에서 발견된 컨테이너 이름 추적
+                        current_containers = set()
+                        
                         # 찾은 JSON 객체 처리
                         for json_str in json_objects.get('objects', []):
                             try:
@@ -148,9 +197,17 @@ class DockerStatsClient:
                                 if not container_name:
                                     continue
                                 
+                                current_containers.add(container_name)
+                                
                                 # 데이터 처리
                                 processed_stats = self._process_stats_json(stats_json)
                                 if processed_stats:
+                                    # 환경변수에서 TELEMETRY_NAME 가져오기
+                                    env_vars = await self.get_container_env(container_name)
+                                    telemetry_name = env_vars.get("TELEMETRY_NAME", "")  # 없으면 빈 문자열
+                                    processed_stats["node_name"] = container_name  # node_name은 항상 컨테이너 이름
+                                    processed_stats["nickname"] = telemetry_name  # nickname은 텔레메트리 이름 (없으면 빈 문자열)
+                                    
                                     self.container_stats[container_name] = processed_stats
                                     self.update_count += 1  # 업데이트 횟수 증가
                                     
@@ -163,6 +220,27 @@ class DockerStatsClient:
                                 pass
                             except Exception as e:
                                 logger.error(f"JSON 처리 중 오류: {e}")
+                        
+                        # 주기적으로 중지된 컨테이너 정리
+                        current_time = time.time()
+                        if current_time - last_cleanup_time > cleanup_interval and current_containers:
+                            # 현재 stats에 없는 컨테이너는 캐시에서 제거
+                            removed_containers = []
+                            for container_name in list(self.container_stats.keys()):
+                                if container_name not in current_containers:
+                                    del self.container_stats[container_name]
+                                    # 환경변수 캐시도 정리
+                                    if container_name in self.container_env_cache:
+                                        del self.container_env_cache[container_name]
+                                    if container_name in self.env_cache_timestamps:
+                                        del self.env_cache_timestamps[container_name]
+                                    removed_containers.append(container_name)
+                            
+                            if removed_containers:
+                                logger.info(f"중지된 컨테이너 제거: {', '.join(removed_containers)}")
+                            
+                            last_cleanup_time = current_time
+                            
                     except asyncio.TimeoutError:
                         # 타임아웃은 정상적인 상황으로 처리 (계속 진행)
                         continue
@@ -419,22 +497,8 @@ class DockerStatsClient:
             except Exception as e:
                 logger.warning(f"디스크 I/O 파싱 실패: {disk_io} - {str(e)}")
             
-            # 컨테이너 별명 (nickname) 설정 - 패턴 기반으로 자동 결정
-            nickname = None
-            
-            # 컨테이너 이름에서 패턴 찾기
-            if container_name.startswith("3node"):
-                nickname = f"Creditcoin 3.0 Node {container_name[5:]}"
-            elif container_name.startswith("node"):
-                nickname = f"Creditcoin 2.0 Node {container_name[4:]}"
-            elif "node" in container_name.lower():
-                # 기타 노드 패턴 인식
-                nickname = f"Node {container_name}"
-            elif "creditcoin" in container_name.lower():
-                nickname = f"Creditcoin {container_name}"
-            else:
-                # 특별한 패턴이 없는 경우 컨테이너 이름 그대로 사용
-                nickname = container_name
+            # 컨테이너 별명 (nickname) 설정 - 기본값은 빈 문자열
+            nickname = ""
             
             # 결과 구성
             return {

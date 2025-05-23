@@ -123,7 +123,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     -n|--name)
-      CUSTOM_NODE_NAME="$2"
+      CUSTOM_TELEMETRY_NAME="$2"
       shift 2
       ;;
     -p|--pruning)
@@ -146,7 +146,8 @@ done
 if [ "$LEGACY_MODE" = true ]; then
   # Creditcoin 2.x 설정
   GIT_TAG="${CUSTOM_VERSION:-$VERSION_2X}"
-  NODE_NAME="${CUSTOM_NODE_NAME:-Node$NODE_NUM}"
+  NODE_NAME="node$NODE_NUM"
+  TELEMETRY_NAME="${CUSTOM_TELEMETRY_NAME:-}"
   NODE_PREFIX="node"
   IMAGE_NAME="creditcoin2:${GIT_TAG}"
   P2P_PORT_BASE=30240  # 3.x보다 100 낮게 (30240~30339)
@@ -166,7 +167,8 @@ if [ "$LEGACY_MODE" = true ]; then
 else
   # Creditcoin 3.x 설정
   GIT_TAG="${CUSTOM_VERSION:-$VERSION_3X}"
-  NODE_NAME="${CUSTOM_NODE_NAME:-3Node$NODE_NUM}"
+  NODE_NAME="3node$NODE_NUM"
+  TELEMETRY_NAME="${CUSTOM_TELEMETRY_NAME:-}"
   NODE_PREFIX="3node"
   IMAGE_NAME="creditcoin3:${GIT_TAG}"
   P2P_PORT_BASE=30340
@@ -182,11 +184,18 @@ fi
 # 계산된 포트
 P2P_PORT=$((P2P_PORT_BASE + NODE_NUM))
 RPC_PORT=$((RPC_PORT_BASE + NODE_NUM))
+# 레거시 모드에서는 WS_PORT가 RPC_PORT와 같음
+if [ "$LEGACY_MODE" = true ]; then
+  WS_PORT=$RPC_PORT
+fi
 
 echo -e "${BLUE}사용할 설정:${NC}"
 echo -e "${GREEN}- 모드: $([ "$LEGACY_MODE" = true ] && echo "Creditcoin 2.x (Legacy)" || echo "Creditcoin 3.x (Current)")${NC}"
 echo -e "${GREEN}- 노드 번호: $NODE_NUM${NC}"
 echo -e "${GREEN}- 노드 이름: $NODE_NAME${NC}"
+if [ -n "$TELEMETRY_NAME" ]; then
+  echo -e "${GREEN}- 텔레메트리 이름: $TELEMETRY_NAME${NC}"
+fi
 echo -e "${GREEN}- 텔레메트리: $([ "$TELEMETRY_ENABLED" == "true" ] && echo "활성화" || echo "비활성화")${NC}"
 echo -e "${GREEN}- 버전: $GIT_TAG${NC}"
 echo -e "${GREEN}- P2P 포트: $P2P_PORT${NC}"
@@ -197,7 +206,6 @@ fi
 
 # 현재 작업 디렉토리 저장
 CURRENT_DIR=$(pwd)
-SERVER_ID=$(grep SERVER_ID .env 2>/dev/null | cut -d= -f2 || echo "orb")
 
 # 기존 노드 존재 확인 및 처리
 if [ -d "./${NODE_PREFIX}${NODE_NUM}" ]; then
@@ -466,7 +474,7 @@ fi
 
 # 공통 .env 파일 생성/업데이트
 if [ ! -f ".env" ]; then
-  echo "SERVER_ID=${SERVER_ID}" > .env
+  touch .env
 fi
 
 # 버전별 환경변수 파일 설정
@@ -478,8 +486,12 @@ fi
 
 # 버전별 .env 파일 생성/업데이트
 if [ ! -f "$ENV_FILE" ]; then
-  echo "# $([ "$LEGACY_MODE" = true ] && echo "Creditcoin 2.x Legacy" || echo "Creditcoin 3.x Current") 노드 설정" > "$ENV_FILE"
-  echo "GIT_TAG=${GIT_TAG}" >> "$ENV_FILE"
+  if [ "$LEGACY_MODE" = true ]; then
+    echo "# Creditcoin 2.x Legacy 노드 설정" > "$ENV_FILE"
+    echo "GIT_TAG=${GIT_TAG}" >> "$ENV_FILE"
+  else
+    echo "# Creditcoin 3.x 노드 설정" > "$ENV_FILE"
+  fi
 fi
 
 # 노드 설정 추가 (버전별 환경 변수 파일 사용)
@@ -491,13 +503,21 @@ if [ "$UPDATE_MODE" = true ]; then
     # 2.x 환경 변수 업데이트
     sed -i.bak "s/^P2P_PORT_${ENV_PREFIX}${NODE_NUM}=.*/P2P_PORT_${ENV_PREFIX}${NODE_NUM}=${P2P_PORT}/" "$ENV_FILE"
     sed -i.bak "s/^WS_PORT_${ENV_PREFIX}${NODE_NUM}=.*/WS_PORT_${ENV_PREFIX}${NODE_NUM}=${RPC_PORT}/" "$ENV_FILE"
-    sed -i.bak "s/^NODE_NAME_${NODE_NUM}=.*/NODE_NAME_${NODE_NUM}=${NODE_NAME}/" "$ENV_FILE"
+    if [ -n "$TELEMETRY_NAME" ]; then
+      sed -i.bak "s/^TELEMETRY_NAME_${NODE_NUM}=.*/TELEMETRY_NAME_${NODE_NUM}=${TELEMETRY_NAME}/" "$ENV_FILE"
+    else
+      sed -i.bak "/^TELEMETRY_NAME_${NODE_NUM}=/d" "$ENV_FILE"
+    fi
     sed -i.bak "s/^TELEMETRY_ENABLED_${NODE_NUM}=.*/TELEMETRY_ENABLED_${NODE_NUM}=${TELEMETRY_ENABLED}/" "$ENV_FILE"
   else
     # 3.x 환경 변수 업데이트
     sed -i.bak "s/^P2P_PORT_${ENV_PREFIX}${NODE_NUM}=.*/P2P_PORT_${ENV_PREFIX}${NODE_NUM}=${P2P_PORT}/" "$ENV_FILE"
     sed -i.bak "s/^RPC_PORT_${ENV_PREFIX}${NODE_NUM}=.*/RPC_PORT_${ENV_PREFIX}${NODE_NUM}=${RPC_PORT}/" "$ENV_FILE"
-    sed -i.bak "s/^NODE_NAME_${ENV_PREFIX}${NODE_NUM}=.*/NODE_NAME_${ENV_PREFIX}${NODE_NUM}=${NODE_NAME}/" "$ENV_FILE"
+    if [ -n "$TELEMETRY_NAME" ]; then
+      sed -i.bak "s/^TELEMETRY_NAME_${ENV_PREFIX}${NODE_NUM}=.*/TELEMETRY_NAME_${ENV_PREFIX}${NODE_NUM}=${TELEMETRY_NAME}/" "$ENV_FILE"
+    else
+      sed -i.bak "/^TELEMETRY_NAME_${ENV_PREFIX}${NODE_NUM}=/d" "$ENV_FILE"
+    fi
     sed -i.bak "s/^TELEMETRY_${ENV_PREFIX}${NODE_NUM}=.*/TELEMETRY_${ENV_PREFIX}${NODE_NUM}=${TELEMETRY_ENABLED}/" "$ENV_FILE"
     sed -i.bak "s/^PRUNING_${ENV_PREFIX}${NODE_NUM}=.*/PRUNING_${ENV_PREFIX}${NODE_NUM}=${PRUNING}/" "$ENV_FILE"
   fi
@@ -510,13 +530,17 @@ else
     # 2.x 환경 변수
     grep -q "P2P_PORT_${ENV_PREFIX}${NODE_NUM}" "$ENV_FILE" 2>/dev/null || echo "P2P_PORT_${ENV_PREFIX}${NODE_NUM}=${P2P_PORT}" >> "$ENV_FILE"
     grep -q "WS_PORT_${ENV_PREFIX}${NODE_NUM}" "$ENV_FILE" 2>/dev/null || echo "WS_PORT_${ENV_PREFIX}${NODE_NUM}=${RPC_PORT}" >> "$ENV_FILE"
-    grep -q "NODE_NAME_${NODE_NUM}" "$ENV_FILE" 2>/dev/null || echo "NODE_NAME_${NODE_NUM}=${NODE_NAME}" >> "$ENV_FILE"
+    if [ -n "$TELEMETRY_NAME" ]; then
+      grep -q "TELEMETRY_NAME_${NODE_NUM}" "$ENV_FILE" 2>/dev/null || echo "TELEMETRY_NAME_${NODE_NUM}=${TELEMETRY_NAME}" >> "$ENV_FILE"
+    fi
     grep -q "TELEMETRY_ENABLED_${NODE_NUM}" "$ENV_FILE" 2>/dev/null || echo "TELEMETRY_ENABLED_${NODE_NUM}=${TELEMETRY_ENABLED}" >> "$ENV_FILE"
   else
     # 3.x 환경 변수
     grep -q "P2P_PORT_${ENV_PREFIX}${NODE_NUM}" "$ENV_FILE" 2>/dev/null || echo "P2P_PORT_${ENV_PREFIX}${NODE_NUM}=${P2P_PORT}" >> "$ENV_FILE"
     grep -q "RPC_PORT_${ENV_PREFIX}${NODE_NUM}" "$ENV_FILE" 2>/dev/null || echo "RPC_PORT_${ENV_PREFIX}${NODE_NUM}=${RPC_PORT}" >> "$ENV_FILE"
-    grep -q "NODE_NAME_${ENV_PREFIX}${NODE_NUM}" "$ENV_FILE" 2>/dev/null || echo "NODE_NAME_${ENV_PREFIX}${NODE_NUM}=${NODE_NAME}" >> "$ENV_FILE"
+    if [ -n "$TELEMETRY_NAME" ]; then
+      grep -q "TELEMETRY_NAME_${ENV_PREFIX}${NODE_NUM}" "$ENV_FILE" 2>/dev/null || echo "TELEMETRY_NAME_${ENV_PREFIX}${NODE_NUM}=${TELEMETRY_NAME}" >> "$ENV_FILE"
+    fi
     grep -q "TELEMETRY_${ENV_PREFIX}${NODE_NUM}" "$ENV_FILE" 2>/dev/null || echo "TELEMETRY_${ENV_PREFIX}${NODE_NUM}=${TELEMETRY_ENABLED}" >> "$ENV_FILE"
     grep -q "PRUNING_${ENV_PREFIX}${NODE_NUM}" "$ENV_FILE" 2>/dev/null || echo "PRUNING_${ENV_PREFIX}${NODE_NUM}=${PRUNING}" >> "$ENV_FILE"
   fi
@@ -589,7 +613,7 @@ fi \n\
 \n\
 /root/creditcoin/target/release/creditcoin-node \
   --validator \
-  --name ${NODE_NAME} \
+  ${TELEMETRY_NAME:+--name \"$TELEMETRY_NAME\"} \
   --telemetry-url "wss://telemetry.creditcoin.network/submit/ 0" \
   $TELEMETRY_OPTS \
   --bootnodes "/dns4/cc-bootnode.creditcoin.network/tcp/30333/p2p/12D3KooWAEgDL4ufKjWesaErtJZmcqrJAkUvjUJbJmSCCuH4uGjp" \
@@ -667,7 +691,7 @@ fi \n\
 \n\
 /root/creditcoin3/target/release/creditcoin3-node \
   --validator \
-  --name ${NODE_NAME} \
+  ${TELEMETRY_NAME:+--name \"$TELEMETRY_NAME\"} \
   --prometheus-external \
   --telemetry-url "wss://telemetry.creditcoin.network/submit/ 0" \
   $TELEMETRY_OPTS \
@@ -714,6 +738,8 @@ if [ "$LEGACY_MODE" = true ]; then
   if [ ! -f "$DOCKER_COMPOSE_FILE" ]; then
     echo -e "${BLUE}${DOCKER_COMPOSE_FILE} 파일이 없으므로 생성합니다...${NC}"
     cat > "$DOCKER_COMPOSE_FILE" << 'EODC'
+name: creditcoin-legacy
+
 x-node-defaults: &node-defaults
   restart: unless-stopped
   env_file:
@@ -734,6 +760,8 @@ else
   if [ ! -f "$DOCKER_COMPOSE_FILE" ]; then
     echo -e "${BLUE}${DOCKER_COMPOSE_FILE} 파일이 없으므로 생성합니다...${NC}"
     cat > "$DOCKER_COMPOSE_FILE" << 'EOSVC'
+name: creditcoin-nodes
+
 x-node-defaults: &node-defaults
   restart: unless-stopped
   env_file:
@@ -777,8 +805,7 @@ else
       - "\${P2P_PORT_NODE${NODE_NUM}:-${P2P_PORT}}:\${P2P_PORT_NODE${NODE_NUM}:-${P2P_PORT}}"
       - "\${WS_PORT_NODE${NODE_NUM}:-${WS_PORT}}:\${WS_PORT_NODE${NODE_NUM}:-${WS_PORT}}"
     environment:
-      - SERVER_ID=\${SERVER_ID:-orb}
-      - NODE_NAME=\${NODE_NAME_NODE${NODE_NUM}:-${NODE_NAME}}
+      - TELEMETRY_NAME=\${TELEMETRY_NAME_NODE${NODE_NUM}:-}
       - P2P_PORT=\${P2P_PORT_NODE${NODE_NUM}:-${P2P_PORT}}
       - WS_PORT=\${WS_PORT_NODE${NODE_NUM}:-${WS_PORT}}
       - TELEMETRY_ENABLED=\${TELEMETRY_NODE${NODE_NUM}:-${TELEMETRY_ENABLED}}
@@ -800,9 +827,8 @@ EOF
       - "\${P2P_PORT_${ENV_PREFIX}${NODE_NUM}}:\${P2P_PORT_${ENV_PREFIX}${NODE_NUM}}"
       - "\${RPC_PORT_${ENV_PREFIX}${NODE_NUM}}:\${RPC_PORT_${ENV_PREFIX}${NODE_NUM}}"
     environment:
-      - SERVER_ID=\${SERVER_ID}
       - NODE_ID=${NODE_NUM}
-      - NODE_NAME=\${NODE_NAME_${ENV_PREFIX}${NODE_NUM}}
+      - TELEMETRY_NAME=\${TELEMETRY_NAME_${ENV_PREFIX}${NODE_NUM}:-}
       - P2P_PORT=\${P2P_PORT_${ENV_PREFIX}${NODE_NUM}}
       - RPC_PORT=\${RPC_PORT_${ENV_PREFIX}${NODE_NUM}}
       - TELEMETRY_ENABLED=\${TELEMETRY_${ENV_PREFIX}${NODE_NUM}}
@@ -824,7 +850,11 @@ EOF
 fi
 
 echo -e "${BLUE}환경 변수가 ${ENV_FILE} 파일에 추가되었습니다.${NC}"
-echo -e "${GREEN}노드 ${NODE_NAME} (${NODE_PREFIX}${NODE_NUM}) 설정이 완료되었습니다!${NC}"
+if [ -n "$TELEMETRY_NAME" ]; then
+  echo -e "${GREEN}노드 ${NODE_PREFIX}${NODE_NUM} (텔레메트리: ${TELEMETRY_NAME}) 설정이 완료되었습니다!${NC}"
+else
+  echo -e "${GREEN}노드 ${NODE_PREFIX}${NODE_NUM} 설정이 완료되었습니다!${NC}"
+fi
 echo ""
 
 if [ "$UPDATE_MODE" = true ]; then

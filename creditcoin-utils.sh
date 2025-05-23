@@ -11,6 +11,64 @@ NC='\033[0m' # No Color
 # Creditcoin Docker 디렉토리로 이동
 cdcd() { cd "$CREDITCOIN_DIR"; }
 
+# Docker Compose 관련 함수들
+dcup() {
+  if [ -z "$1" ]; then
+    echo -e "${YELLOW}사용법: dcup <노드명>${NC}"
+    echo -e "${YELLOW}예시: dcup 3node0 또는 dcup node0${NC}"
+    return 1
+  fi
+  
+  cd "$CREDITCOIN_DIR"
+  
+  # 2.x 또는 3.x 노드 구분
+  if [[ "$1" =~ ^node[0-9]+$ ]]; then
+    echo -e "${BLUE}2.x 레거시 노드 시작: $1${NC}"
+    docker compose -f docker-compose-legacy.yml up -d $1
+  else
+    echo -e "${BLUE}3.x 노드 시작: $1${NC}"
+    docker compose up -d $1
+  fi
+}
+
+dcdown() {
+  if [ -z "$1" ]; then
+    echo -e "${YELLOW}사용법: dcdown <노드명>${NC}"
+    echo -e "${YELLOW}예시: dcdown 3node0 또는 dcdown node0${NC}"
+    return 1
+  fi
+  
+  cd "$CREDITCOIN_DIR"
+  
+  # 2.x 또는 3.x 노드 구분
+  if [[ "$1" =~ ^node[0-9]+$ ]]; then
+    echo -e "${BLUE}2.x 레거시 노드 중지: $1${NC}"
+    docker compose -f docker-compose-legacy.yml down $1
+  else
+    echo -e "${BLUE}3.x 노드 중지: $1${NC}"
+    docker compose down $1
+  fi
+}
+
+dcrestart() {
+  if [ -z "$1" ]; then
+    echo -e "${YELLOW}사용법: dcrestart <노드명>${NC}"
+    echo -e "${YELLOW}예시: dcrestart 3node0 또는 dcrestart node0${NC}"
+    return 1
+  fi
+  
+  cd "$CREDITCOIN_DIR"
+  
+  # 2.x 또는 3.x 노드 구분
+  if [[ "$1" =~ ^node[0-9]+$ ]]; then
+    echo -e "${BLUE}2.x 레거시 노드 재시작: $1${NC}"
+    docker compose -f docker-compose-legacy.yml restart $1
+  else
+    echo -e "${BLUE}3.x 노드 재시작: $1${NC}"
+    docker compose restart $1
+  fi
+}
+
 # 기본 Docker 별칭들
 alias dps='docker ps'
 alias dpsa='docker ps -a'
@@ -38,9 +96,12 @@ fi
 # Docker 파일 열기 
 alias editdc='open -e ${CREDITCOIN_DIR}/docker-compose.yml'
 alias editdcl='open -e ${CREDITCOIN_DIR}/docker-compose-legacy.yml'
+alias editdcmc='open -e ${CREDITCOIN_DIR}/docker-compose-mclient.yml'
 alias editdf='open -e ${CREDITCOIN_DIR}/Dockerfile'
 alias editdfl='open -e ${CREDITCOIN_DIR}/Dockerfile.legacy'
 alias editenv='open -e ${CREDITCOIN_DIR}/.env'
+alias editenvl='open -e ${CREDITCOIN_DIR}/.env.legacy'
+alias editenvmc='open -e ${CREDITCOIN_DIR}/.env.mclient'
 
 # Docker 컨테이너 관리
 drestart() { 
@@ -48,9 +109,28 @@ drestart() {
     echo -e "${YELLOW}사용법: drestart <컨테이너명>${NC}"
     return 1
   fi
-  echo -e "${BLUE}컨테이너 재시작 중: $1${NC}"
-  docker restart $1
-  echo -e "${GREEN}컨테이너가 재시작되었습니다: $1${NC}"
+  
+  # 2.x와 3.x 노드 구분하여 docker-compose로 재생성
+  if [[ "$1" =~ ^node[0-9]+$ ]]; then
+    echo -e "${BLUE}2.x 레거시 노드 재생성 중: $1${NC}"
+    echo -e "${YELLOW}환경변수 변경사항을 반영하기 위해 컨테이너를 재생성합니다...${NC}"
+    docker compose -f docker-compose-legacy.yml stop $1
+    docker compose -f docker-compose-legacy.yml rm -f $1
+    docker compose -f docker-compose-legacy.yml up -d $1
+    echo -e "${GREEN}노드가 재생성되었습니다: $1${NC}"
+  elif [[ "$1" =~ ^3node[0-9]+$ ]]; then
+    echo -e "${BLUE}3.x 노드 재생성 중: $1${NC}"
+    echo -e "${YELLOW}환경변수 변경사항을 반영하기 위해 컨테이너를 재생성합니다...${NC}"
+    docker compose stop $1
+    docker compose rm -f $1
+    docker compose up -d $1
+    echo -e "${GREEN}노드가 재생성되었습니다: $1${NC}"
+  else
+    # 일반 컨테이너는 기존 방식 사용
+    echo -e "${BLUE}컨테이너 재시작 중: $1${NC}"
+    docker restart $1
+    echo -e "${GREEN}컨테이너가 재시작되었습니다: $1${NC}"
+  fi
 }
 
 dstop() { 
@@ -1202,7 +1282,7 @@ monurl() {
 # 모니터 시작
 mstart() {
   echo -e "${BLUE}파이썬 모니터 서비스 시작 중...${NC}"
-  docker compose up -d mclient
+  docker compose -f docker-compose-mclient.yml up -d mclient
   if [ $? -eq 0 ]; then
     echo -e "${GREEN}파이썬 모니터 서비스가 시작되었습니다.${NC}"
   else
@@ -1213,7 +1293,7 @@ mstart() {
 # 모니터 중지
 mstop() {
   echo -e "${BLUE}파이썬 모니터 서비스 중지 중...${NC}"
-  docker compose stop mclient
+  docker compose -f docker-compose-mclient.yml stop mclient
   if [ $? -eq 0 ]; then
     echo -e "${GREEN}파이썬 모니터 서비스가 중지되었습니다.${NC}"
   else
@@ -1224,7 +1304,15 @@ mstop() {
 # 모니터 재시작
 mrestart() {
   echo -e "${BLUE}파이썬 모니터 서비스 재시작 중...${NC}"
-  docker compose restart mclient
+  
+  # 분리된 mclient 파일 확인
+  if [ -f "docker-compose-mclient.yml" ]; then
+    docker compose -f docker-compose-mclient.yml restart mclient
+  else
+    echo -e "${RED}docker-compose-mclient.yml 파일이 없습니다.${NC}"
+    return 1
+  fi
+  
   if [ $? -eq 0 ]; then
     echo -e "${GREEN}파이썬 모니터 서비스가 재시작되었습니다.${NC}"
   else
@@ -1280,35 +1368,303 @@ murl() {
   echo -e "${GREEN}mrestart${NC}"
 }
 
-# 백업 파일 정리 함수
+# 노드 정리 함수 (2.x/3.x 통합)
+cleanupnode() {
+  local LEGACY_MODE=false
+  local ALL_MODE=false
+  
+  # 옵션 파싱
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -l|--legacy)
+        LEGACY_MODE=true
+        shift
+        ;;
+      --all)
+        ALL_MODE=true
+        shift
+        ;;
+      -h|--help)
+        echo "사용법: cleanupnode [옵션]"
+        echo "옵션:"
+        echo "  -l, --legacy    2.x 레거시 노드만 정리"
+        echo "  --all           2.x와 3.x 모든 노드 정리"
+        echo "  (옵션 없음)     3.x 노드만 정리 (기본값)"
+        return 0
+        ;;
+      *)
+        echo -e "${RED}알 수 없는 옵션: $1${NC}"
+        return 1
+        ;;
+    esac
+  done
+  
+  if [ "$ALL_MODE" = true ]; then
+    echo -e "${RED}!!! 경고 !!!${NC}"
+    echo -e "${YELLOW}이 명령은 모든 Creditcoin 노드 (2.x + 3.x)를 완전히 삭제합니다.${NC}"
+  elif [ "$LEGACY_MODE" = true ]; then
+    echo -e "${RED}!!! 경고 !!!${NC}"
+    echo -e "${YELLOW}이 명령은 Creditcoin 2.x 레거시 노드를 완전히 삭제합니다.${NC}"
+  else
+    echo -e "${RED}!!! 경고 !!!${NC}"
+    echo -e "${YELLOW}이 명령은 Creditcoin 3.x 노드를 완전히 삭제합니다.${NC}"
+  fi
+  
+  echo -e "${RED}이 작업은 되돌릴 수 없습니다.${NC}"
+  echo ""
+  echo -n "계속 진행하시겠습니까? (y/N) "
+  read response
+  
+  if [[ ! "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+    echo -e "${BLUE}작업이 취소되었습니다.${NC}"
+    return 0
+  fi
+  
+  # 2.x 정리
+  if [ "$LEGACY_MODE" = true ] || [ "$ALL_MODE" = true ]; then
+    echo -e "${BLUE}===== Creditcoin 2.x 레거시 노드 정리 =====${NC}"
+    
+    # 2.x 컨테이너 정리
+    echo -e "${YELLOW}2.x node 컨테이너 중지 및 삭제...${NC}"
+    local RUNNING_NODES=$(docker ps -a --format "{{.Names}}" | grep '^node[0-9]')
+    if [ ! -z "$RUNNING_NODES" ]; then
+      echo "$RUNNING_NODES" | xargs -r docker stop
+      echo "$RUNNING_NODES" | xargs -r docker rm
+      echo -e "${GREEN}2.x 컨테이너 정리 완료${NC}"
+    fi
+    
+    # 2.x 이미지 정리
+    echo -e "${YELLOW}creditcoin2 이미지 삭제...${NC}"
+    local IMAGES=$(docker images | grep 'creditcoin2' | awk '{print $3}')
+    if [ ! -z "$IMAGES" ]; then
+      echo "$IMAGES" | xargs -r docker rmi -f
+      echo -e "${GREEN}2.x 이미지 정리 완료${NC}"
+    fi
+    
+    # 2.x 파일 정리
+    echo -e "${YELLOW}2.x 파일 정리...${NC}"
+    rm -rf ./node[0-9]*
+    rm -f Dockerfile.legacy docker-compose-legacy.yml
+    
+    # 2.x 환경변수 정리
+    if [ -f ".env.legacy" ]; then
+      rm -f .env.legacy
+      echo -e "${GREEN}2.x 환경변수 파일 정리 완료${NC}"
+    fi
+    
+    echo -e "${GREEN}2.x 노드 정리 완료${NC}"
+  fi
+  
+  # 3.x 정리
+  if [ "$LEGACY_MODE" = false ] || [ "$ALL_MODE" = true ]; then
+    echo -e "${BLUE}===== Creditcoin 3.x 노드 정리 =====${NC}"
+    
+    # 3.x 컨테이너 정리
+    echo -e "${YELLOW}3.x 3node 컨테이너 중지 및 삭제...${NC}"
+    local RUNNING_NODES=$(docker ps -a --format "{{.Names}}" | grep '^3node[0-9]')
+    if [ ! -z "$RUNNING_NODES" ]; then
+      echo "$RUNNING_NODES" | xargs -r docker stop
+      echo "$RUNNING_NODES" | xargs -r docker rm
+      echo -e "${GREEN}3.x 컨테이너 정리 완료${NC}"
+    fi
+    
+    # 3.x 이미지 정리
+    echo -e "${YELLOW}creditcoin3 이미지 삭제...${NC}"
+    local IMAGES=$(docker images | grep 'creditcoin3' | awk '{print $3}')
+    if [ ! -z "$IMAGES" ]; then
+      echo "$IMAGES" | xargs -r docker rmi -f
+      echo -e "${GREEN}3.x 이미지 정리 완료${NC}"
+    fi
+    
+    # 3.x 파일 정리
+    echo -e "${YELLOW}3.x 파일 정리...${NC}"
+    rm -rf ./3node[0-9]* ./data
+    rm -f Dockerfile docker-compose.yml
+    
+    # 3.x 환경변수 정리 (.env 파일은 3.x 전용이므로 삭제)
+    if [ "$1" != "-l" ] && [ "$1" != "--legacy" ]; then
+      rm -f .env
+      echo -e "${GREEN}3.x 환경변수 파일 삭제 완료${NC}"
+    fi
+    
+    echo -e "${GREEN}3.x 노드 정리 완료${NC}"
+  fi
+  
+  # 공통 정리
+  echo -e "${BLUE}===== Docker 캐시 정리 =====${NC}"
+  docker builder prune -f
+  docker volume prune -f
+  docker network prune -f
+  
+  echo -e "${GREEN}노드 정리 완료!${NC}"
+  echo ""
+  echo -e "${BLUE}💡 mclient가 변경사항을 인지하도록 재시작: ${GREEN}mrestart${NC}"
+}
+
+# 백업 파일 정리 함수 (개선)
 cleanupbak() {
-  # 백업 파일 찾기
-  local bak_files=$(find . -name "*.bak.*" | sort)
+  echo -e "${BLUE}백업 파일 검색 중...${NC}"
+  
+  # 다양한 백업 패턴 찾기
+  local bak_files=$(find . -type f \( \
+    -name "*.bak" -o \
+    -name "*.bak.*" -o \
+    -name "*.backup" -o \
+    -name "*.orig" -o \
+    -name "*.tmp" -o \
+    -name "*~" \
+  \) | sort)
   
   if [ -z "$bak_files" ]; then
     echo -e "${YELLOW}정리할 백업 파일이 없습니다.${NC}"
     return 0
   fi
   
-  echo -e "${BLUE}백업 파일 정리 중...${NC}"
   echo -e "${YELLOW}다음 백업 파일들을 삭제합니다:${NC}"
-  
-  # 파일 목록 표시
   echo "$bak_files" | while read file; do
     echo -e "  - $file"
   done
   
-  # 확인 요청 (zsh 호환 방식)
-  echo -ne "${YELLOW}이 파일들을 삭제하시겠습니까? (y/N) ${NC}"
+  echo ""
+  echo -n "이 파일들을 삭제하시겠습니까? (y/N) "
   read response
   
   if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-    # 파일 삭제
     echo "$bak_files" | xargs rm -f
     echo -e "${GREEN}백업 파일이 정리되었습니다.${NC}"
   else
     echo -e "${BLUE}작업이 취소되었습니다.${NC}"
   fi
+}
+
+# 완전 정리 함수 (모든 것 삭제)
+cleanupmc() {
+  # 색상 정의
+  local RED='\033[0;31m'
+  local GREEN='\033[0;32m'
+  local YELLOW='\033[1;33m'
+  local BLUE='\033[0;34m'
+  local NC='\033[0m'
+
+  echo -e "${RED}!!! 경고 !!!${NC}"
+  echo -e "${YELLOW}이 명령은 Creditcoin 모니터링 클라이언트를 완전히 삭제합니다:${NC}"
+  echo -e " - mclient 컨테이너"
+  echo -e " - mclient 이미지들"
+  echo -e " - docker-compose-mclient.yml"
+  echo -e " - .env.mclient 파일"
+  echo -e "${RED}이 작업은 되돌릴 수 없습니다.${NC}"
+  echo ""
+  echo -e "${YELLOW}계속 진행하시겠습니까? (y/N)${NC}"
+  read response
+  
+  if [[ ! "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+    echo -e "${BLUE}작업이 취소되었습니다.${NC}"
+    return 0
+  fi
+
+  echo -e "${BLUE}===== mclient 정리 =====${NC}"
+  
+  # mclient 컨테이너 중지 및 삭제
+  echo -e "${YELLOW}mclient 컨테이너 중지 및 삭제...${NC}"
+  docker stop mclient 2>/dev/null || true
+  docker rm mclient 2>/dev/null || true
+  echo -e "${GREEN}mclient 컨테이너 정리 완료${NC}"
+  
+  # mclient 이미지 삭제
+  echo -e "${YELLOW}mclient 이미지 삭제...${NC}"
+  docker images | grep 'mclient' | awk '{print $3}' | xargs -r docker rmi -f
+  echo -e "${GREEN}mclient 이미지 정리 완료${NC}"
+  
+  # mclient 관련 파일 삭제
+  echo -e "${YELLOW}mclient 관련 파일 삭제...${NC}"
+  rm -f docker-compose-mclient.yml
+  rm -f .env.mclient
+  echo -e "${GREEN}mclient 파일 정리 완료${NC}"
+  
+  # Docker 캐시 정리
+  echo -e "${BLUE}===== Docker 캐시 정리 =====${NC}"
+  docker builder prune -f
+  
+  echo -e "${GREEN}mclient 정리 완료!${NC}"
+}
+
+cleanupall() {
+  echo -e "${RED}!!! 완전 정리 경고 !!!${NC}"
+  echo -e "${YELLOW}이 명령은 다음을 모두 삭제합니다:${NC}"
+  echo -e " - 모든 Creditcoin 노드 (2.x + 3.x)"
+  echo -e " - 모든 Docker 이미지 및 캐시"
+  echo -e " - 모든 백업 파일"
+  echo -e " - 모니터링 클라이언트 (mclient)"
+  echo -e " - .env 파일"
+  echo -e " - zshrc 환경변수"
+  echo ""
+  echo -e "${RED}이 작업은 완전히 되돌릴 수 없습니다!${NC}"
+  echo ""
+  echo -n "정말로 모든 것을 삭제하시겠습니까? (y/N) "
+  read response
+  
+  if [[ ! "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+    echo -e "${BLUE}작업이 취소되었습니다.${NC}"
+    return 0
+  fi
+  
+  echo -e "${BLUE}===== 완전 정리 시작 =====${NC}"
+  
+  # 1. 모든 노드 정리 (백업 안내 없이)
+  echo -e "${YELLOW}1단계: 모든 노드 정리...${NC}"
+  # 모든 컨테이너 중지 및 삭제
+  docker ps -a --format "{{.Names}}" | grep -E '^(node|3node)[0-9]' | xargs -r docker stop
+  docker ps -a --format "{{.Names}}" | grep -E '^(node|3node)[0-9]' | xargs -r docker rm
+  
+  # 모든 이미지 삭제
+  docker images | grep -E 'creditcoin[23]' | awk '{print $3}' | xargs -r docker rmi -f
+  
+  # 2. 모니터링 클라이언트 정리
+  echo -e "${YELLOW}2단계: 모니터링 클라이언트 정리...${NC}"
+  docker stop mclient 2>/dev/null || true
+  docker rm mclient 2>/dev/null || true
+  docker images | grep 'mclient' | awk '{print $3}' | xargs -r docker rmi -f
+  # mclient 폴더는 보존하고 내용물만 정리 (환경설정 파일 제외)
+  if [ -d "./mclient" ]; then
+    echo -e "${BLUE}mclient 폴더 내용 정리 중... (소스코드는 보존)${NC}"
+    rm -f ./mclient/.env.bak ./mclient/*.log ./mclient/__pycache__/* 2>/dev/null || true
+    rm -rf ./mclient/venv 2>/dev/null || true
+  fi
+  
+  # 3. 파일 시스템 정리
+  echo -e "${YELLOW}3단계: 파일 시스템 정리...${NC}"
+  rm -rf ./node[0-9]* ./3node[0-9]* ./data ./mserver
+  rm -f Dockerfile Dockerfile.legacy docker-compose*.yml .env .env.legacy .env.mclient
+  
+  # 4. 백업 파일 정리
+  echo -e "${YELLOW}4단계: 백업 파일 정리...${NC}"
+  find . -type f \( \
+    -name "*.bak" -o \
+    -name "*.bak.*" -o \
+    -name "*.backup" -o \
+    -name "*.orig" -o \
+    -name "*.tmp" -o \
+    -name "*~" \
+  \) -delete
+  
+  # 5. zshrc 환경변수 정리
+  echo -e "${YELLOW}5단계: zshrc 환경변수 정리...${NC}"
+  if [ -f ~/.zshrc ]; then
+    # Creditcoin 관련 환경변수 제거
+    sed -i.bak '/# Creditcoin/,/^$/d; /CREDITCOIN_DIR/d; /HOST_MAC_ADDRESS/d; /HOST_SYSTEM_NAME/d; /HOST_MODEL/d; /HOST_PROCESSOR/d; /HOST_CPU/d; /HOST_MEMORY/d; /HOST_DISK/d' ~/.zshrc
+    echo -e "${GREEN}zshrc 환경변수 정리 완료${NC}"
+  fi
+  
+  # 6. Docker 캐시 완전 정리
+  echo -e "${YELLOW}6단계: Docker 완전 정리...${NC}"
+  docker system prune -af
+  docker volume prune -f
+  docker network prune -f
+  
+  echo -e "${BLUE}===== 완전 정리 완료 =====${NC}"
+  echo -e "${GREEN}모든 Creditcoin 관련 데이터가 삭제되었습니다.${NC}"
+  echo -e "${YELLOW}zshrc 변경사항을 적용하려면 다음 명령을 실행하세요:${NC}"
+  echo -e "${GREEN}source ~/.zshrc${NC}"
 }
 
 # zshrc 편집 및 업데이트 함수
@@ -1319,4 +1675,25 @@ editz() {
 updatez() {
   source ~/.zshrc
   echo "zshrc가 업데이트되었습니다."
+}
+
+# mclient 인증 함수
+mauth() {
+  docker compose -f $CREDITCOIN_DIR/docker-compose-mclient.yml run --rm --entrypoint "python3 /app/mauth.py" mclient
+}
+
+# 노드 제거 함수
+removenode() {
+  if [ -z "$1" ]; then
+    echo -e "${YELLOW}사용법: removenode <노드명>${NC}"
+    echo -e "${YELLOW}예시: removenode node1, removenode 3node0${NC}"
+    return 1
+  fi
+  
+  $CREDITCOIN_DIR/removenode.sh "$1"
+}
+
+# mclient 한 틱 데이터를 JSON으로 출력
+mtick() {
+  docker exec mclient python3 /app/tick.py
 }

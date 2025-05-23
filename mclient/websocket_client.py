@@ -38,6 +38,7 @@ class WebSocketClient:
         self.reconnect_attempts = 0
         self.last_success_time = 0
         self.sequence_number = 0
+        self.reconnecting = False  # 재연결 진행 중 플래그
         self.pending_ack = {}
         self.max_retry_count = 5
         self.message_queue = []
@@ -81,6 +82,9 @@ class WebSocketClient:
             extra_headers = {}
             if self.auth_token:
                 extra_headers["Authorization"] = f"Token {self.auth_token}"
+                logger.debug(f"인증 토큰 헤더 추가: Token {self.auth_token[:20]}...")
+            else:
+                logger.warning("인증 토큰이 없습니다. 토큰 없이 연결을 시도합니다.")
             
             # 연결 타임아웃 및 상세 옵션 설정
             if ssl_context:
@@ -311,6 +315,11 @@ class WebSocketClient:
     
     async def send_stats(self, stats: Dict[str, Any]) -> bool:
         """수집된 통계 데이터 전송"""
+        # 재연결 중이면 바로 False 반환
+        if self.reconnecting:
+            logger.debug("재연결 진행 중... 데이터 전송 건너뜀")
+            return False
+            
         if not self.connected or not self.ws:
             # 연결이 없으면 메시지를 큐에 추가하고 재연결 시도
             logger.warning("WebSocket 연결이 없습니다. 메시지를 큐에 추가하고 재연결을 시도합니다.")
@@ -354,7 +363,16 @@ class WebSocketClient:
             }
             
             # 메시지 전송
-            await self.ws.send(json.dumps(message))
+            message_json = json.dumps(message)
+            
+            # 디버그: 전송 데이터 로깅
+            if logger.isEnabledFor(logging.DEBUG):
+                # 컨테이너 정보만 간단히 표시
+                container_names = [c.get('name', 'unknown') for c in stats.get('containers', [])]
+                configured = stats.get('configured_nodes', [])
+                logger.debug(f"전송 데이터: configured_nodes={configured}, running_containers={container_names}")
+            
+            await self.ws.send(message_json)
             
             # 응답 대기
             ack_received = False
@@ -463,6 +481,13 @@ class WebSocketClient:
         if self.connected:
             return True
         
+        # 이미 재연결 중이면 리턴
+        if self.reconnecting:
+            logger.debug("이미 재연결 진행 중...")
+            return False
+        
+        self.reconnecting = True
+        
         # 타스크 취소
         if self.ping_task:
             self.ping_task.cancel()
@@ -508,12 +533,10 @@ class WebSocketClient:
             # 큐에 있는 메시지 전송
             await self._flush_message_queue()
         else:
-            # 시간이 많이 지났으면 재연결 시도 횟수 감소
-            current_time = time.time()
-            if self.last_success_time > 0 and (current_time - self.last_success_time) > 300:  # 5분 이상 지남
-                logger.info("마지막 성공 연결로부터 5분 이상 지났습니다. 재연결 카운터 리셋")
-                self.reconnect_attempts = 0
+            # 5분 지났다고 리셋하지 않음 - 계속 백오프 유지
+            pass
         
+        self.reconnecting = False  # 재연결 플래그 해제
         return connected
     
     async def disconnect(self) -> None:
