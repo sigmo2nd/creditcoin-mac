@@ -13,6 +13,8 @@ import psutil
 from typing import Dict, List, Any, Optional
 import subprocess
 from pathlib import Path
+import getpass
+import aiohttp
 
 # 로깅 설정
 logging.basicConfig(
@@ -44,7 +46,12 @@ STYLE_BOLD = "\x1B[1m"
 
 # .env 파일 로드
 def load_dotenv():
-    """환경 변수 설정 파일(.env) 로드"""
+    """환경 변수 설정 파일(.env) 로드 - Docker 환경에서는 건너뜀"""
+    # Docker 컨테이너에서는 환경변수가 이미 설정되어 있으므로 .env 파일을 읽지 않음
+    if os.path.exists('/.dockerenv'):
+        logger.debug("Docker 환경에서 실행 중. .env 파일을 건너뜁니다.")
+        return True
+    
     env_file = Path('.env')
     if not env_file.exists():
         logger.debug(".env 파일이 존재하지 않습니다. 기본값을 사용합니다.")
@@ -72,6 +79,181 @@ def load_dotenv():
         logger.warning(f".env 파일 로드 중 오류: {e}")
         return False
 
+#################################################
+# 인증 관련 함수들
+#################################################
+
+TOKEN_FILE_PATH = "/app/data/.auth_token"
+
+async def handle_tty_authentication(auth_api_url: str, allow_http: bool = False) -> Optional[str]:
+    """TTY 모드에서 인증 처리 (토큰 확인 및 로그인)"""
+    print(f"{COLOR_BLUE}{'='*50}{COLOR_RESET}")
+    print(f"{COLOR_GREEN}     Creditcoin 모니터링 서버 인증{COLOR_RESET}")
+    print(f"{COLOR_BLUE}{'='*50}{COLOR_RESET}")
+    print("")
+    
+    # 기존 토큰 확인
+    if os.path.exists(TOKEN_FILE_PATH):
+        try:
+            with open(TOKEN_FILE_PATH, 'r') as f:
+                token = f.read().strip()
+                if token:
+                    print(f"{COLOR_GREEN}기존 토큰을 발견했습니다. 유효성을 확인합니다...{COLOR_RESET}")
+                    if await verify_token(token, auth_api_url, allow_http):
+                        print(f"{COLOR_GREEN}토큰이 유효합니다.{COLOR_RESET}")
+                        
+                        # 유효한 토큰이 있으면 바로 사용
+                        return token
+                    else:
+                        print(f"{COLOR_YELLOW}토큰이 만료되었거나 유효하지 않습니다.{COLOR_RESET}")
+                        print(f"{COLOR_YELLOW}새로운 로그인이 필요합니다.{COLOR_RESET}")
+        except Exception as e:
+            logger.error(f"토큰 파일 읽기 오류: {e}")
+    else:
+        print(f"{COLOR_YELLOW}저장된 토큰이 없습니다. 로그인이 필요합니다.{COLOR_RESET}")
+    
+    # TTY가 없는 환경에서는 에러 발생
+    if not sys.stdin.isatty():
+        print(f"{COLOR_RED}TTY가 없는 환경에서는 인증 정보를 입력할 수 없습니다.{COLOR_RESET}")
+        print(f"{COLOR_YELLOW}환경변수 AUTH_USER와 AUTH_PASS를 설정하거나 TTY 모드로 실행하세요.{COLOR_RESET}")
+        raise RuntimeError("No TTY available for authentication input")
+    
+    # 대화형 로그인 진행
+    return await interactive_login(auth_api_url, allow_http)
+
+async def interactive_login(auth_api_url: str, allow_http: bool = False) -> Optional[str]:
+    """대화형 로그인 처리"""
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        print(f"\n{COLOR_YELLOW}로그인 시도 {attempt + 1}/{max_attempts}{COLOR_RESET}")
+        
+        username = input("사용자명: ")
+        password = getpass.getpass("비밀번호: ")
+        
+        try:
+            token = await login_to_server(username, password, auth_api_url, allow_http)
+            if token:
+                # 토큰 저장
+                save_token(token)
+                print(f"\n{COLOR_GREEN}로그인 성공! 토큰이 발급되었습니다.{COLOR_RESET}")
+                print(f"{COLOR_GREEN}토큰이 안전하게 저장되었습니다.{COLOR_RESET}")
+                return token
+            else:
+                print(f"{COLOR_RED}로그인 실패: 사용자명 또는 비밀번호가 올바르지 않습니다.{COLOR_RESET}")
+        except Exception as e:
+            print(f"{COLOR_RED}로그인 중 오류 발생: {e}{COLOR_RESET}")
+    
+    print(f"\n{COLOR_RED}최대 로그인 시도 횟수를 초과했습니다.{COLOR_RESET}")
+    return None
+
+async def authenticate_user(auth_api_url: str, allow_http: bool = False) -> Optional[str]:
+    """사용자 인증 및 토큰 발급 (환경변수 우선)"""
+    # 환경변수에서 인증 정보 확인
+    env_username = os.environ.get("AUTH_USER", "")
+    env_password = os.environ.get("AUTH_PASS", "")
+    
+    # 환경변수에 인증 정보가 있으면 자동 로그인 시도
+    if env_username and env_password:
+        print(f"{COLOR_BLUE}환경변수에서 인증 정보를 찾았습니다. 자동 로그인을 시도합니다...{COLOR_RESET}")
+        try:
+            token = await login_to_server(env_username, env_password, auth_api_url, allow_http)
+            if token:
+                save_token(token)
+                print(f"{COLOR_GREEN}자동 로그인 성공! 토큰이 발급되었습니다.{COLOR_RESET}")
+                print(f"{COLOR_GREEN}토큰이 안전하게 저장되었습니다.{COLOR_RESET}")
+                return token
+            else:
+                print(f"{COLOR_YELLOW}자동 로그인 실패.{COLOR_RESET}")
+        except Exception as e:
+            print(f"{COLOR_YELLOW}자동 로그인 중 오류: {e}{COLOR_RESET}")
+    
+    # TTY 인증으로 전환
+    return await handle_tty_authentication(auth_api_url, allow_http)
+
+async def login_to_server(username: str, password: str, auth_api_url: str, allow_http: bool) -> Optional[str]:
+    """Django 서버에 로그인하여 토큰 발급"""
+    login_url = f"{auth_api_url}/login/"
+    
+    # SSL 검증 설정
+    ssl_verify = os.environ.get('SSL_VERIFY', 'true').lower() in ('true', '1', 'yes')
+    connector = None
+    
+    if auth_api_url.startswith('https') and not ssl_verify:
+        import ssl as ssl_module
+        ssl_context = ssl_module.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl_module.CERT_NONE
+        connector = aiohttp.TCPConnector(ssl=ssl_context)
+        logger.debug("SSL 인증서 검증 비활성화")
+    
+    async with aiohttp.ClientSession(connector=connector) as session:
+        try:
+            data = {
+                "username": username,
+                "password": password
+            }
+            
+            async with session.post(login_url, json=data) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    if result.get("success") and result.get("token"):
+                        return result["token"]
+                return None
+        except Exception as e:
+            logger.error(f"로그인 API 호출 중 오류: {e}")
+            raise
+
+async def verify_token(token: str, auth_api_url: str, allow_http: bool) -> bool:
+    """토큰 유효성 검증"""
+    verify_url = f"{auth_api_url}/verify/"
+    
+    # SSL 검증 설정
+    ssl_verify = os.environ.get('SSL_VERIFY', 'true').lower() in ('true', '1', 'yes')
+    connector = None
+    
+    if verify_url.startswith('https') and not ssl_verify:
+        import ssl as ssl_module
+        ssl_context = ssl_module.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl_module.CERT_NONE
+        connector = aiohttp.TCPConnector(ssl=ssl_context)
+        logger.debug("SSL 인증서 검증 비활성화")
+    
+    async with aiohttp.ClientSession(connector=connector) as session:
+        try:
+            headers = {"Authorization": f"Token {token}"}
+            
+            async with session.get(verify_url, headers=headers) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return result.get("valid", False)
+                return False
+        except Exception as e:
+            logger.error(f"토큰 검증 중 오류: {e}")
+            return False
+
+def save_token(token: str):
+    """토큰을 파일에 저장"""
+    try:
+        os.makedirs(os.path.dirname(TOKEN_FILE_PATH), exist_ok=True)
+        with open(TOKEN_FILE_PATH, 'w') as f:
+            f.write(token)
+        # 파일 권한 설정 (소유자만 읽기/쓰기)
+        os.chmod(TOKEN_FILE_PATH, 0o600)
+    except Exception as e:
+        logger.error(f"토큰 저장 중 오류: {e}")
+        raise
+
+def load_token() -> Optional[str]:
+    """저장된 토큰 로드"""
+    if os.path.exists(TOKEN_FILE_PATH):
+        try:
+            with open(TOKEN_FILE_PATH, 'r') as f:
+                return f.read().strip()
+        except Exception as e:
+            logger.error(f"토큰 로드 중 오류: {e}")
+    return None
+
 # 설정 클래스
 class Settings:
     """애플리케이션 설정 클래스"""
@@ -81,27 +263,45 @@ class Settings:
         load_dotenv()
         
         # 기본 설정
-        self.SERVER_ID = os.environ.get("SERVER_ID", "server1")
-        self.NODE_NAMES = os.environ.get("NODE_NAMES", "node,3node")
+        self.SERVER_ID = os.environ.get("SERVER_ID", "")
+        self.NODE_NAMES = os.environ.get("NODE_NAMES", "")
         self.MONITOR_INTERVAL = int(os.environ.get("MONITOR_INTERVAL", "5"))
         
         # WebSocket 설정
         self.SERVER_URL = os.environ.get("SERVER_URL")
         self.WS_MODE = os.environ.get("WS_MODE", "auto")  # auto, ws, wss, custom
-        self.WS_SERVER_HOST = os.environ.get("WS_SERVER_HOST", "192.168.0.24")
-        self.WS_PORT_WS = int(os.environ.get("WS_PORT_WS", "8080"))
-        self.WS_PORT_WSS = int(os.environ.get("WS_PORT_WSS", "8443"))
+        self.WS_SERVER_HOST = os.environ.get("WS_SERVER_HOST", "localhost")
+        # WS_SERVER_PORT 환경변수 우선 사용 (addmc.sh에서 설정)
+        ws_port = os.environ.get("WS_SERVER_PORT")
+        if ws_port:
+            # WS_SERVER_PORT가 설정된 경우, 현재 모드에 맞는 포트로 사용
+            if self.WS_MODE == "ws":
+                self.WS_PORT_WS = int(ws_port)
+                self.WS_PORT_WSS = int(os.environ.get("WS_PORT_WSS", "4443"))
+            else:  # wss 또는 기타 모드
+                self.WS_PORT_WS = int(os.environ.get("WS_PORT_WS", "8080"))
+                self.WS_PORT_WSS = int(ws_port)
+        else:
+            self.WS_PORT_WS = int(os.environ.get("WS_PORT_WS", "8080"))
+            self.WS_PORT_WSS = int(os.environ.get("WS_PORT_WSS", "4443"))
         
         # Docker 설정
-        self.CREDITCOIN_DIR = os.environ.get("CREDITCOIN_DIR", os.path.expanduser("~/creditcoin-mac"))
+        self.CREDITCOIN_DIR = os.environ.get("CREDITCOIN_DIR", "")
         
         # 실행 모드 설정
         self.LOCAL_MODE = os.environ.get("LOCAL_MODE", "").lower() in ('true', '1', 'yes')
         self.DEBUG_MODE = os.environ.get("DEBUG_MODE", "").lower() in ('true', '1', 'yes')
         self.NO_DOCKER = os.environ.get("NO_DOCKER", "").lower() in ('true', '1', 'yes')
-        self.NO_SSL_VERIFY = os.environ.get("NO_SSL_VERIFY", "").lower() in ('true', '1', 'yes')
+        # SSL_VERIFY 환경변수 읽기 (기본값: true)
+        self.SSL_VERIFY = os.environ.get("SSL_VERIFY", "true").lower() in ('true', '1', 'yes')
         self.MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "0"))
         self.RETRY_INTERVAL = int(os.environ.get("RETRY_INTERVAL", "10"))
+        
+        # 인증 관련 설정
+        self.REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "").lower() in ('true', '1', 'yes')
+        self.AUTH_API_URL = os.environ.get("AUTH_API_URL", "")
+        self.AUTH_ALLOW_HTTP = os.environ.get("AUTH_ALLOW_HTTP", "").lower() in ('true', '1', 'yes')
+        self.RUN_MODE = os.environ.get("RUN_MODE", "normal")  # normal, auth
         
         # 호스트 정보 설정 - 환경 변수에서 로드
         self.HOST_SYSTEM_NAME = os.environ.get("HOST_SYSTEM_NAME", "")
@@ -135,7 +335,7 @@ class Settings:
             if args.no_docker:
                 self.NO_DOCKER = True
             if args.no_ssl_verify:
-                self.NO_SSL_VERIFY = True
+                self.SSL_VERIFY = False
             if args.max_retries is not None:
                 self.MAX_RETRIES = args.max_retries
             if args.retry_interval:
@@ -176,7 +376,7 @@ class Settings:
                 logger.info(f"WebSocket 포트(WS): {self.WS_PORT_WS}")
                 logger.info(f"WebSocket 포트(WSS): {self.WS_PORT_WSS}")
             
-            logger.info(f"SSL 검증: {'비활성화' if self.NO_SSL_VERIFY else '활성화'}")
+            logger.info(f"SSL 검증: {'활성화' if self.SSL_VERIFY else '비활성화'}")
             logger.info(f"연결 재시도: {self.MAX_RETRIES if self.MAX_RETRIES > 0 else '무제한'} 회")
             logger.info(f"재시도 간격: {self.RETRY_INTERVAL}초")
         
@@ -193,9 +393,9 @@ def get_websocket_url(settings):
     
     # 2. 기본 URL 설정 (설정값으로부터 동적 생성)
     base_urls = {
-        "ws": f"ws://{settings.WS_SERVER_HOST}:{settings.WS_PORT_WS}/ws",
-        "wss": f"wss://{settings.WS_SERVER_HOST}:{settings.WS_PORT_WSS}/ws",
-        "wss_internal": f"wss://{settings.WS_SERVER_HOST}:{settings.WS_PORT_WSS}/ws"
+        "ws": f"ws://{settings.WS_SERVER_HOST}:{settings.WS_PORT_WS}/ws/monitoring/",
+        "wss": f"wss://{settings.WS_SERVER_HOST}:{settings.WS_PORT_WSS}/ws/monitoring/",
+        "wss_internal": f"wss://{settings.WS_SERVER_HOST}:{settings.WS_PORT_WSS}/ws/monitoring/"
     }
     
     # 3. auto 모드인 경우 자동 연결 로직 사용
@@ -233,7 +433,7 @@ def configure_connection(settings):
         return {
             "mode": "server",
             "url": settings.SERVER_URL,
-            "verify_ssl": not settings.NO_SSL_VERIFY
+            "verify_ssl": settings.SSL_VERIFY
         }
     
     # URL 기반으로 구성
@@ -245,7 +445,7 @@ def configure_connection(settings):
         "url": ws_url,
         "server_id": settings.SERVER_ID,
         "use_ssl": use_ssl,
-        "verify_ssl": not settings.NO_SSL_VERIFY,
+        "verify_ssl": settings.SSL_VERIFY,
         "max_retries": settings.MAX_RETRIES,
         "retry_interval": settings.RETRY_INTERVAL
     }
@@ -480,7 +680,83 @@ class SystemInfo:
                 self.cpu_cores_eff = 0
         
         # 총 CPU 사용률 (기본 방식)
-        self.cpu_usage = psutil.cpu_percent(interval=0.1)
+        # OrbStack host networking을 통해 Mac 호스트 정보 가져오기 시도
+        host_stats_fetched = False
+        if is_docker:
+            try:
+                import urllib.request
+                import json
+                # Mac 호스트에서 실행 중인 통계 서버에 접근
+                # host.docker.internal 또는 host.orb.internal 사용
+                for host in ['host.docker.internal', 'host.orb.internal', 'localhost']:
+                    try:
+                        url = f'http://{host}:9999/stats'
+                        with urllib.request.urlopen(url, timeout=1.0) as response:
+                            stats = json.loads(response.read())
+                            # 호스트 CPU 정보 사용
+                            self.cpu_usage = stats['cpu']['usage']
+                            self.cpu_user = stats['cpu']['user']
+                            self.cpu_system = stats['cpu']['sys']
+                            self.cpu_idle = stats['cpu']['idle']
+                            host_stats_fetched = True
+                            logger.debug(f"Mac 호스트 CPU 정보 사용 ({host}): {self.cpu_usage:.1f}% (user: {self.cpu_user:.1f}%, sys: {self.cpu_system:.1f}%)")
+                            break
+                    except Exception as e:
+                        logger.debug(f"호스트 통계 서버 접근 실패 ({host}): {e}")
+                        continue
+            except Exception as e:
+                logger.debug(f"호스트 통계 서버 접근 중 오류: {e}")
+        
+        # 호스트 정보를 가져오지 못한 경우 /proc/stat 시도
+        if not host_stats_fetched and is_docker and os.path.exists('/proc/stat'):
+            try:
+                # /proc/stat에서 호스트 CPU 정보 읽기
+                with open('/proc/stat', 'r') as f:
+                    cpu_line = f.readline()
+                    if cpu_line.startswith('cpu '):
+                        fields = cpu_line.split()
+                        if len(fields) >= 5:
+                            user = int(fields[1])
+                            nice = int(fields[2])
+                            system = int(fields[3])
+                            idle = int(fields[4])
+                            
+                            # 이전 값과 비교를 위해 저장
+                            if hasattr(self, '_last_cpu_stats'):
+                                # 이전 값과의 차이 계산
+                                user_delta = user - self._last_cpu_stats['user']
+                                nice_delta = nice - self._last_cpu_stats['nice']
+                                system_delta = system - self._last_cpu_stats['system']
+                                idle_delta = idle - self._last_cpu_stats['idle']
+                                
+                                total_delta = user_delta + nice_delta + system_delta + idle_delta
+                                
+                                if total_delta > 0:
+                                    self.cpu_user = ((user_delta + nice_delta) / total_delta) * 100
+                                    self.cpu_system = (system_delta / total_delta) * 100
+                                    self.cpu_idle = (idle_delta / total_delta) * 100
+                                    self.cpu_usage = 100.0 - self.cpu_idle
+                                else:
+                                    # delta가 0인 경우 psutil 사용
+                                    self.cpu_usage = psutil.cpu_percent(interval=0.1)
+                            else:
+                                # 첫 실행시 psutil 사용
+                                self.cpu_usage = psutil.cpu_percent(interval=0.1)
+                            
+                            # 현재 값 저장
+                            self._last_cpu_stats = {
+                                'user': user,
+                                'nice': nice,
+                                'system': system,
+                                'idle': idle
+                            }
+            except Exception as e:
+                logger.debug(f"/proc/stat 읽기 실패, psutil 사용: {e}")
+                self.cpu_usage = psutil.cpu_percent(interval=0.1)
+        
+        # 모든 방법이 실패한 경우 psutil 사용
+        if not host_stats_fetched:
+            self.cpu_usage = psutil.cpu_percent(interval=0.1)
         
         # CPU 사용률이 아직 구분되지 않은 경우, 총 사용률을 기준으로 추정
         if self.cpu_user == 0 and self.cpu_system == 0 and self.cpu_idle == 0:
@@ -532,21 +808,75 @@ class SystemInfo:
         # 업타임
         self.uptime = int(time.time() - psutil.boot_time())
         
-        # 디스크 정보
-        disk = psutil.disk_usage('/')
-        
-        # 환경변수에서 디스크 총량을 가져옴 (있는 경우)
-        config = SystemInfo()
-        env_disk_total_gb = int(os.environ.get("HOST_DISK_TOTAL_GB", "0"))
-        if env_disk_total_gb > 0:
-            # GB에서 바이트로 변환 (1GB = 1073741824 바이트)
-            self.disk_total = env_disk_total_gb * 1073741824
-        else:
-            self.disk_total = disk.total
+        # 디스크 정보 - df 명령어로 호스트 정보 직접 수집
+        try:
+            # OrbStack 환경에서는 /hostfs/mnt/mac에 실제 Mac 디스크가 마운트됨
+            if os.path.exists("/hostfs/mnt/mac"):
+                df_cmd = ["df", "-k", "/hostfs/mnt/mac"]
+            elif os.path.exists("/hostfs"):
+                df_cmd = ["df", "-k", "/hostfs"]
+            else:
+                df_cmd = ["df", "-k", "/"]
+            df_result = subprocess.run(df_cmd, capture_output=True, text=True)
             
-        self.disk_used = disk.used
-        self.disk_available = disk.free
-        self.disk_percent = disk.percent
+            if df_result.returncode == 0:
+                # 출력의 마지막 줄에서 정보 추출
+                df_lines = df_result.stdout.strip().split('\n')
+                if len(df_lines) >= 2:
+                    # 공백으로 분리하여 필드 추출
+                    fields = df_lines[-1].split()
+                    if len(fields) >= 4:
+                        # KB 단위를 바이트로 변환
+                        disk_total_kb = int(fields[1])
+                        disk_used_kb = int(fields[2])
+                        disk_avail_kb = int(fields[3])
+                        
+                        self.disk_total = disk_total_kb * 1024
+                        self.disk_used = disk_used_kb * 1024
+                        self.disk_available = disk_avail_kb * 1024
+                        
+                        # 사용률 계산
+                        if self.disk_total > 0:
+                            self.disk_percent = (self.disk_used / self.disk_total) * 100.0
+                        else:
+                            self.disk_percent = 0.0
+                        
+                        logger.debug(f"디스크 정보 (df): 총 {self.disk_total / (1024**3):.1f}GB, "
+                                    f"사용 {self.disk_used / (1024**3):.1f}GB, "
+                                    f"사용률 {self.disk_percent:.1f}%")
+                    else:
+                        raise ValueError("df 출력 형식이 예상과 다릅니다")
+                else:
+                    raise ValueError("df 출력이 비어있습니다")
+            else:
+                raise Exception(f"df 명령 실패: {df_result.stderr}")
+                
+        except Exception as e:
+            logger.error(f"df 명령으로 디스크 정보 수집 실패: {e}")
+            # 실패 시 psutil로 폴백
+            try:
+                disk = psutil.disk_usage('/')
+                self.disk_total = disk.total
+                self.disk_used = disk.used
+                self.disk_available = disk.free
+                self.disk_percent = disk.percent
+                logger.debug(f"디스크 정보 (psutil): 총 {self.disk_total / (1024**3):.1f}GB, "
+                            f"사용 {self.disk_used / (1024**3):.1f}GB, "
+                            f"사용률 {self.disk_percent:.1f}%")
+            except Exception as e2:
+                logger.error(f"psutil로도 디스크 정보 수집 실패: {e2}")
+                # 모든 방법 실패 시 환경변수 사용
+                env_disk_total_gb = int(os.environ.get("HOST_DISK_TOTAL_GB", "0"))
+                if env_disk_total_gb > 0:
+                    self.disk_total = env_disk_total_gb * 1073741824
+                    self.disk_used = 0
+                    self.disk_available = self.disk_total
+                    self.disk_percent = 0.0
+                else:
+                    self.disk_total = 0
+                    self.disk_used = 0
+                    self.disk_available = 0
+                    self.disk_percent = 0.0
         
         return self.to_dict()
     
@@ -919,6 +1249,20 @@ async def run_websocket_mode(settings, node_names: List[str]):
     # 웹소켓 라이브러리 관련 import - 필요 시에만 임포트
     from websocket_client import WebSocketClient
     
+    # 인증 처리
+    auth_token = None
+    if settings.REQUIRE_AUTH or settings.RUN_MODE == "auth":
+        if not settings.AUTH_API_URL:
+            logger.error("인증이 필요하지만 AUTH_API_URL이 설정되지 않았습니다.")
+            return
+        
+        auth_token = await authenticate_user(settings.AUTH_API_URL, settings.AUTH_ALLOW_HTTP)
+        if not auth_token:
+            logger.error("인증 실패. 프로그램을 종료합니다.")
+            return
+        
+        logger.info("인증 성공. 모니터링을 계속합니다.")
+    
     # 설정값 적용
     server_id = settings.SERVER_ID
     
@@ -930,7 +1274,7 @@ async def run_websocket_mode(settings, node_names: List[str]):
     if settings.SERVER_URL:
         logger.info(f"WebSocket URL: {settings.SERVER_URL}")
     
-    if settings.NO_SSL_VERIFY:
+    if not settings.SSL_VERIFY:
         logger.info("SSL 인증서 검증이 비활성화되었습니다.")
     
     # 클라이언트 초기화
@@ -955,8 +1299,8 @@ async def run_websocket_mode(settings, node_names: List[str]):
         except Exception as e:
             logger.error(f"Docker 클라이언트 초기화 중 오류: {e}")
     
-    # WebSocket 클라이언트 초기화 (SSL 검증 옵션 적용)
-    websocket_client = WebSocketClient(ws_url_or_mode, server_id, ssl_verify=not settings.NO_SSL_VERIFY)
+    # WebSocket 클라이언트 초기화 (SSL 검증 옵션 및 토큰 적용)
+    websocket_client = WebSocketClient(ws_url_or_mode, server_id, ssl_verify=settings.SSL_VERIFY, auth_token=auth_token)
     websocket_client_instance = websocket_client  # 전역 변수에 할당하여 종료 시 접근 가능
     
     # 전송 통계
@@ -1031,17 +1375,16 @@ async def run_websocket_mode(settings, node_names: List[str]):
             stats.last_memory_percent = sys_metrics["memory_used_percent"]
             stats.container_count = len(container_list)
             
-            # 서버로 전송할 데이터 구성
-            server_data = {
-                "server_id": server_id,
-                "timestamp": int(time.time() * 1000),
+            # 서버로 전송할 데이터 구성 (websocket_client가 감싸므로 내부 데이터만 전송)
+            stats_data = {
                 "system": sys_metrics,
-                "containers": container_list
+                "containers": container_list,
+                "configured_nodes": node_names  # 설정된 노드 목록 추가
             }
             
             # JSON으로 직렬화 및 전송
-            json_data = server_data  # websocket_client.send_stats가 직렬화 수행
-            json_str = str(server_data)  # 로깅용 (실제 전송 X)
+            json_data = stats_data  # websocket_client.send_stats가 type, serverId 등을 추가함
+            json_str = json.dumps(stats_data)  # 로깅용 (실제 전송 X)
             stats.total_sent += 1
             stats.last_data_size = len(json_str)
             
@@ -1112,6 +1455,28 @@ async def run_websocket_mode(settings, node_names: List[str]):
         logger.info("모니터링 종료")
 
 # 메인 함수
+async def run_auth_mode(settings):
+    """인증 전용 모드 - 로그인만 수행하고 종료"""
+    print(f"{COLOR_BLUE}{'='*50}{COLOR_RESET}")
+    print(f"{COLOR_GREEN}     인증 전용 모드{COLOR_RESET}")
+    print(f"{COLOR_BLUE}{'='*50}{COLOR_RESET}")
+    print("")
+    
+    if not settings.AUTH_API_URL:
+        print(f"{COLOR_RED}AUTH_API_URL이 설정되지 않았습니다.{COLOR_RESET}")
+        return False
+    
+    # TTY 인증 처리
+    token = await handle_tty_authentication(settings.AUTH_API_URL, settings.AUTH_ALLOW_HTTP)
+    
+    if token:
+        print(f"\n{COLOR_GREEN}인증이 완료되었습니다.{COLOR_RESET}")
+        print(f"{COLOR_GREEN}다음 실행부터는 저장된 토큰을 사용합니다.{COLOR_RESET}")
+        return True
+    else:
+        print(f"\n{COLOR_RED}인증에 실패했습니다.{COLOR_RESET}")
+        return False
+
 async def main():
     # 인자 파싱
     args = parse_args()
@@ -1119,6 +1484,12 @@ async def main():
     # 설정 로드
     settings = Settings(args)
     
+    # 로그인 전용 모드 처리
+    if settings.RUN_MODE == "auth":
+        success = await run_auth_mode(settings)
+        sys.exit(0 if success else 1)
+    
+    # 일반 모니터링 모드
     # 노드 이름 파싱
     node_names = [name.strip() for name in settings.NODE_NAMES.split(',')]
     

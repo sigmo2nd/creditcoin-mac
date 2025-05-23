@@ -20,17 +20,19 @@ logger = logging.getLogger(__name__)
 class WebSocketClient:
     """WebSocket 클라이언트 클래스"""
     
-    def __init__(self, url_or_mode: str, server_id: str, ssl_verify: bool = True):
+    def __init__(self, url_or_mode: str, server_id: str, ssl_verify: bool = True, auth_token: Optional[str] = None):
         """WebSocket 클라이언트 초기화
         
         Args:
             url_or_mode: WebSocket URL 또는 연결 모드 (ws, wss, wss_internal, auto, custom)
             server_id: 서버 식별자
             ssl_verify: SSL 인증서 검증 여부
+            auth_token: 인증 토큰 (선택사항)
         """
         self.url_or_mode = url_or_mode
         self.server_id = server_id
         self.ssl_verify = ssl_verify
+        self.auth_token = auth_token
         self.ws = None
         self.connected = False
         self.reconnect_attempts = 0
@@ -45,13 +47,24 @@ class WebSocketClient:
         self.heartbeat_task = None
         
         # 환경 변수에서 직접 서버 호스트 가져오기
-        self.server_host = os.environ.get("WS_SERVER_HOST", "192.168.0.24")
+        self.server_host = os.environ.get("WS_SERVER_HOST", "localhost")
+        ws_port_ws = os.environ.get("WS_PORT_WS", "8080")
+        ws_port_wss = os.environ.get("WS_PORT_WSS", "4443")
+        
+        # WS_SERVER_PORT가 설정된 경우 모드에 따라 적절한 포트 사용
+        ws_server_port = os.environ.get("WS_SERVER_PORT")
+        ws_mode = os.environ.get("WS_MODE", "auto")
+        if ws_server_port:
+            if ws_mode == "wss":
+                ws_port_wss = ws_server_port
+            elif ws_mode == "ws":
+                ws_port_ws = ws_server_port
         
         # 기본 URL 설정
         self.base_urls = {
-            "ws": f"ws://{self.server_host}:8080/ws",
-            "wss": f"wss://{self.server_host}:8443/ws",
-            "wss_internal": f"wss://{self.server_host}:8443/ws"
+            "ws": f"ws://{self.server_host}:{ws_port_ws}/ws/monitoring/",
+            "wss": f"wss://{self.server_host}:{ws_port_wss}/ws/monitoring/",
+            "wss_internal": f"wss://{self.server_host}:{ws_port_wss}/ws/monitoring/"
         }
         
         # 설정 정보 로깅
@@ -64,11 +77,17 @@ class WebSocketClient:
         try:
             logger.info(f"WebSocket 연결 시도: {url}")
             
+            # 헤더 준비 (토큰이 있는 경우)
+            extra_headers = {}
+            if self.auth_token:
+                extra_headers["Authorization"] = f"Token {self.auth_token}"
+            
             # 연결 타임아웃 및 상세 옵션 설정
             if ssl_context:
                 self.ws = await websockets.connect(
                     url,
                     ssl=ssl_context,
+                    extra_headers=extra_headers,
                     ping_interval=20,
                     ping_timeout=10,
                     close_timeout=5,
@@ -79,6 +98,7 @@ class WebSocketClient:
             else:
                 self.ws = await websockets.connect(
                     url,
+                    extra_headers=extra_headers,
                     ping_interval=20,
                     ping_timeout=10,
                     close_timeout=5,
@@ -458,14 +478,24 @@ class WebSocketClient:
         
         self.reconnect_attempts += 1
         
-        # 지수 백오프 + 지터(무작위성)
-        max_backoff = 60  # 최대 60초 지연
-        base_delay = min(max_backoff, 2 ** min(self.reconnect_attempts, 5))
-        jitter = random.uniform(0, 0.5 * base_delay)  # 0-50% 지터
-        backoff = base_delay + jitter
+        # 지수 백오프: 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024
+        max_backoff = 1024  # 최대 1024초 지연
+        if self.reconnect_attempts == 1:
+            base_delay = 1
+        else:
+            base_delay = min(max_backoff, 2 ** (self.reconnect_attempts - 1))
+        
+        # 지터는 제거하여 정확한 지수 백오프 구현
+        backoff = base_delay
         
         # 연결 시도 로깅 - 마이크로초 단위의 타임스탬프 포함
-        logger.info(f"WebSocket 재연결 시도 ({self.reconnect_attempts}번째): {backoff:.2f}초 후 시도 (타임스탬프: {time.time():.6f})")
+        if backoff >= 60:
+            minutes = int(backoff // 60)
+            seconds = int(backoff % 60)
+            time_str = f"{minutes}분 {seconds}초" if seconds > 0 else f"{minutes}분"
+        else:
+            time_str = f"{int(backoff)}초"
+        logger.info(f"WebSocket 재연결 시도 ({self.reconnect_attempts}번째): {time_str} 후 시도 (타임스탬프: {time.time():.6f})")
         await asyncio.sleep(backoff)
         
         # 재연결 시도

@@ -32,11 +32,10 @@ COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 권한 설정
-RUN chmod +x /app/main.py
-RUN chmod +x /app/docker-entrypoint.sh
+RUN chmod +x /app/main.py /app/mauth.py
 
 # 시작 명령어
-ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["python3", "/app/main.py"]
 
 # 헬스체크
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
