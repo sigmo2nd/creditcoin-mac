@@ -9,6 +9,10 @@ import getpass
 import aiohttp
 from pathlib import Path
 from typing import Optional
+import nest_asyncio
+
+# asyncio 이벤트 루프 중첩 허용
+nest_asyncio.apply()
 
 # 로깅 설정
 logging.basicConfig(
@@ -28,7 +32,7 @@ COLOR_CYAN = "\x1B[36m"
 # 토큰 저장 경로
 TOKEN_FILE_PATH = "/app/data/.auth_token"
 
-async def handle_tty_authentication(auth_api_url: str) -> Optional[str]:
+async def handle_tty_authentication(auth_api_url: str, force_reauth: bool = False) -> Optional[str]:
     """TTY 모드에서 인증 처리 (토큰 확인 및 로그인)"""
     print("")
     print(f"{COLOR_YELLOW}====================================================={COLOR_RESET}")
@@ -36,8 +40,19 @@ async def handle_tty_authentication(auth_api_url: str) -> Optional[str]:
     print(f"{COLOR_YELLOW}====================================================={COLOR_RESET}")
     print("")
     
+    # 강제 재인증 옵션 확인
+    if force_reauth:
+        print(f"{COLOR_YELLOW}강제 재인증 모드로 실행합니다.{COLOR_RESET}")
+        if os.path.exists(TOKEN_FILE_PATH):
+            try:
+                os.remove(TOKEN_FILE_PATH)
+                print(f"{COLOR_GREEN}기존 토큰을 삭제했습니다.{COLOR_RESET}")
+            except Exception as e:
+                logger.debug(f"토큰 삭제 오류: {e}")
+        print("")
+    
     # 기존 토큰 확인
-    if os.path.exists(TOKEN_FILE_PATH):
+    if os.path.exists(TOKEN_FILE_PATH) and not force_reauth:
         try:
             with open(TOKEN_FILE_PATH, 'r') as f:
                 token = f.read().strip()
@@ -53,6 +68,9 @@ async def handle_tty_authentication(auth_api_url: str) -> Optional[str]:
                     if is_valid:
                         print(f"{COLOR_GREEN}✓ 인증 성공!{COLOR_RESET}")
                         print(f"{COLOR_GREEN}기존 토큰이 유효하여 재사용합니다.{COLOR_RESET}")
+                        print("")
+                        print(f"{COLOR_CYAN}재인증을 원하시면 다음 명령어를 사용하세요:{COLOR_RESET}")
+                        print(f"{COLOR_BLUE}mauth --force{COLOR_RESET}")
                         print("")
                         return token
                     else:
@@ -97,14 +115,17 @@ async def handle_tty_authentication(auth_api_url: str) -> Optional[str]:
                     # Tab을 누르면 현재 입력값을 유지하고 다음 필드로
                     event.app.exit(result=event.app.current_buffer.text)
                 
+                # prompt_toolkit에서는 ANSI 색상을 HTML 스타일로 변환해야 함
+                from prompt_toolkit.formatted_text import HTML
+                
                 # 이메일 입력
-                email = prompt(f"{COLOR_CYAN}이메일: {COLOR_RESET}", key_bindings=bindings).strip()
+                email = prompt(HTML('<ansicyan>이메일: </ansicyan>'), key_bindings=bindings).strip()
                 if not email:
                     print(f"{COLOR_RED}이메일을 입력해주세요.{COLOR_RESET}")
                     continue
                 
                 # 비밀번호 입력
-                password = prompt(f"{COLOR_CYAN}비밀번호: {COLOR_RESET}", is_password=True, key_bindings=bindings).strip()
+                password = prompt(HTML('<ansicyan>비밀번호: </ansicyan>'), is_password=True, key_bindings=bindings).strip()
                 if not password:
                     print(f"{COLOR_RED}비밀번호를 입력해주세요.{COLOR_RESET}")
                     continue
@@ -242,7 +263,7 @@ async def main():
     
     if not ws_host:
         print(f"{COLOR_RED}오류: WS_SERVER_HOST가 설정되지 않았습니다.{COLOR_RESET}")
-        sys.exit(1)
+        return 1
     
     # 환경변수에서 AUTH_API_URL 사용 (없으면 기본값 생성)
     auth_api_url = os.getenv('AUTH_API_URL')
@@ -260,10 +281,13 @@ async def main():
     if not sys.stdin.isatty():
         print(f"{COLOR_RED}오류: 인증을 위해서는 대화형 터미널이 필요합니다.{COLOR_RESET}")
         print("docker run -it 옵션을 사용하거나 docker compose run을 사용하세요.")
-        sys.exit(1)
+        return 1
+    
+    # 명령줄 인자 확인
+    force_reauth = "--force" in sys.argv or "-f" in sys.argv
     
     # 인증 처리
-    token = await handle_tty_authentication(auth_api_url)
+    token = await handle_tty_authentication(auth_api_url, force_reauth)
     
     if token:
         print(f"{COLOR_GREEN}====================================================={COLOR_RESET}")
@@ -276,18 +300,19 @@ async def main():
         print(f"{COLOR_CYAN}명령어가 작동하지 않으면:{COLOR_RESET}")
         print(f"{COLOR_BLUE}updatez{COLOR_RESET}")
         print("")
-        sys.exit(0)
+        return 0
     else:
         print("")
         print(f"{COLOR_RED}인증에 실패했습니다.{COLOR_RESET}")
         print(f"{COLOR_YELLOW}다시 시도하려면:{COLOR_RESET}")
         print(f"{COLOR_BLUE}mauth{COLOR_RESET}")
         print("")
-        sys.exit(1)
+        return 1
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        exit_code = asyncio.run(main())
+        sys.exit(exit_code)
     except KeyboardInterrupt:
         print(f"\n{COLOR_YELLOW}프로그램이 중단되었습니다.{COLOR_RESET}")
         sys.exit(0)
