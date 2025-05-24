@@ -291,236 +291,312 @@ EOF
 # 대화형 설정 함수
 interactive_setup() {
   echo -e "${BLUE}=====================================================${NC}"
-  echo -e "${GREEN}     모니터링 클라이언트 대화형 설정${NC}"
+  echo -e "${GREEN}     모니터링 클라이언트 설정${NC}"
   echo -e "${BLUE}=====================================================${NC}"
   echo ""
   
-  # 1단계: 프로토콜 선택
-  echo -e "${YELLOW}[1단계] 모니터링 서버 연결 방식을 선택하세요:${NC}"
-  echo "1) WS (일반 WebSocket)"
-  echo "2) WSS (보안 WebSocket)"
+  # 1단계: 모드 선택
+  echo -e "${YELLOW}실행 모드를 선택하세요:${NC}"
+  echo "1) 프로덕션 모드 (creditcoin.info)"
+  echo "2) 개발 모드 (커스텀 설정)"
   echo ""
-  read -p "선택 (1): " protocol_choice
+  read -p "선택 (1): " mode_choice
   
   # 엔터만 누르면 기본값 선택
-  if [ -z "$protocol_choice" ]; then
-    protocol_choice="1"
+  if [ -z "$mode_choice" ]; then
+    mode_choice="1"
   fi
   
-  case $protocol_choice in
-    2)
-      WS_PROTOCOL="wss"
-      WS_MODE="wss"
-      echo -e "${GREEN}WSS (보안 WebSocket)가 선택되었습니다.${NC}"
-      
-      # SSL 검증 옵션 (WSS 선택시만)
+  case $mode_choice in
+    1)
+      # 프로덕션 모드 - 고정 설정
+      echo -e "${GREEN}프로덕션 모드가 선택되었습니다.${NC}"
       echo ""
-      echo -e "${YELLOW}[1-1단계] SSL 인증서 검증을 수행하시겠습니까?${NC}"
-      echo "1) 예 (프로덕션 환경 권장)"
-      echo "2) 아니오 (개발/테스트 환경)"
-      echo ""
-      read -p "선택 (2): " ssl_choice
       
-      if [ -z "$ssl_choice" ]; then
-        ssl_choice="2"
+      # 모니터링 간격만 물어보기
+      echo -e "${YELLOW}모니터링 데이터 수집 간격을 설정하세요:${NC}"
+      echo -e "${GREEN}권장: 5초, 기본값: 1초${NC}"
+      echo ""
+      read -p "간격(초)을 입력하세요 (1): " MONITOR_INTERVAL
+      
+      # 엔터만 누르면 기본값 사용
+      if [ -z "$MONITOR_INTERVAL" ]; then
+        MONITOR_INTERVAL="1"
       fi
       
-      case $ssl_choice in
-        1)
-          SSL_VERIFY="true"
-          echo -e "${GREEN}SSL 인증서 검증이 활성화됩니다.${NC}"
-          ;;
+      # 숫자인지 확인
+      if ! [[ "$MONITOR_INTERVAL" =~ ^[0-9]+$ ]] || [ "$MONITOR_INTERVAL" -lt 1 ]; then
+        echo -e "${YELLOW}잘못된 입력입니다. 기본값(1초)을 사용합니다.${NC}"
+        MONITOR_INTERVAL="1"
+      fi
+      
+      echo -e "${GREEN}${MONITOR_INTERVAL}초 간격이 선택되었습니다.${NC}"
+      
+      # 나머지 설정은 고정
+      WS_MODE="wss"
+      WS_PROTOCOL="wss"
+      WS_SERVER_HOST="creditcoin.info"
+      WS_SERVER_PORT="443"
+      SSL_VERIFY="true"  # SSL 검증 활성화
+      DEBUG_MODE="false"
+      
+      # 설정 요약
+      echo ""
+      echo -e "${BLUE}=====================================================${NC}"
+      echo -e "${GREEN}프로덕션 설정:${NC}"
+      echo -e "${GREEN}- 프로토콜: WSS (보안 WebSocket)${NC}"
+      echo -e "${GREEN}- 서버: creditcoin.info${NC}"
+      echo -e "${GREEN}- 포트: 443${NC}"
+      echo -e "${GREEN}- 모니터링 간격: ${MONITOR_INTERVAL}초${NC}"
+      echo -e "${GREEN}- 디버그 모드: 비활성화${NC}"
+      echo -e "${GREEN}- SSL 검증: 활성화${NC}"
+      echo -e "${BLUE}=====================================================${NC}"
+      echo ""
+      ;;
+    2)
+      # 개발 모드 - 기존 대화형 설정
+      echo -e "${GREEN}개발 모드가 선택되었습니다.${NC}"
+      echo ""
+      
+      # 1단계: 프로토콜 선택
+      echo -e "${YELLOW}[1단계] 모니터링 서버 연결 방식을 선택하세요:${NC}"
+      echo "1) WS (일반 WebSocket)"
+      echo "2) WSS (보안 WebSocket)"
+      echo ""
+      read -p "선택 (1): " protocol_choice
+      
+      # 엔터만 누르면 기본값 선택
+      if [ -z "$protocol_choice" ]; then
+        protocol_choice="1"
+      fi
+      
+      case $protocol_choice in
         2)
+          WS_PROTOCOL="wss"
+          WS_MODE="wss"
+          echo -e "${GREEN}WSS (보안 WebSocket)가 선택되었습니다.${NC}"
+          
+          # SSL 검증 옵션 (WSS 선택시만)
+          echo ""
+          echo -e "${YELLOW}[1-1단계] SSL 인증서 검증을 수행하시겠습니까?${NC}"
+          echo "1) 예 (프로덕션 환경 권장)"
+          echo "2) 아니오 (개발/테스트 환경)"
+          echo ""
+          read -p "선택 (2): " ssl_choice
+          
+          if [ -z "$ssl_choice" ]; then
+            ssl_choice="2"
+          fi
+          
+          case $ssl_choice in
+            1)
+              SSL_VERIFY="true"
+              echo -e "${GREEN}SSL 인증서 검증이 활성화됩니다.${NC}"
+              ;;
+            2)
+              SSL_VERIFY="false"
+              echo -e "${YELLOW}SSL 인증서 검증이 비활성화됩니다.${NC}"
+              ;;
+            *)
+              echo -e "${YELLOW}잘못된 선택입니다. 기본값(검증 비활성화)을 사용합니다.${NC}"
+              SSL_VERIFY="false"
+              ;;
+          esac
+          ;;
+        1)
+          WS_PROTOCOL="ws"
+          WS_MODE="ws"
           SSL_VERIFY="false"
-          echo -e "${YELLOW}SSL 인증서 검증이 비활성화됩니다.${NC}"
+          echo -e "${GREEN}WS (일반 WebSocket)가 선택되었습니다.${NC}"
           ;;
         *)
-          echo -e "${YELLOW}잘못된 선택입니다. 기본값(검증 활성화)을 사용합니다.${NC}"
-          SSL_VERIFY="true"
+          echo -e "${YELLOW}잘못된 선택입니다. 기본값(WS)을 사용합니다.${NC}"
+          WS_PROTOCOL="ws"
+          WS_MODE="ws"
+          SSL_VERIFY="false"
           ;;
       esac
-      ;;
-    1)
-      WS_PROTOCOL="ws"
-      WS_MODE="ws"
-      SSL_VERIFY="false"
-      echo -e "${GREEN}WS (일반 WebSocket)가 선택되었습니다.${NC}"
+      
+      # 2단계: 서버 주소 선택
+      echo ""
+      echo -e "${YELLOW}[2단계] 모니터링 서버 주소를 선택하세요:${NC}"
+      echo "1) creditcoin.info (공식 서버)"
+      echo "2) 외부 IP (퍼블릭 IP)"
+      echo "3) 내부 IP (로컬 네트워크)"
+      echo "4) localhost (로컬 테스트)"
+      echo "5) 커스텀 (직접 입력)"
+      echo ""
+      read -p "선택 (2): " host_choice
+      
+      if [ -z "$host_choice" ]; then
+        host_choice="2"
+      fi
+      
+      case $host_choice in
+        1)
+          WS_SERVER_HOST="creditcoin.info"
+          echo -e "${GREEN}공식 서버(creditcoin.info)가 선택되었습니다.${NC}"
+          ;;
+        2)
+          # 외부 IP 자동 감지
+          echo -e "${BLUE}외부 IP를 감지하는 중...${NC}"
+          EXTERNAL_IP=$(curl -s https://api.ipify.org || curl -s https://ifconfig.me || curl -s https://icanhazip.com)
+          if [ -n "$EXTERNAL_IP" ]; then
+            WS_SERVER_HOST="$EXTERNAL_IP"
+            echo -e "${GREEN}외부 IP($EXTERNAL_IP)가 선택되었습니다.${NC}"
+          else
+            echo -e "${RED}외부 IP를 감지할 수 없습니다. 직접 입력해주세요.${NC}"
+            read -p "외부 IP 주소: " WS_SERVER_HOST
+          fi
+          ;;
+        3)
+          # 내부 IP 자동 감지
+          echo -e "${BLUE}내부 IP를 감지하는 중...${NC}"
+          INTERNAL_IP=$(ifconfig | grep "inet " | grep -v 127.0.0.1 | awk '{print $2}' | head -1)
+          if [ -n "$INTERNAL_IP" ]; then
+            WS_SERVER_HOST="$INTERNAL_IP"
+            echo -e "${GREEN}내부 IP($INTERNAL_IP)가 선택되었습니다.${NC}"
+          else
+            echo -e "${RED}내부 IP를 감지할 수 없습니다. 직접 입력해주세요.${NC}"
+            read -p "내부 IP 주소: " WS_SERVER_HOST
+          fi
+          ;;
+        4)
+          WS_SERVER_HOST="localhost"
+          echo -e "${GREEN}localhost가 선택되었습니다.${NC}"
+          ;;
+        5)
+          read -p "서버 주소를 입력하세요: " WS_SERVER_HOST
+          echo -e "${GREEN}커스텀 주소($WS_SERVER_HOST)가 선택되었습니다.${NC}"
+          ;;
+        *)
+          echo -e "${YELLOW}잘못된 선택입니다. 기본값(외부 IP)을 사용합니다.${NC}"
+          # 외부 IP 자동 감지
+          EXTERNAL_IP=$(curl -s https://api.ipify.org || curl -s https://ifconfig.me || curl -s https://icanhazip.com)
+          if [ -n "$EXTERNAL_IP" ]; then
+            WS_SERVER_HOST="$EXTERNAL_IP"
+          else
+            WS_SERVER_HOST="localhost"
+          fi
+          ;;
+      esac
+      
+      # 3단계: 모니터링 간격 설정
+      echo ""
+      echo -e "${YELLOW}[3단계] 모니터링 데이터 수집 간격을 설정하세요:${NC}"
+      echo -e "${GREEN}권장: 5초, 기본값: 1초${NC}"
+      echo ""
+      read -p "간격(초)을 입력하세요 (1): " MONITOR_INTERVAL
+      
+      # 엔터만 누르면 기본값 사용
+      if [ -z "$MONITOR_INTERVAL" ]; then
+        MONITOR_INTERVAL="1"
+      fi
+      
+      # 숫자인지 확인
+      if ! [[ "$MONITOR_INTERVAL" =~ ^[0-9]+$ ]] || [ "$MONITOR_INTERVAL" -lt 1 ]; then
+        echo -e "${YELLOW}잘못된 입력입니다. 기본값(1초)을 사용합니다.${NC}"
+        MONITOR_INTERVAL="1"
+      fi
+      
+      echo -e "${GREEN}${MONITOR_INTERVAL}초 간격이 선택되었습니다.${NC}"
+      
+      # 4단계: 포트 선택
+      echo ""
+      if [ "$WS_PROTOCOL" = "wss" ]; then
+        echo -e "${YELLOW}[4단계] WSS 포트를 입력하세요:${NC}"
+        read -p "포트 번호 (4443): " WS_SERVER_PORT
+        
+        # 엔터만 누르면 기본값 사용
+        if [ -z "$WS_SERVER_PORT" ]; then
+          WS_SERVER_PORT="4443"
+        fi
+        
+        # 숫자인지 확인
+        if ! [[ "$WS_SERVER_PORT" =~ ^[0-9]+$ ]] || [ "$WS_SERVER_PORT" -lt 1 ] || [ "$WS_SERVER_PORT" -gt 65535 ]; then
+          echo -e "${YELLOW}잘못된 포트 번호입니다. 기본값(4443)을 사용합니다.${NC}"
+          WS_SERVER_PORT="4443"
+        fi
+        
+        echo -e "${GREEN}포트 ${WS_SERVER_PORT}가 선택되었습니다.${NC}"
+      else
+        echo -e "${YELLOW}[4단계] WS 포트를 입력하세요:${NC}"
+        read -p "포트 번호 (8080): " WS_SERVER_PORT
+        
+        # 엔터만 누르면 기본값 사용
+        if [ -z "$WS_SERVER_PORT" ]; then
+          WS_SERVER_PORT="8080"
+        fi
+        
+        # 숫자인지 확인
+        if ! [[ "$WS_SERVER_PORT" =~ ^[0-9]+$ ]] || [ "$WS_SERVER_PORT" -lt 1 ] || [ "$WS_SERVER_PORT" -gt 65535 ]; then
+          echo -e "${YELLOW}잘못된 포트 번호입니다. 기본값(8080)을 사용합니다.${NC}"
+          WS_SERVER_PORT="8080"
+        fi
+        
+        echo -e "${GREEN}포트 ${WS_SERVER_PORT}가 선택되었습니다.${NC}"
+      fi
+      
+      # 5단계: 디버그 모드 설정
+      echo ""
+      echo -e "${YELLOW}[5단계] 디버그 모드를 활성화하시겠습니까?${NC}"
+      echo "1) 아니오 (일반 모드)"
+      echo "2) 예 (상세 로그 출력)"
+      echo ""
+      read -p "선택 (2): " debug_choice
+      
+      if [ -z "$debug_choice" ]; then
+        debug_choice="2"
+      fi
+      
+      case $debug_choice in
+        1)
+          DEBUG_MODE="false"
+          echo -e "${GREEN}일반 모드가 선택되었습니다.${NC}"
+          ;;
+        2)
+          DEBUG_MODE="true"
+          echo -e "${GREEN}디버그 모드가 활성화됩니다.${NC}"
+          ;;
+        *)
+          echo -e "${YELLOW}잘못된 선택입니다. 기본값(디버그 모드)을 사용합니다.${NC}"
+          DEBUG_MODE="true"
+          ;;
+      esac
+      
+      # 6단계: 인증 필요 여부 (정보 제공만)
+      echo ""
+      echo -e "${YELLOW}[6단계] 인증 설정${NC}"
+      echo -e "${GREEN}모니터링 서버에 인증이 필요한 경우, mclient 실행 시 자동으로 로그인 화면이 표시됩니다.${NC}"
+      echo ""
+      
+      # 설정 요약
+      echo ""
+      echo -e "${BLUE}=====================================================${NC}"
+      echo -e "${GREEN}설정 요약:${NC}"
+      echo -e "${GREEN}- 프로토콜: $(echo $WS_PROTOCOL | tr '[:lower:]' '[:upper:]')${NC}"
+      echo -e "${GREEN}- 서버 주소: ${WS_SERVER_HOST}${NC}"
+      echo -e "${GREEN}- 포트: ${WS_SERVER_PORT}${NC}"
+      echo -e "${GREEN}- 모니터링 간격: ${MONITOR_INTERVAL}초${NC}"
+      echo -e "${GREEN}- 디버그 모드: $([ "$DEBUG_MODE" = "true" ] && echo "활성화" || echo "비활성화")${NC}"
+      if [ "$WS_PROTOCOL" = "wss" ]; then
+        echo -e "${GREEN}- SSL 검증: $([ "$SSL_VERIFY" = "true" ] && echo "활성화" || echo "비활성화")${NC}"
+      fi
+      echo -e "${BLUE}=====================================================${NC}"
+      echo ""
       ;;
     *)
-      echo -e "${YELLOW}잘못된 선택입니다. 기본값(WS)을 사용합니다.${NC}"
-      WS_PROTOCOL="ws"
-      WS_MODE="ws"
-      SSL_VERIFY="false"
-      ;;
-  esac
-  
-  # 2단계: 서버 주소 선택
-  echo ""
-  echo -e "${YELLOW}[2단계] 모니터링 서버 주소를 선택하세요:${NC}"
-  echo "1) creditcoin.info (공식 서버)"
-  echo "2) 외부 IP (퍼블릭 IP)"
-  echo "3) 내부 IP (로컬 네트워크)"
-  echo "4) localhost (로컬 테스트)"
-  echo "5) 커스텀 (직접 입력)"
-  echo ""
-  read -p "선택 (2): " host_choice
-  
-  if [ -z "$host_choice" ]; then
-    host_choice="2"
-  fi
-  
-  case $host_choice in
-    1)
+      echo -e "${YELLOW}잘못된 선택입니다. 프로덕션 모드를 사용합니다.${NC}"
+      # 프로덕션 모드 기본값
+      WS_MODE="wss"
+      WS_PROTOCOL="wss"
       WS_SERVER_HOST="creditcoin.info"
-      echo -e "${GREEN}공식 서버(creditcoin.info)가 선택되었습니다.${NC}"
-      ;;
-    2)
-      # 외부 IP 자동 감지
-      echo -e "${BLUE}외부 IP를 감지하는 중...${NC}"
-      EXTERNAL_IP=$(curl -s https://api.ipify.org || curl -s https://ifconfig.me || curl -s https://icanhazip.com)
-      if [ -n "$EXTERNAL_IP" ]; then
-        WS_SERVER_HOST="$EXTERNAL_IP"
-        echo -e "${GREEN}외부 IP($EXTERNAL_IP)가 선택되었습니다.${NC}"
-      else
-        echo -e "${RED}외부 IP를 감지할 수 없습니다. 직접 입력해주세요.${NC}"
-        read -p "외부 IP 주소: " WS_SERVER_HOST
-      fi
-      ;;
-    3)
-      # 내부 IP 자동 감지
-      echo -e "${BLUE}내부 IP를 감지하는 중...${NC}"
-      INTERNAL_IP=$(ifconfig | grep "inet " | grep -v 127.0.0.1 | awk '{print $2}' | head -1)
-      if [ -n "$INTERNAL_IP" ]; then
-        WS_SERVER_HOST="$INTERNAL_IP"
-        echo -e "${GREEN}내부 IP($INTERNAL_IP)가 선택되었습니다.${NC}"
-      else
-        echo -e "${RED}내부 IP를 감지할 수 없습니다. 직접 입력해주세요.${NC}"
-        read -p "내부 IP 주소: " WS_SERVER_HOST
-      fi
-      ;;
-    4)
-      WS_SERVER_HOST="localhost"
-      echo -e "${GREEN}localhost가 선택되었습니다.${NC}"
-      ;;
-    5)
-      read -p "서버 주소를 입력하세요: " WS_SERVER_HOST
-      echo -e "${GREEN}커스텀 주소($WS_SERVER_HOST)가 선택되었습니다.${NC}"
-      ;;
-    *)
-      echo -e "${YELLOW}잘못된 선택입니다. 기본값(외부 IP)을 사용합니다.${NC}"
-      # 외부 IP 자동 감지
-      EXTERNAL_IP=$(curl -s https://api.ipify.org || curl -s https://ifconfig.me || curl -s https://icanhazip.com)
-      if [ -n "$EXTERNAL_IP" ]; then
-        WS_SERVER_HOST="$EXTERNAL_IP"
-      else
-        WS_SERVER_HOST="localhost"
-      fi
-      ;;
-  esac
-  
-  # 3단계: 모니터링 간격 설정
-  echo ""
-  echo -e "${YELLOW}[3단계] 모니터링 데이터 수집 간격을 설정하세요:${NC}"
-  echo -e "${GREEN}권장: 5초, 기본값: 1초${NC}"
-  echo ""
-  read -p "간격(초)을 입력하세요 (1): " MONITOR_INTERVAL
-  
-  # 엔터만 누르면 기본값 사용
-  if [ -z "$MONITOR_INTERVAL" ]; then
-    MONITOR_INTERVAL="1"
-  fi
-  
-  # 숫자인지 확인
-  if ! [[ "$MONITOR_INTERVAL" =~ ^[0-9]+$ ]] || [ "$MONITOR_INTERVAL" -lt 1 ]; then
-    echo -e "${YELLOW}잘못된 입력입니다. 기본값(1초)을 사용합니다.${NC}"
-    MONITOR_INTERVAL="1"
-  fi
-  
-  echo -e "${GREEN}${MONITOR_INTERVAL}초 간격이 선택되었습니다.${NC}"
-  
-  # 4단계: 포트 선택
-  echo ""
-  if [ "$WS_PROTOCOL" = "wss" ]; then
-    echo -e "${YELLOW}[4단계] WSS 포트를 입력하세요:${NC}"
-    read -p "포트 번호 (4443): " WS_SERVER_PORT
-    
-    # 엔터만 누르면 기본값 사용
-    if [ -z "$WS_SERVER_PORT" ]; then
-      WS_SERVER_PORT="4443"
-    fi
-    
-    # 숫자인지 확인
-    if ! [[ "$WS_SERVER_PORT" =~ ^[0-9]+$ ]] || [ "$WS_SERVER_PORT" -lt 1 ] || [ "$WS_SERVER_PORT" -gt 65535 ]; then
-      echo -e "${YELLOW}잘못된 포트 번호입니다. 기본값(4443)을 사용합니다.${NC}"
-      WS_SERVER_PORT="4443"
-    fi
-    
-    echo -e "${GREEN}포트 ${WS_SERVER_PORT}가 선택되었습니다.${NC}"
-  else
-    echo -e "${YELLOW}[4단계] WS 포트를 입력하세요:${NC}"
-    read -p "포트 번호 (8080): " WS_SERVER_PORT
-    
-    # 엔터만 누르면 기본값 사용
-    if [ -z "$WS_SERVER_PORT" ]; then
-      WS_SERVER_PORT="8080"
-    fi
-    
-    # 숫자인지 확인
-    if ! [[ "$WS_SERVER_PORT" =~ ^[0-9]+$ ]] || [ "$WS_SERVER_PORT" -lt 1 ] || [ "$WS_SERVER_PORT" -gt 65535 ]; then
-      echo -e "${YELLOW}잘못된 포트 번호입니다. 기본값(8080)을 사용합니다.${NC}"
-      WS_SERVER_PORT="8080"
-    fi
-    
-    echo -e "${GREEN}포트 ${WS_SERVER_PORT}가 선택되었습니다.${NC}"
-  fi
-  
-  # 5단계: 디버그 모드 설정
-  echo ""
-  echo -e "${YELLOW}[5단계] 디버그 모드를 활성화하시겠습니까?${NC}"
-  echo "1) 아니오 (일반 모드)"
-  echo "2) 예 (상세 로그 출력)"
-  echo ""
-  read -p "선택 (2): " debug_choice
-  
-  if [ -z "$debug_choice" ]; then
-    debug_choice="2"
-  fi
-  
-  case $debug_choice in
-    1)
+      WS_SERVER_PORT="443"
+      SSL_VERIFY="true"
+      MONITOR_INTERVAL="1"
       DEBUG_MODE="false"
-      echo -e "${GREEN}일반 모드가 선택되었습니다.${NC}"
-      ;;
-    2)
-      DEBUG_MODE="true"
-      echo -e "${GREEN}디버그 모드가 활성화됩니다.${NC}"
-      ;;
-    *)
-      echo -e "${YELLOW}잘못된 선택입니다. 기본값(디버그 모드)을 사용합니다.${NC}"
-      DEBUG_MODE="true"
       ;;
   esac
-  
-  # 6단계: 인증 필요 여부 (정보 제공만)
-  echo ""
-  echo -e "${YELLOW}[6단계] 인증 설정${NC}"
-  echo -e "${GREEN}모니터링 서버에 인증이 필요한 경우, mclient 실행 시 자동으로 로그인 화면이 표시됩니다.${NC}"
-  echo ""
-  
-  # 설정 요약
-  echo ""
-  echo -e "${BLUE}=====================================================${NC}"
-  echo -e "${GREEN}설정 요약:${NC}"
-  echo -e "${GREEN}- 프로토콜: $(echo $WS_PROTOCOL | tr '[:lower:]' '[:upper:]')${NC}"
-  echo -e "${GREEN}- 서버 주소: ${WS_SERVER_HOST}${NC}"
-  echo -e "${GREEN}- 포트: ${WS_SERVER_PORT}${NC}"
-  echo -e "${GREEN}- 모니터링 간격: ${MONITOR_INTERVAL}초${NC}"
-  echo -e "${GREEN}- 디버그 모드: $([ "$DEBUG_MODE" = "true" ] && echo "활성화" || echo "비활성화")${NC}"
-  if [ "$WS_PROTOCOL" = "wss" ]; then
-    echo -e "${GREEN}- SSL 검증: $([ "$SSL_VERIFY" = "true" ] && echo "활성화" || echo "비활성화")${NC}"
-  fi
-  echo -e "${BLUE}=====================================================${NC}"
-  echo ""
   
   # 인증은 나중에 처리
   REQUIRE_AUTH="true"  # 기본값으로 설정
@@ -770,7 +846,7 @@ fi
 
 # mauth 실행 (인증)
 echo -e "${BLUE}mclient 인증을 시작합니다...${NC}"
-docker compose -f docker-compose-mclient.yml run --rm mclient python3 /app/mauth.py
+docker compose -f docker-compose-mclient.yml run --rm -e TERM=xterm-256color mclient python3 /app/mauth.py
 
 if [ $? -eq 0 ]; then
   echo -e "${GREEN}인증이 완료되었습니다!${NC}"
