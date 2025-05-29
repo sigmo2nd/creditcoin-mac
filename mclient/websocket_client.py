@@ -9,6 +9,7 @@ import websockets
 import random
 import os
 from typing import Dict, List, Any, Optional
+from command_handler import CommandHandler
 
 # 로깅 설정
 logging.basicConfig(
@@ -46,6 +47,8 @@ class WebSocketClient:
         self.ping_interval = 30  # 30초마다 핑
         self.ping_task = None
         self.heartbeat_task = None
+        self.command_handler = CommandHandler()  # 명령어 핸들러 추가
+        self.receive_task = None  # 메시지 수신 태스크
         
         # 환경 변수에서 직접 서버 호스트 가져오기
         self.server_host = os.environ.get("WS_SERVER_HOST", "localhost")
@@ -134,6 +137,7 @@ class WebSocketClient:
                     # 심비트 및 핑 태스크 시작
                     self._start_ping_task()
                     self._start_heartbeat_task()
+                    self._start_receive_task()  # 메시지 수신 태스크 시작
                     
                     # 큐에 있는 메시지 전송
                     await self._flush_message_queue()
@@ -372,6 +376,13 @@ class WebSocketClient:
                 configured = stats.get('configured_nodes', [])
                 logger.debug(f"전송 데이터: configured_nodes={configured}, running_containers={container_names}")
             
+            # 디버그 파일에 전송 데이터 기록 (mtick 용)
+            try:
+                with open('/tmp/mclient_last_send.json', 'w') as f:
+                    json.dump(message, f, indent=2)
+            except Exception as e:
+                logger.debug(f"디버그 파일 쓰기 실패: {e}")
+            
             await self.ws.send(message_json)
             
             # 응답 대기
@@ -550,9 +561,99 @@ class WebSocketClient:
             self.heartbeat_task.cancel()
             self.heartbeat_task = None
         
+        # 수신 태스크 중지
+        if self.receive_task:
+            self.receive_task.cancel()
+            self.receive_task = None
+        
         # WebSocket 연결 닫기
         if self.ws and not self.ws.closed:
             await self.ws.close()
         
         self.connected = False
         logger.info("WebSocket 연결이 종료되었습니다.")
+    
+    def _start_receive_task(self):
+        """메시지 수신 태스크 시작"""
+        if self.receive_task:
+            self.receive_task.cancel()
+        self.receive_task = asyncio.create_task(self._receive_messages())
+        logger.info("메시지 수신 태스크 시작")
+    
+    async def _receive_messages(self):
+        """서버로부터 메시지 수신 및 처리"""
+        try:
+            while self.connected and self.ws and not self.ws.closed:
+                try:
+                    message = await asyncio.wait_for(self.ws.recv(), timeout=60)
+                    await self._handle_received_message(message)
+                except asyncio.TimeoutError:
+                    # 타임아웃은 정상 상황
+                    continue
+                except websockets.exceptions.ConnectionClosed:
+                    logger.warning("WebSocket 연결이 닫혔습니다")
+                    break
+                except Exception as e:
+                    logger.error(f"메시지 수신 중 오류: {e}")
+                    await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            logger.info("메시지 수신 태스크 취소됨")
+        except Exception as e:
+            logger.error(f"수신 태스크 오류: {e}")
+    
+    async def _handle_received_message(self, message: str):
+        """수신된 메시지 처리"""
+        try:
+            data = json.loads(message)
+            msg_type = data.get('type')
+            
+            logger.debug(f"메시지 수신: {msg_type}")
+            
+            if msg_type == 'command':
+                # 명령어 처리
+                await self._handle_command(data.get('data'))
+            elif msg_type == 'ping':
+                # 핑 응답
+                await self.ws.send(json.dumps({'type': 'pong'}))
+            elif msg_type == 'stats_ack':
+                # 통계 전송 확인
+                self._handle_stats_ack(data)
+            else:
+                logger.warning(f"알 수 없는 메시지 타입: {msg_type}")
+                
+        except json.JSONDecodeError as e:
+            logger.error(f"메시지 파싱 오류: {e}")
+        except Exception as e:
+            logger.error(f"메시지 처리 오류: {e}")
+    
+    async def _handle_command(self, command_data: Dict[str, Any]):
+        """명령어 처리 및 응답 전송"""
+        try:
+            logger.info(f"명령어 수신: {command_data.get('command')} on {command_data.get('target')}")
+            
+            # CommandHandler로 명령 처리
+            response = await self.command_handler.handle_command(command_data)
+            
+            # 응답 전송
+            await self.send_message(response)
+            
+        except Exception as e:
+            logger.error(f"명령어 처리 오류: {e}")
+            # 오류 응답 전송
+            error_response = {
+                'type': 'command_response',
+                'data': {
+                    'command_id': command_data.get('id', 'unknown'),
+                    'status': 'failed',
+                    'error': str(e),
+                    'timestamp': int(time.time())
+                }
+            }
+            await self.send_message(error_response)
+    
+    def _handle_stats_ack(self, data: Dict[str, Any]):
+        """통계 전송 확인 처리"""
+        seq = data.get('data', {}).get('sequence')
+        if seq in self.pending_ack:
+            del self.pending_ack[seq]
+            logger.debug(f"통계 전송 확인: 시퀀스 {seq}")

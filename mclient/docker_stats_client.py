@@ -27,6 +27,16 @@ class DockerStatsClient:
         self.initialized = False  # 초기화 완료 플래그
         self.initialization_lock = asyncio.Lock()  # 초기화 중복 방지 락
         
+        # 컨테이너 상태 정보 캐시
+        self.container_info_cache = {}
+        self.container_status_cache = {}
+        self.status_cache_timestamps = {}
+        self.status_cache_ttl = 5.0  # 5초 캐시 유효 시간
+        
+        # RPC 헬스체크 태스크
+        self.health_check_tasks = {}  # 컨테이너별 헬스체크 태스크
+        self.health_check_interval = 10.0  # 10초마다 체크
+        
         # WebSocket 라이브러리 로깅 레벨 상향 조정 (DEBUG -> INFO)
         # 이렇게 하면 DEBUG 수준의 메시지는 표시되지 않음
         logging.getLogger('websockets').setLevel(logging.WARNING)
@@ -88,6 +98,378 @@ class DockerStatsClient:
         
         return {}
     
+    async def get_container_info(self, container_name: str) -> Dict[str, Any]:
+        """컨테이너의 상세 정보를 가져옴 (이미지, 상태 등)"""
+        current_time = time.time()
+        
+        # 캐시 유효성 확인
+        if container_name in self.container_info_cache:
+            cache_time = self.status_cache_timestamps.get(f"{container_name}_info", 0)
+            if current_time - cache_time < self.status_cache_ttl:
+                return self.container_info_cache[container_name]
+        
+        try:
+            # docker inspect로 컨테이너 정보 가져오기
+            result = await asyncio.create_subprocess_exec(
+                "docker", "inspect", container_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await result.communicate()
+            
+            if result.returncode == 0:
+                container_info = json.loads(stdout.decode())
+                if container_info and len(container_info) > 0:
+                    info = container_info[0]
+                    
+                    # 이미지 정보 가져오기
+                    image_name = info.get("Config", {}).get("Image", "")
+                    image_info = await self.get_image_info(image_name)
+                    
+                    processed_info = {
+                        "container_id": info.get("Id", "")[:12],
+                        "image": image_name,
+                        "image_id": info.get("Image", "")[:12],
+                        "image_size": image_info.get("size", 0),
+                        "image_size_gb": image_info.get("size_gb", 0),
+                        "created": info.get("Created", ""),
+                        "state": info.get("State", {}).get("Status", ""),
+                        "uptime": info.get("State", {}).get("StartedAt", ""),
+                        "restart_count": info.get("RestartCount", 0),
+                        "ports": self._extract_port_info(info),
+                        "volumes": self._extract_volume_info(info),
+                        "network_mode": info.get("HostConfig", {}).get("NetworkMode", "")
+                    }
+                    
+                    # 캐시에 저장
+                    self.container_info_cache[container_name] = processed_info
+                    self.status_cache_timestamps[f"{container_name}_info"] = current_time
+                    return processed_info
+        except Exception as e:
+            logger.error(f"컨테이너 {container_name} 정보 가져오기 실패: {e}")
+        
+        return {}
+    
+    async def get_image_info(self, image_name: str) -> Dict[str, Any]:
+        """이미지 정보를 가져옴"""
+        try:
+            result = await asyncio.create_subprocess_exec(
+                "docker", "image", "inspect", image_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await result.communicate()
+            
+            if result.returncode == 0:
+                image_info = json.loads(stdout.decode())
+                if image_info and len(image_info) > 0:
+                    info = image_info[0]
+                    size_bytes = info.get("Size", 0)
+                    return {
+                        "id": info.get("Id", "")[:12],
+                        "size": size_bytes,
+                        "size_gb": round(size_bytes / 1024 / 1024 / 1024, 2),
+                        "created": info.get("Created", ""),
+                        "architecture": info.get("Architecture", ""),
+                        "os": info.get("Os", "")
+                    }
+        except Exception as e:
+            logger.error(f"이미지 {image_name} 정보 가져오기 실패: {e}")
+        
+        return {"size": 0, "size_gb": 0}
+    
+    def _extract_port_info(self, container_info: Dict) -> List[Dict]:
+        """컨테이너 포트 정보 추출"""
+        ports = []
+        port_bindings = container_info.get("NetworkSettings", {}).get("Ports", {})
+        
+        for container_port, host_bindings in port_bindings.items():
+            if host_bindings:
+                for binding in host_bindings:
+                    ports.append({
+                        "container": container_port,
+                        "host": f"{binding.get('HostIp', '')}:{binding.get('HostPort', '')}"
+                    })
+        
+        return ports
+    
+    def _extract_volume_info(self, container_info: Dict) -> List[Dict]:
+        """컨테이너 볼륨 정보 추출"""
+        volumes = []
+        mounts = container_info.get("Mounts", [])
+        
+        for mount in mounts:
+            volumes.append({
+                "type": mount.get("Type", ""),
+                "source": mount.get("Source", ""),
+                "destination": mount.get("Destination", ""),
+                "mode": mount.get("Mode", "")
+            })
+        
+        return volumes
+    
+    async def check_node_health(self, container_name: str, rpc_port: int) -> Dict[str, Any]:
+        """노드의 건강 상태를 체크 (블록 동기화 상태 등)"""
+        try:
+            # RPC를 통해 노드 상태 확인
+            cmd = [
+                "docker", "exec", container_name,
+                "curl", "-s", "-H", "Content-Type: application/json",
+                "-d", '{"id":1, "jsonrpc":"2.0", "method": "system_health", "params":[]}',
+                f"http://localhost:{rpc_port}/"
+            ]
+            
+            result = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await result.communicate()
+            
+            if result.returncode == 0:
+                response = json.loads(stdout.decode())
+                if "result" in response:
+                    health = response["result"]
+                    
+                    # 동기화 상태 확인
+                    is_syncing = health.get("isSyncing", False)
+                    peers = health.get("peers", 0)
+                    
+                    # 블록 정보 가져오기
+                    block_info = await self.get_block_info(container_name, rpc_port)
+                    
+                    return {
+                        "is_syncing": is_syncing,
+                        "peers": peers,
+                        "should_have_peers": health.get("shouldHavePeers", True),
+                        "current_block": block_info.get("current_block", 0),
+                        "best_block": block_info.get("best_block", 0),
+                        "finalized_block": block_info.get("finalized_block", 0),
+                        "sync_state": self._determine_sync_state(is_syncing, peers, block_info)
+                    }
+        except Exception as e:
+            logger.error(f"노드 {container_name} 건강 상태 체크 실패: {e}")
+        
+        return {
+            "is_syncing": None,
+            "peers": 0,
+            "sync_state": "unknown"
+        }
+    
+    async def get_block_info(self, container_name: str, rpc_port: int) -> Dict[str, Any]:
+        """노드의 블록 정보를 가져옴"""
+        try:
+            # 현재 블록 번호 가져오기
+            cmd = [
+                "docker", "exec", container_name,
+                "curl", "-s", "-H", "Content-Type: application/json",
+                "-d", '{"id":1, "jsonrpc":"2.0", "method": "chain_getHeader", "params":[]}',
+                f"http://localhost:{rpc_port}/"
+            ]
+            
+            result = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await result.communicate()
+            
+            if result.returncode == 0:
+                response = json.loads(stdout.decode())
+                if "result" in response:
+                    header = response["result"]
+                    current_block = int(header.get("number", "0x0"), 16)
+                    
+                    # Finalized 블록 정보도 가져오기
+                    finalized_block = await self.get_finalized_block(container_name, rpc_port)
+                    
+                    return {
+                        "current_block": current_block,
+                        "best_block": current_block,  # 일단 같은 값으로
+                        "finalized_block": finalized_block
+                    }
+        except Exception as e:
+            logger.error(f"블록 정보 가져오기 실패: {e}")
+        
+        return {"current_block": 0, "best_block": 0, "finalized_block": 0}
+    
+    async def get_finalized_block(self, container_name: str, rpc_port: int) -> int:
+        """Finalized 블록 번호를 가져옴"""
+        try:
+            cmd = [
+                "docker", "exec", container_name,
+                "curl", "-s", "-H", "Content-Type: application/json",
+                "-d", '{"id":1, "jsonrpc":"2.0", "method": "chain_getFinalizedHead", "params":[]}',
+                f"http://localhost:{rpc_port}/"
+            ]
+            
+            result = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await result.communicate()
+            
+            if result.returncode == 0:
+                response = json.loads(stdout.decode())
+                if "result" in response:
+                    # Finalized 블록 해시로 헤더 정보 가져오기
+                    finalized_hash = response["result"]
+                    
+                    # 블록 헤더 정보 가져오기
+                    cmd2 = [
+                        "docker", "exec", container_name,
+                        "curl", "-s", "-H", "Content-Type: application/json",
+                        "-d", f'{{"id":1, "jsonrpc":"2.0", "method": "chain_getHeader", "params":["{finalized_hash}"]}}',
+                        f"http://localhost:{rpc_port}/"
+                    ]
+                    
+                    result2 = await asyncio.create_subprocess_exec(
+                        *cmd2,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    stdout2, stderr2 = await result2.communicate()
+                    
+                    if result2.returncode == 0:
+                        response2 = json.loads(stdout2.decode())
+                        if "result" in response2:
+                            header = response2["result"]
+                            return int(header.get("number", "0x0"), 16)
+        except Exception as e:
+            logger.error(f"Finalized 블록 정보 가져오기 실패: {e}")
+        
+        return 0
+    
+    def _determine_sync_state(self, is_syncing: bool, peers: int, block_info: Dict) -> str:
+        """노드의 동기화 상태를 판단"""
+        if is_syncing:
+            return "syncing"
+        elif peers == 0:
+            return "no_peers"
+        elif block_info.get("current_block", 0) == 0:
+            return "initializing"
+        else:
+            # 현재 블록과 finalized 블록의 차이를 확인
+            current = block_info.get("current_block", 0)
+            finalized = block_info.get("finalized_block", 0)
+            
+            if current - finalized > 100:  # 100블록 이상 차이나면 동기화 중
+                return "catching_up"
+            else:
+                return "synced"
+    
+    def _extract_rpc_port(self, env_vars: Dict[str, str], container_name: str) -> Optional[int]:
+        """환경변수에서 RPC 포트를 추출"""
+        # RPC_PORT 환경변수 확인
+        rpc_port = env_vars.get("RPC_PORT", "")
+        if rpc_port and rpc_port.isdigit():
+            return int(rpc_port)
+        
+        # 컨테이너 이름별 RPC 포트 패턴
+        if container_name.startswith("3node"):
+            try:
+                node_num = int(container_name.replace("3node", ""))
+                return 33980 + node_num
+            except:
+                pass
+        elif container_name.startswith("node"):
+            try:
+                node_num = int(container_name.replace("node", ""))
+                return 33880 + node_num  # Creditcoin 2.x는 33880부터 시작
+            except:
+                pass
+        
+        return None
+    
+    async def check_image_building(self) -> Dict[str, Any]:
+        """현재 빌드 중인 이미지가 있는지 확인"""
+        try:
+            # docker ps로 빌드 중인 컨테이너 확인
+            cmd = ["docker", "ps", "--filter", "status=created", "--format", "{{json .}}"]
+            
+            result = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await result.communicate()
+            
+            building_images = []
+            if result.returncode == 0 and stdout:
+                lines = stdout.decode().strip().split('\n')
+                for line in lines:
+                    if line:
+                        try:
+                            container = json.loads(line)
+                            # 빌드 중인 이미지 정보 추가
+                            building_images.append({
+                                "image": container.get("Image", ""),
+                                "status": container.get("Status", ""),
+                                "name": container.get("Names", "")
+                            })
+                        except:
+                            pass
+            
+            # docker images로 최근 생성된 이미지 확인
+            cmd2 = ["docker", "images", "--format", "{{json .}}"]
+            
+            result2 = await asyncio.create_subprocess_exec(
+                *cmd2,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout2, stderr2 = await result2.communicate()
+            
+            recent_images = []
+            if result2.returncode == 0 and stdout2:
+                lines = stdout2.decode().strip().split('\n')[:5]  # 최근 5개만
+                for line in lines:
+                    if line:
+                        try:
+                            image = json.loads(line)
+                            recent_images.append({
+                                "repository": image.get("Repository", ""),
+                                "tag": image.get("Tag", ""),
+                                "created": image.get("CreatedAt", ""),
+                                "size": image.get("Size", "")
+                            })
+                        except:
+                            pass
+            
+            return {
+                "building": building_images,
+                "recent": recent_images
+            }
+            
+        except Exception as e:
+            logger.error(f"이미지 빌드 상태 확인 실패: {e}")
+        
+        return {"building": [], "recent": []}
+    
+    async def _health_check_stream(self, container_name: str, rpc_port: int):
+        """노드 헬스체크를 주기적으로 실행하는 스트림"""
+        logger.info(f"헬스체크 스트림 시작: {container_name} (RPC: {rpc_port})")
+        
+        while self.running:
+            try:
+                # 헬스 정보 수집
+                health_info = await self.check_node_health(container_name, rpc_port)
+                
+                # 캐시에 저장
+                self.container_status_cache[container_name] = health_info
+                
+                # 대기
+                await asyncio.sleep(self.health_check_interval)
+                
+            except asyncio.CancelledError:
+                logger.info(f"헬스체크 스트림 취소됨: {container_name}")
+                break
+            except Exception as e:
+                logger.error(f"헬스체크 스트림 오류 ({container_name}): {e}")
+                # 오류 시 더 긴 대기
+                await asyncio.sleep(self.health_check_interval * 2)
+    
     async def start_stats_monitoring(self, node_patterns: List[str]=None):
         """스트림 모드로 Docker stats 모니터링 시작"""
         if not self.docker_available:
@@ -119,11 +501,11 @@ class DockerStatsClient:
         """모니터링 중지"""
         self.running = False
         
-        if self.stats_process and self.stats_process.poll() is None:
+        if self.stats_process and self.stats_process.returncode is None:
             try:
                 self.stats_process.terminate()
                 await asyncio.sleep(0.5)
-                if self.stats_process.poll() is None:
+                if self.stats_process.returncode is None:
                     self.stats_process.kill()
             except:
                 pass
@@ -135,6 +517,15 @@ class DockerStatsClient:
             except asyncio.CancelledError:
                 pass
             self.monitoring_task = None
+        
+        # 헬스체크 태스크들 정리
+        for container_name, task in self.health_check_tasks.items():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self.health_check_tasks.clear()
         
         logger.info("Docker stats 모니터링 중지")
         return True
@@ -207,6 +598,66 @@ class DockerStatsClient:
                                     telemetry_name = env_vars.get("TELEMETRY_NAME", "")  # 없으면 빈 문자열
                                     processed_stats["node_name"] = container_name  # node_name은 항상 컨테이너 이름
                                     processed_stats["nickname"] = telemetry_name  # nickname은 텔레메트리 이름 (없으면 빈 문자열)
+                                    
+                                    # 이미지 이름은 환경변수에서 가져오기 (이미 있음)
+                                    image_name = env_vars.get("IMAGE", "")
+                                    if not image_name and "GIT_TAG" in env_vars:
+                                        # GIT_TAG로 이미지 이름 추정
+                                        if "3node" in container_name:
+                                            image_name = f"creditcoin3:{env_vars.get('GIT_TAG', '')}"
+                                        elif "node" in container_name:
+                                            image_name = f"creditcoin2:{env_vars.get('GIT_TAG', '')}"
+                                    
+                                    # 노드 타입 판단 (이미지 이름 기반)
+                                    if "creditcoin3" in image_name:
+                                        processed_stats["node_type"] = "creditcoin3"
+                                    elif "creditcoin2" in image_name:
+                                        processed_stats["node_type"] = "creditcoin2"
+                                    elif "mclient" in container_name:
+                                        processed_stats["node_type"] = "mclient"
+                                    elif "postgres" in container_name or "db" in container_name:
+                                        processed_stats["node_type"] = "postgres"
+                                    else:
+                                        processed_stats["node_type"] = "unknown"
+                                    
+                                    # mclient 자기 자신은 제외
+                                    if processed_stats["node_type"] == "mclient":
+                                        continue
+                                    
+                                    # 볼륨 크기 계산 (블록체인 데이터)
+                                    volume_size = 0
+                                    if processed_stats["node_type"] in ["creditcoin2", "creditcoin3"]:
+                                        volume_size = await self.get_volume_size(container_name)
+                                    
+                                    processed_stats["image_name"] = image_name
+                                    processed_stats["data_size"] = volume_size  # image_size 대신 data_size 사용
+                                    
+                                    
+                                    # 블록체인 노드인 경우 헬스체크 태스크 시작
+                                    if processed_stats["node_type"] in ["creditcoin2", "creditcoin3"]:
+                                        rpc_port = self._extract_rpc_port(env_vars, container_name)
+                                        if rpc_port and container_name not in self.health_check_tasks:
+                                            # 헬스체크 태스크가 없으면 시작
+                                            task = asyncio.create_task(self._health_check_stream(container_name, rpc_port))
+                                            self.health_check_tasks[container_name] = task
+                                        
+                                        # 캐시된 헬스 정보가 있으면 사용
+                                        if container_name in self.container_status_cache:
+                                            health_info = self.container_status_cache[container_name]
+                                            processed_stats["sync_state"] = health_info.get("sync_state", "unknown")
+                                            processed_stats["blockchain"] = {
+                                                "current_block": health_info.get("current_block", 0),
+                                                "finalized_block": health_info.get("finalized_block", 0),
+                                                "peers": health_info.get("peers", 0)
+                                            }
+                                        else:
+                                            # 초기값
+                                            processed_stats["sync_state"] = "checking"
+                                            processed_stats["blockchain"] = {
+                                                "current_block": 0,
+                                                "finalized_block": 0,
+                                                "peers": 0
+                                            }
                                     
                                     self.container_stats[container_name] = processed_stats
                                     self.update_count += 1  # 업데이트 횟수 증가
@@ -444,24 +895,20 @@ class DockerStatsClient:
             mem_used = 0
             mem_limit = 0
             
-            # 메모리 사용량/한계 파싱
+            # 메모리 사용량/한계 파싱 - 실패해도 계속 진행
             try:
-                if " / " in mem_usage:
-                    mem_parts = mem_usage.split(" / ")
-                    mem_used_str = mem_parts[0]
-                    mem_limit_str = mem_parts[1]
-                    
-                    mem_used = self._parse_size_with_unit(mem_used_str)
-                    mem_limit = self._parse_size_with_unit(mem_limit_str)
-                elif "/" in mem_usage:
-                    mem_parts = mem_usage.split("/")
-                    mem_used_str = mem_parts[0].strip()
-                    mem_limit_str = mem_parts[1].strip()
-                    
-                    mem_used = self._parse_size_with_unit(mem_used_str)
-                    mem_limit = self._parse_size_with_unit(mem_limit_str)
-            except Exception as e:
-                logger.warning(f"메모리 사용량 파싱 실패: {mem_usage} - {str(e)}")
+                # 다양한 구분자 처리
+                separators = [" / ", "/", " | ", "|"]
+                for sep in separators:
+                    if sep in mem_usage:
+                        parts = mem_usage.split(sep)
+                        if len(parts) >= 2:
+                            mem_used = self._parse_size_with_unit(parts[0].strip())
+                            mem_limit = self._parse_size_with_unit(parts[1].strip())
+                            break
+            except:
+                # 파싱 실패해도 기본값 사용
+                pass
             
             # 네트워크 사용량 파싱
             net_io = stats_json.get("NetIO", "0B / 0B")
@@ -531,17 +978,69 @@ class DockerStatsClient:
             return None
     
     def _parse_percentage(self, percent_str: str) -> float:
-        """백분율 문자열 파싱"""
+        """백분율 문자열 파싱 - 다양한 형식 자동 처리"""
+        if not percent_str:
+            return 0.0
+        
         try:
-            if not percent_str:
+            # 문자열 정리
+            cleaned = percent_str.strip().rstrip('%')
+            
+            # 특수 케이스 처리
+            if cleaned in ['--', '-', 'N/A', 'n/a', '']:
                 return 0.0
             
-            # '%' 제거하고 숫자만 추출
-            percent_str = percent_str.strip().rstrip('%')
-            return float(percent_str)
-        except Exception as e:
-            logger.warning(f"백분율 파싱 실패: {percent_str} - {str(e)}")
+            # 숫자만 추출 (정규표현식)
+            import re
+            match = re.search(r'[\d.]+', cleaned)
+            if match:
+                return float(match.group())
+            
             return 0.0
+        except:
+            # 모든 예외를 조용히 처리
+            return 0.0
+    
+    async def get_volume_size(self, container_name: str) -> int:
+        """컨테이너의 볼륨 크기를 가져옴 (바이트 단위)"""
+        try:
+            # 볼륨 경로 찾기
+            cmd = ["docker", "inspect", container_name, "--format", '{{range .Mounts}}{{if eq .Destination "/root/data"}}{{.Source}}{{end}}{{end}}']
+            result = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await result.communicate()
+            
+            if result.returncode == 0:
+                volume_path = stdout.decode().strip()
+                if volume_path:
+                    logger.debug(f"볼륨 경로 ({container_name}): {volume_path}")
+                    # 컨테이너 내부에서 du 명령 실행
+                    du_result = await asyncio.create_subprocess_exec(
+                        "docker", "exec", container_name, "du", "-sb", "/root/data",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    du_stdout, du_stderr = await du_result.communicate()
+                    
+                    if du_result.returncode == 0:
+                        # du 출력: "크기\t경로"
+                        size_str = du_stdout.decode().split('\t')[0]
+                        size = int(size_str)
+                        logger.debug(f"볼륨 크기 ({container_name}): {size:,} bytes")
+                        return size
+                    else:
+                        logger.error(f"du 명령 실패 ({container_name}): {du_stderr.decode()}")
+                else:
+                    logger.warning(f"볼륨 경로를 찾을 수 없음 ({container_name})")
+            else:
+                logger.error(f"docker inspect 실패 ({container_name}): {stderr.decode()}")
+        except Exception as e:
+            logger.error(f"볼륨 크기 가져오기 실패 ({container_name}): {e}")
+        
+        return 0
     
     def _parse_size_with_unit(self, size_str: str) -> int:
         """단위가 있는 크기 문자열을 바이트 값으로 변환"""
@@ -601,3 +1100,80 @@ class DockerStatsClient:
         except Exception as e:
             logger.warning(f"크기 파싱 실패: {size_str} - {str(e)}")
             return 0
+    
+    async def get_server_containers(self) -> List[Dict[str, Any]]:
+        """mserver와 PostgreSQL 컨테이너 정보 수집 (메모리 정보만)"""
+        server_containers = []
+        
+        try:
+            # 모든 실행 중인 컨테이너 확인
+            result = await asyncio.create_subprocess_exec(
+                "docker", "ps", "--format", "{{.Names}}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await result.communicate()
+            
+            if result.returncode == 0:
+                all_containers = stdout.decode().strip().split('\n')
+                
+                for container_name in all_containers:
+                    # mserver 또는 postgres 관련 컨테이너인지 확인
+                    if container_name and ('mserver' in container_name.lower() or 'postgres' in container_name.lower()):
+                        # 기본 정보 수집
+                        container_info = await self.get_container_info(container_name)
+                        if not container_info:
+                            continue
+                        
+                        # docker stats로 메모리 정보 가져오기
+                        memory_info = {
+                            "usage": 0,
+                            "limit": 0,
+                            "percent": 0.0
+                        }
+                        
+                        try:
+                            # docker stats 한 번 실행
+                            stats_result = await asyncio.create_subprocess_exec(
+                                "docker", "stats", container_name, "--no-stream", "--format", 
+                                "{{json .}}",
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE
+                            )
+                            stdout, _ = await stats_result.communicate()
+                            
+                            if stats_result.returncode == 0 and stdout:
+                                stats_data = json.loads(stdout.decode().strip())
+                                
+                                # 메모리 사용량 파싱
+                                mem_usage_str = stats_data.get("MemUsage", "0MiB / 0MiB")
+                                parts = mem_usage_str.split(" / ")
+                                if len(parts) == 2:
+                                    usage_bytes = self._parse_size_with_unit(parts[0])
+                                    limit_bytes = self._parse_size_with_unit(parts[1])
+                                    
+                                    memory_info = {
+                                        "usage": usage_bytes,
+                                        "limit": limit_bytes,
+                                        "percent": float(stats_data.get("MemPerc", "0%").rstrip("%"))
+                                    }
+                        except Exception as e:
+                            logger.debug(f"서버 컨테이너 {container_name} stats 수집 실패: {e}")
+                        
+                        # 필요한 필드만 추출
+                        server_data = {
+                            "id": container_info.get("container_id", ""),
+                            "name": container_name,
+                            "image_name": container_info.get("image", ""),
+                            "memory": memory_info,
+                            "timestamp": int(time.time() * 1000),
+                            "node_type": "postgres" if ("postgres" in container_name.lower() or "db" in container_name.lower()) else "mserver"
+                        }
+                        
+                        server_containers.append(server_data)
+                        logger.debug(f"서버 컨테이너 수집: {container_name} (메모리: {memory_info.get('percent', 0):.1f}%)")
+        
+        except Exception as e:
+            logger.error(f"서버 컨테이너 정보 수집 실패: {e}")
+        
+        return server_containers

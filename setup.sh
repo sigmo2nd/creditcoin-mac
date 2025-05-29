@@ -362,7 +362,7 @@ add_to_shell_profile() {
 $marker
 # Creditcoin Docker 설치 경로
 CREDITCOIN_DIR="$SCRIPT_DIR"
-CREDITCOIN_UTILS="\$CREDITCOIN_DIR/creditcoin-utils.sh"
+CREDITCOIN_UTILS="\$CREDITCOIN_DIR/utils.sh"
 
 # 시스템 정보 변수 설정
 $HOST_INFO_OUTPUT
@@ -409,9 +409,9 @@ show_final_instructions() {
   show_success "Creditcoin Docker 유틸리티 설정이 완료되었습니다!"
   
   show_warning "변경 사항을 적용하려면 다음 명령어를 실행하세요:"
-  echo -e "${BLUE}source $SHELL_PROFILE${NC}"
+  echo -e "${GREEN}${BOLD}source ${SHELL_PROFILE}${NC}"
   
-  echo -e "\n${YELLOW}다음으로 add3node.sh 또는 add2node.sh 스크립트를 사용하여 노드를 생성할 수 있습니다.${NC}"
+  echo -e "\n${YELLOW}다음으로 addnode.sh 스크립트를 사용하여 노드를 생성할 수 있습니다.${NC}"
   
   # SSH 세션인 경우 데스크톱 앱 설정 강조
   if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ]; then

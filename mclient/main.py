@@ -1387,6 +1387,12 @@ async def run_websocket_mode(settings, node_names: List[str]):
                         container_data = await docker_stats_client.get_stats_for_nodes(node_names)
                     
                     container_list = list(container_data.values())
+                    
+                    # mserver와 PostgreSQL 컨테이너 추가 수집
+                    server_containers = await docker_stats_client.get_server_containers()
+                    if server_containers:
+                        container_list.extend(server_containers)
+                        logger.debug(f"서버 컨테이너 {len(server_containers)}개 추가 수집")
                 except Exception as e:
                     logger.error(f"Docker 정보 수집 실패: {e}")
                 
