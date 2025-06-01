@@ -1116,76 +1116,18 @@ class DockerStatsClient:
             return 0
     
     async def get_server_containers(self) -> List[Dict[str, Any]]:
-        """mserver와 PostgreSQL 컨테이너 정보 수집 (메모리 정보만)"""
+        """mserver와 PostgreSQL 컨테이너 정보 수집 (캐시된 데이터 사용)"""
         server_containers = []
         
         try:
-            # 모든 실행 중인 컨테이너 확인
-            result = await asyncio.create_subprocess_exec(
-                "docker", "ps", "--format", "{{.Names}}",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, _ = await result.communicate()
-            
-            if result.returncode == 0:
-                all_containers = stdout.decode().strip().split('\n')
-                
-                for container_name in all_containers:
-                    # mserver 또는 postgres 관련 컨테이너인지 확인
-                    if container_name and ('mserver' in container_name.lower() or 'postgres' in container_name.lower()):
-                        # 기본 정보 수집
-                        container_info = await self.get_container_info(container_name)
-                        if not container_info:
-                            continue
-                        
-                        # docker stats로 메모리 정보 가져오기
-                        memory_info = {
-                            "usage": 0,
-                            "limit": 0,
-                            "percent": 0.0
-                        }
-                        
-                        try:
-                            # docker stats 한 번 실행
-                            stats_result = await asyncio.create_subprocess_exec(
-                                "docker", "stats", container_name, "--no-stream", "--format", 
-                                "{{json .}}",
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE
-                            )
-                            stdout, _ = await stats_result.communicate()
-                            
-                            if stats_result.returncode == 0 and stdout:
-                                stats_data = json.loads(stdout.decode().strip())
-                                
-                                # 메모리 사용량 파싱
-                                mem_usage_str = stats_data.get("MemUsage", "0MiB / 0MiB")
-                                parts = mem_usage_str.split(" / ")
-                                if len(parts) == 2:
-                                    usage_bytes = self._parse_size_with_unit(parts[0])
-                                    limit_bytes = self._parse_size_with_unit(parts[1])
-                                    
-                                    memory_info = {
-                                        "usage": usage_bytes,
-                                        "limit": limit_bytes,
-                                        "percent": float(stats_data.get("MemPerc", "0%").rstrip("%"))
-                                    }
-                        except Exception as e:
-                            logger.debug(f"서버 컨테이너 {container_name} stats 수집 실패: {e}")
-                        
-                        # 필요한 필드만 추출
-                        server_data = {
-                            "id": container_info.get("container_id", ""),
-                            "name": container_name,
-                            "image_name": container_info.get("image", ""),
-                            "memory": memory_info,
-                            "timestamp": int(time.time() * 1000),
-                            "node_type": "postgres" if ("postgres" in container_name.lower() or "db" in container_name.lower()) else "mserver"
-                        }
-                        
-                        server_containers.append(server_data)
-                        logger.debug(f"서버 컨테이너 수집: {container_name} (메모리: {memory_info.get('percent', 0):.1f}%)")
+            # 이미 수집된 container_stats에서 서버 컨테이너 찾기
+            for container_name, stats in self.container_stats.items():
+                # mserver 또는 postgres 관련 컨테이너인지 확인
+                if 'mserver' in container_name.lower() or 'postgres' in container_name.lower():
+                    # 이미 수집된 통계 데이터 사용
+                    if stats:
+                        server_containers.append(stats)
+                        logger.debug(f"캐시된 서버 컨테이너 데이터 사용: {container_name}")
         
         except Exception as e:
             logger.error(f"서버 컨테이너 정보 수집 실패: {e}")
