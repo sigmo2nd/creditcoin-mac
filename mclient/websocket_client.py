@@ -40,7 +40,7 @@ class WebSocketClient:
         self.last_success_time = 0
         self.sequence_number = 0
         self.reconnecting = False  # 재연결 진행 중 플래그
-        self.pending_ack = {}
+        self.pending_ack = {}  # {sequence: future} 대기 중인 ACK
         self.max_retry_count = 5
         self.message_queue = []
         self.max_queue_size = 100
@@ -298,16 +298,8 @@ class WebSocketClient:
                 await self.ws.send(json.dumps(message))
                 logger.info(f"큐에 있던 메시지 전송 성공: {message.get('type')}")
                 
-                # 응답 대기가 필요한 메시지인 경우
-                if message.get("type") == "stats":
-                    try:
-                        response = await asyncio.wait_for(self.ws.recv(), timeout=5.0)
-                        response_data = json.loads(response)
-                        logger.debug(f"메시지 응답 수신: {response_data}")
-                    except asyncio.TimeoutError:
-                        logger.warning("메시지 응답 타임아웃")
-                    except Exception as e:
-                        logger.warning(f"메시지 응답 처리 중 오류: {str(e)}")
+                # 응답은 _receive_messages 태스크에서 처리됨
+                # 여기서는 recv()를 호출하지 않음
             
             except Exception as e:
                 logger.error(f"큐 메시지 전송 실패: {str(e)}")
@@ -385,66 +377,27 @@ class WebSocketClient:
             
             await self.ws.send(message_json)
             
-            # 응답 대기
-            ack_received = False
-            max_attempts = 5  # 최대 응답 대기 시도 횟수
-            attempts = 0
+            # ACK를 기다리기 위한 Future 생성
+            ack_future = asyncio.Future()
+            self.pending_ack[self.sequence_number] = ack_future
             
-            while attempts < max_attempts and not ack_received:
-                try:
-                    response = await asyncio.wait_for(self.ws.recv(), timeout=2.0)
-                    response_data = json.loads(response)
-                    
-                    # 메시지 유형 확인
-                    msg_type = response_data.get("type", "")
-                    
-                    # stats_ack 메시지 처리
-                    if msg_type == "stats_ack":
-                        # INFO에서 DEBUG로 변경 - 일반 모드에서는 로그에 출력되지 않음
-                        logger.debug(f"통계 데이터 전송 성공 (시퀀스: {self.sequence_number})")
-                        self.last_success_time = time.time()
-                        ack_received = True
-                        return True
-                        
-                    # heartbeat_ack 및 기타 메시지 처리
-                    elif msg_type in ["heartbeat_ack", "pong"]:
-                        # 다른 메시지 유형 무시하고 계속 대기
-                        logger.debug(f"다른 유형의 메시지 수신: {msg_type}, 계속 대기")
-                        attempts += 1
-                        continue
-                    else:
-                        # 알 수 없는 메시지 유형
-                        logger.debug(f"알 수 없는 메시지 유형 수신: {msg_type}, 계속 대기")
-                        attempts += 1
-                        continue
-                    
-                except asyncio.TimeoutError:
-                    logger.debug("응답 대기 타임아웃, 재시도...")
-                    attempts += 1
-                    
-                    # 연결 상태 확인
-                    if attempts == max_attempts and self.ws and not self.ws.closed:
-                        try:
-                            # 간단한 핑으로 연결 확인
-                            pong_waiter = await self.ws.ping()
-                            await asyncio.wait_for(pong_waiter, timeout=1.0)
-                            logger.debug("핑/퐁 성공, 서버는 여전히 응답합니다. 전송 성공으로 간주")
-                            self.last_success_time = time.time()
-                            return True
-                        except:
-                            logger.warning("핑/퐁 실패, 연결 문제로 간주")
-                            self.connected = False
-                            await self.reconnect()
-                            return False
-            
-            # 최대 시도 횟수에 도달했지만 ack_received가 여전히 False인 경우
-            if not ack_received:
-                # 연결이 살아있는지 확인하고 수동으로 성공 판단
+            # ACK 응답 대기 (5초 타임아웃)
+            try:
+                await asyncio.wait_for(ack_future, timeout=5.0)
+                logger.debug(f"통계 데이터 전송 성공 (시퀀스: {self.sequence_number})")
+                self.last_success_time = time.time()
+                return True
+            except asyncio.TimeoutError:
+                # 타임아웃 발생 시 pending_ack에서 제거
+                if self.sequence_number in self.pending_ack:
+                    del self.pending_ack[self.sequence_number]
+                logger.warning("stats_ack 응답 타임아웃")
+                # 연결이 살아있는지 확인
                 if self.ws and not self.ws.closed:
-                    logger.info("stats_ack 메시지를 수신하지 못했지만 연결이 유지되고 있으므로 성공으로 간주")
+                    # 연결은 유지되고 있으므로 성공으로 간주
+                    logger.info("ACK 타임아웃이지만 연결은 유지됨")
                     return True
                 else:
-                    logger.warning("stats_ack 메시지를 수신하지 못했고 연결이 끊어짐")
                     self.connected = False
                     await self.reconnect()
                     return False
@@ -655,5 +608,22 @@ class WebSocketClient:
         """통계 전송 확인 처리"""
         seq = data.get('data', {}).get('sequence')
         if seq in self.pending_ack:
+            # Future를 완료 상태로 설정
+            future = self.pending_ack[seq]
+            if not future.done():
+                future.set_result(True)
             del self.pending_ack[seq]
             logger.debug(f"통계 전송 확인: 시퀀스 {seq}")
+    
+    async def send_message(self, message: Dict[str, Any]) -> bool:
+        """일반 메시지 전송"""
+        if not self.connected or not self.ws or self.ws.closed:
+            logger.warning("WebSocket 연결이 없어 메시지를 전송할 수 없습니다")
+            return False
+        
+        try:
+            await self.ws.send(json.dumps(message))
+            return True
+        except Exception as e:
+            logger.error(f"메시지 전송 중 오류: {e}")
+            return False

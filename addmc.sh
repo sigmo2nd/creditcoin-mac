@@ -505,17 +505,17 @@ interactive_setup() {
       echo ""
       if [ "$WS_PROTOCOL" = "wss" ]; then
         echo -e "${YELLOW}[4단계] WSS 포트를 입력하세요:${NC}"
-        read -p "포트 번호 (4443): " WS_SERVER_PORT
+        read -p "포트 번호 (8443): " WS_SERVER_PORT
         
         # 엔터만 누르면 기본값 사용
         if [ -z "$WS_SERVER_PORT" ]; then
-          WS_SERVER_PORT="4443"
+          WS_SERVER_PORT="8443"
         fi
         
         # 숫자인지 확인
         if ! [[ "$WS_SERVER_PORT" =~ ^[0-9]+$ ]] || [ "$WS_SERVER_PORT" -lt 1 ] || [ "$WS_SERVER_PORT" -gt 65535 ]; then
-          echo -e "${YELLOW}잘못된 포트 번호입니다. 기본값(4443)을 사용합니다.${NC}"
-          WS_SERVER_PORT="4443"
+          echo -e "${YELLOW}잘못된 포트 번호입니다. 기본값(8443)을 사용합니다.${NC}"
+          WS_SERVER_PORT="8443"
         fi
         
         echo -e "${GREEN}포트 ${WS_SERVER_PORT}가 선택되었습니다.${NC}"
