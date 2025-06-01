@@ -887,6 +887,10 @@ class DockerStatsClient:
             cpu_str = stats_json.get("CPUPerc", "0%")
             cpu_percent = self._parse_percentage(cpu_str)
             
+            # CPU 값 디버깅
+            if cpu_percent > 0:
+                logger.debug(f"CPU 처리: 원본='{cpu_str}' -> 파싱결과={cpu_percent} -> round(2)={round(cpu_percent, 2)}")
+            
             # 메모리 사용량 파싱
             mem_percent_str = stats_json.get("MemPerc", "0%")
             mem_percent = self._parse_percentage(mem_percent_str)
@@ -948,7 +952,7 @@ class DockerStatsClient:
             nickname = ""
             
             # 결과 구성
-            return {
+            result = {
                 "id": container_id,
                 "name": container_name,
                 "status": "running",
@@ -972,6 +976,12 @@ class DockerStatsClient:
                 "nickname": nickname,
                 "timestamp": int(time.time() * 1000)
             }
+            
+            # CPU 값이 소수점이 있는 경우 디버깅
+            if cpu_percent > 0 and cpu_percent != int(cpu_percent):
+                logger.debug(f"최종 CPU 결과 ({container_name}): 원본={cpu_percent}, round(2)={result['cpu']['percent']}")
+            
+            return result
         
         except Exception as e:
             logger.error(f"Stats JSON 처리 중 오류: {str(e)}")
@@ -994,11 +1004,15 @@ class DockerStatsClient:
             import re
             match = re.search(r'[\d.]+', cleaned)
             if match:
-                return float(match.group())
+                result = float(match.group())
+                # 디버그 로그 추가
+                if result > 0 and result != round(result, 2):
+                    logger.debug(f"CPU 파싱: '{percent_str}' -> cleaned: '{cleaned}' -> result: {result}")
+                return result
             
             return 0.0
-        except:
-            # 모든 예외를 조용히 처리
+        except Exception as e:
+            logger.error(f"퍼센트 파싱 오류: '{percent_str}' - {e}")
             return 0.0
     
     async def get_volume_size(self, container_name: str) -> int:

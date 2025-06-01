@@ -473,15 +473,13 @@ class SystemInfo:
         self.cpu_system = 0.0
         self.cpu_idle = 0.0
         self.cpu_usage = 0.0
-        self.memory_total = 0
-        self.memory_used = 0
-        self.memory_wired = 0
-        self.memory_active = 0
-        self.memory_inactive = 0
-        self.memory_free = 0
-        self.memory_used_percent = 0.0
+        self.host_memory_total = 0  # 호스트 전체 메모리
+        self.host_memory_used = 0  # 호스트 메모리 사용량 (추정)
+        self.host_memory_percent = 0.0  # 호스트 메모리 사용률 (추정)
         self.docker_available = False
         self.docker_memory_total = 0  # Docker에 할당된 메모리
+        self.docker_memory_used = 0  # Docker가 사용 중인 메모리
+        self.docker_memory_percent = 0.0  # Docker 할당량 대비 사용률
         self.swap_total = 0
         self.swap_used = 0
         self.uptime = 0
@@ -548,9 +546,9 @@ class SystemInfo:
             if env_cpu_eff_cores:
                 self.cpu_cores_eff = int(env_cpu_eff_cores)
             
-            # 중요: 메모리 총량만 가져오고 다른 메모리 사용률 등은 실시간 수집
-            if env_memory_gb and self.memory_total == 0:
-                self.memory_total = int(env_memory_gb) * 1024 * 1024 * 1024  # GB -> bytes
+            # 중요: 호스트 메모리 총량 설정
+            if env_memory_gb and self.host_memory_total == 0:
+                self.host_memory_total = int(env_memory_gb) * 1024 * 1024 * 1024  # GB -> bytes
         
         # macOS 환경에서 직접 시스템 정보 수집 (Docker가 아닌 경우)
         if not is_docker and platform.system() == "Darwin":
@@ -686,97 +684,31 @@ class SystemInfo:
             if not self.cpu_cores_eff:
                 self.cpu_cores_eff = 0
         
-        # 총 CPU 사용률 (기본 방식)
-        # OrbStack host networking을 통해 Mac 호스트 정보 가져오기 시도
-        host_stats_fetched = False
-        if is_docker:
-            try:
-                import urllib.request
-                import json
-                # Mac 호스트에서 실행 중인 통계 서버에 접근
-                # host.docker.internal 또는 host.orb.internal 사용
-                for host in ['host.docker.internal', 'host.orb.internal', 'localhost']:
-                    try:
-                        url = f'http://{host}:9999/stats'
-                        with urllib.request.urlopen(url, timeout=1.0) as response:
-                            stats = json.loads(response.read())
-                            # 호스트 CPU 정보 사용
-                            self.cpu_usage = stats['cpu']['usage']
-                            self.cpu_user = stats['cpu']['user']
-                            self.cpu_system = stats['cpu']['sys']
-                            self.cpu_idle = stats['cpu']['idle']
-                            host_stats_fetched = True
-                            logger.debug(f"Mac 호스트 CPU 정보 사용 ({host}): {self.cpu_usage:.1f}% (user: {self.cpu_user:.1f}%, sys: {self.cpu_system:.1f}%)")
-                            break
-                    except Exception as e:
-                        logger.debug(f"호스트 통계 서버 접근 실패 ({host}): {e}")
-                        continue
-            except Exception as e:
-                logger.debug(f"호스트 통계 서버 접근 중 오류: {e}")
+        # psutil로 CPU 정보 수집
+        # cpu_times_percent()로 각 항목별 CPU 사용률 가져오기
+        cpu_times = psutil.cpu_times_percent(interval=0.1)
+        self.cpu_user = cpu_times.user
+        self.cpu_system = cpu_times.system  
+        self.cpu_idle = cpu_times.idle
+        self.cpu_usage = 100.0 - self.cpu_idle
         
-        # 호스트 정보를 가져오지 못한 경우 /proc/stat 시도
-        if not host_stats_fetched and is_docker and os.path.exists('/proc/stat'):
-            try:
-                # /proc/stat에서 호스트 CPU 정보 읽기
-                with open('/proc/stat', 'r') as f:
-                    cpu_line = f.readline()
-                    if cpu_line.startswith('cpu '):
-                        fields = cpu_line.split()
-                        if len(fields) >= 5:
-                            user = int(fields[1])
-                            nice = int(fields[2])
-                            system = int(fields[3])
-                            idle = int(fields[4])
-                            
-                            # 이전 값과 비교를 위해 저장
-                            if hasattr(self, '_last_cpu_stats'):
-                                # 이전 값과의 차이 계산
-                                user_delta = user - self._last_cpu_stats['user']
-                                nice_delta = nice - self._last_cpu_stats['nice']
-                                system_delta = system - self._last_cpu_stats['system']
-                                idle_delta = idle - self._last_cpu_stats['idle']
-                                
-                                total_delta = user_delta + nice_delta + system_delta + idle_delta
-                                
-                                if total_delta > 0:
-                                    self.cpu_user = ((user_delta + nice_delta) / total_delta) * 100
-                                    self.cpu_system = (system_delta / total_delta) * 100
-                                    self.cpu_idle = (idle_delta / total_delta) * 100
-                                    self.cpu_usage = 100.0 - self.cpu_idle
-                                else:
-                                    # delta가 0인 경우 psutil 사용
-                                    self.cpu_usage = psutil.cpu_percent(interval=0.1)
-                            else:
-                                # 첫 실행시 psutil 사용
-                                self.cpu_usage = psutil.cpu_percent(interval=0.1)
-                            
-                            # 현재 값 저장
-                            self._last_cpu_stats = {
-                                'user': user,
-                                'nice': nice,
-                                'system': system,
-                                'idle': idle
-                            }
-            except Exception as e:
-                logger.debug(f"/proc/stat 읽기 실패, psutil 사용: {e}")
-                self.cpu_usage = psutil.cpu_percent(interval=0.1)
+        logger.debug(f"psutil CPU 정보: 전체={self.cpu_usage:.1f}% (user={self.cpu_user:.1f}%, system={self.cpu_system:.1f}%, idle={self.cpu_idle:.1f}%)")
+        host_stats_fetched = True
         
-        # 모든 방법이 실패한 경우 psutil 사용
-        if not host_stats_fetched:
-            self.cpu_usage = psutil.cpu_percent(interval=0.1)
         
-        # CPU 사용률이 아직 구분되지 않은 경우, 총 사용률을 기준으로 추정
+        # CPU 사용률이 아직 구분되지 않은 경우 (이제는 거의 발생하지 않음)
         if self.cpu_user == 0 and self.cpu_system == 0 and self.cpu_idle == 0:
-            self.cpu_user = self.cpu_usage * 0.7  # 사용자 비중 추정
-            self.cpu_system = self.cpu_usage * 0.3  # 시스템 비중 추정
-            self.cpu_idle = 100.0 - self.cpu_usage
+            # 다시 한 번 시도
+            cpu_times = psutil.cpu_times_percent(interval=0.5)
+            self.cpu_user = cpu_times.user
+            self.cpu_system = cpu_times.system
+            self.cpu_idle = cpu_times.idle
+            self.cpu_usage = 100.0 - self.cpu_idle
         
-        # 메모리 정보
+        # Docker 메모리 정보 (컨테이너 내부에서 실행 중)
         memory = psutil.virtual_memory()
-        if self.memory_total == 0:  # 환경변수에서 가져오지 못한 경우에만
-            self.memory_total = memory.total
-        self.memory_used = memory.used
-        self.memory_used_percent = memory.percent
+        self.docker_memory_used = memory.used
+        self.docker_memory_percent = memory.percent
         
         # Docker 소켓 경로 찾기
         docker_sock_paths = [
@@ -899,15 +831,11 @@ class SystemInfo:
             "cpu_user": self.cpu_user,
             "cpu_system": self.cpu_system,
             "cpu_idle": self.cpu_idle,
-            "memory_total": self.memory_total,
-            "memory_used": self.memory_used,
-            "memory_used_percent": self.memory_used_percent,
-            "memory_wired": self.memory_wired,
-            "memory_active": self.memory_active,
-            "memory_inactive": self.memory_inactive,
-            "memory_free": self.memory_free,
+            "host_memory_total": self.host_memory_total,
             "docker_available": self.docker_available,
             "docker_memory_total": self.docker_memory_total,
+            "docker_memory_used": self.docker_memory_used,
+            "docker_memory_percent": self.docker_memory_percent,
             "swap_total": self.swap_total,
             "swap_used": self.swap_used,
             "uptime": self.uptime,
@@ -1117,9 +1045,9 @@ def print_metrics(sys_info: Dict[str, Any], containers: List[Dict[str, Any]], in
     print(f"{COLOR_YELLOW}CPU USAGE:{COLOR_RESET} {cpu_usage_info}")
     
     # 메모리 정보
-    memory_gb = sys_info.get('memory_total', 0) / 1024.0 / 1024.0 / 1024.0
-    used_gb = sys_info.get('memory_used', 0) / 1024.0 / 1024.0 / 1024.0
-    memory_info = f"{memory_gb:.2f} GB 총량 (시스템 사용: {used_gb:.2f} GB, {sys_info.get('memory_used_percent', 0):.2f}%)"
+    host_memory_gb = sys_info.get('host_memory_total', 0) / 1024.0 / 1024.0 / 1024.0
+    docker_used_gb = sys_info.get('docker_memory_used', 0) / 1024.0 / 1024.0 / 1024.0
+    memory_info = f"호스트: {host_memory_gb:.2f} GB (Docker 사용: {docker_used_gb:.2f} GB, {sys_info.get('docker_memory_percent', 0):.2f}%)"
     print(f"{COLOR_YELLOW}MEMORY:{COLOR_RESET} {memory_info}")
     
     # Docker 메모리 정보 (가용한 경우)
@@ -1402,7 +1330,7 @@ async def run_websocket_mode(settings, node_names: List[str]):
             
             # 상태 정보 업데이트
             stats.last_cpu_usage = sys_metrics["cpu_usage"]
-            stats.last_memory_percent = sys_metrics["memory_used_percent"]
+            stats.last_memory_percent = sys_metrics["docker_memory_percent"]
             stats.container_count = len(container_list)
             
             # 서버로 전송할 데이터 구성 (websocket_client가 감싸므로 내부 데이터만 전송)
