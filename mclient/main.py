@@ -645,7 +645,6 @@ class SystemInfo:
         
         logger.debug(f"psutil CPU 정보: 전체={self.cpu_usage:.1f}% (user={self.cpu_user:.1f}%, system={self.cpu_system:.1f}%, idle={self.cpu_idle:.1f}%)")
         host_stats_fetched = True
-            self.cpu_usage = 100.0 - self.cpu_idle
         
         # Docker 메모리 정보 (컨테이너 내부에서 실행 중)
         memory = psutil.virtual_memory()
