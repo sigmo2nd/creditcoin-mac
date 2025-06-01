@@ -19,29 +19,34 @@ CUSTOM_VERSION=""
 get_registered_nodes() {
   local nodes=""
   local legacy_nodes=""
+  local all_nodes=""
   
   # 3.x 노드 확인
   if [ -f "docker-compose.yml" ]; then
     # 3node로 시작하는 서비스들 찾기
-    nodes=$(grep -E "^  3node[0-9]+:" docker-compose.yml 2>/dev/null | sed 's/://g' | sed 's/  //' | tr '\n' ',' | sed 's/,$//')
+    nodes=$(grep -E "^  3node[0-9]+:" docker-compose.yml 2>/dev/null | sed 's/://g' | sed 's/  //')
   fi
   
   # 2.x 레거시 노드 확인
   if [ -f "docker-compose-legacy.yml" ]; then
     # node로 시작하는 서비스들 찾기
-    legacy_nodes=$(grep -E "^  node[0-9]+:" docker-compose-legacy.yml 2>/dev/null | sed 's/://g' | sed 's/  //' | tr '\n' ',' | sed 's/,$//')
+    legacy_nodes=$(grep -E "^  node[0-9]+:" docker-compose-legacy.yml 2>/dev/null | sed 's/://g' | sed 's/  //')
   fi
   
   # 두 목록 합치기
   if [ -n "$nodes" ] && [ -n "$legacy_nodes" ]; then
-    echo "${nodes},${legacy_nodes}"
+    all_nodes=$(echo -e "${nodes}\n${legacy_nodes}")
   elif [ -n "$nodes" ]; then
-    echo "$nodes"
+    all_nodes="$nodes"
   elif [ -n "$legacy_nodes" ]; then
-    echo "$legacy_nodes"
+    all_nodes="$legacy_nodes"
   else
     echo ""
+    return
   fi
+  
+  # 정렬하여 콤마로 구분된 문자열로 반환
+  echo "$all_nodes" | sort | tr '\n' ',' | sed 's/,$//'
 }
 
 # 실행 중인 Docker 노드 자동 감지
@@ -50,7 +55,7 @@ detect_nodes() {
   
   # Docker 컨테이너 목록에서 node 또는 3node로 시작하는 컨테이너 찾기
   local nodes=""
-  nodes=$(docker ps --format "{{.Names}}" | grep -E '^(node|3node)' | tr '\n' ',' | sed 's/,$//')
+  nodes=$(docker ps --format "{{.Names}}" | grep -E '^(node|3node)' | sort | tr '\n' ',' | sed 's/,$//')
   
   if [ -z "$nodes" ]; then
     echo -e "${YELLOW}실행 중인 Creditcoin 노드를 찾을 수 없습니다. 기본값을 사용합니다.${NC}" >&2
@@ -238,6 +243,11 @@ update_env_file() {
   local env_file=".env.mclient"
   
   echo -e "${BLUE}$env_file 파일을 생성/업데이트합니다...${NC}"
+  
+  # NODE_NAMES가 설정되어 있으면 정렬
+  if [ -n "$NODE_NAMES" ]; then
+    NODE_NAMES=$(echo "$NODE_NAMES" | tr ',' '\n' | sort | tr '\n' ',' | sed 's/,$//')
+  fi
   
   # 전체 파일을 다시 작성
   cat > "$env_file" << EOF
@@ -632,7 +642,11 @@ if docker ps | grep -q mclient; then
   # 현재 설정된 노드와 docker-compose.yml의 노드 비교
   CURRENT_NODES=""
   if [ -f ".env.mclient" ]; then
-    CURRENT_NODES=$(grep "^NODE_NAMES=" .env.mclient | cut -d'=' -f2)
+    # 현재 노드를 읽어서 정렬
+    raw_nodes=$(grep "^NODE_NAMES=" .env.mclient | cut -d'=' -f2)
+    if [ -n "$raw_nodes" ]; then
+      CURRENT_NODES=$(echo "$raw_nodes" | tr ',' '\n' | sort | tr '\n' ',' | sed 's/,$//')
+    fi
   fi
   
   REGISTERED_NODES=$(get_registered_nodes)
