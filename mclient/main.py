@@ -765,13 +765,13 @@ class SystemInfo:
         return {
             "host_name": self.hostname,
             "cpu_model": f"{self.model} ({self.chip})",
-            "cpu_usage": self.cpu_usage,
+            "cpu_usage": round(self.cpu_usage, 2),
             "cpu_cores": self.cpu_cores_total,
             "cpu_perf_cores": self.cpu_cores_perf,
             "cpu_eff_cores": self.cpu_cores_eff,
-            "cpu_user": self.cpu_user,
-            "cpu_system": self.cpu_system,
-            "cpu_idle": self.cpu_idle,
+            "cpu_user": round(self.cpu_user, 2),
+            "cpu_system": round(self.cpu_system, 2),
+            "cpu_idle": round(self.cpu_idle, 2),
             "host_memory_total": self.host_memory_total,
             "docker_available": self.docker_available,
             "docker_memory_total": self.docker_memory_total,
@@ -881,7 +881,7 @@ def print_transmission_status(stats: TransmissionStats):
     processing_time = stats.processing_times[-1] if stats.processing_times else 0
     
     print(f"{COLOR_CYAN}[{time.strftime('%H:%M:%S')}] 데이터 전송 #{stats.total_sent}: "
-          f"{cpu_color}{STYLE_BOLD}CPU {stats.last_cpu_usage}%{COLOR_RESET}, "
+          f"{cpu_color}{STYLE_BOLD}CPU {stats.last_cpu_usage:.2f}%{COLOR_RESET}, "
           f"{mem_color}MEM {stats.last_memory_percent:.1f}%{COLOR_RESET}, "
           f"컨테이너 {stats.container_count}개, "
           f"크기 {stats.last_data_size / 1024.0:.2f}KB, "
@@ -932,9 +932,9 @@ def print_metrics(sys_info: Dict[str, Any], containers: List[Dict[str, Any]], in
             # CPU 총량 대비 비율 계산
             cpu_of_total = (container['cpu']['percent'] / sys_info['cpu_cores']) if sys_info['cpu_cores'] > 0 else 0
             
-            print(f"{container['name']:<14} {cpu_color}{container['cpu']['percent']:<7.2f}%{COLOR_RESET} "
-                  f"{cpu_of_total:<10.2f}% {memory_str:<20} "
-                  f"{mem_color}{container['memory']['percent']:<7.2f}%{COLOR_RESET} "
+            print(f"{container['name']:<14} {cpu_color}{container['cpu']['percent']:>6.2f}%{COLOR_RESET} "
+                  f"{cpu_of_total:>9.2f}% {memory_str:<20} "
+                  f"{mem_color}{container['memory']['percent']:>6.2f}%{COLOR_RESET} "
                   f"{network_str:<15}")
                   
             # 총계 누적
