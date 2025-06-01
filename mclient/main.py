@@ -616,60 +616,11 @@ class SystemInfo:
                 self.cpu_cores_perf = self.cpu_cores_total
                 self.cpu_cores_eff = 0
                 
-            # CPU 사용률 (사용자/시스템/유휴 구분)
-            try:
-                top_cmd = ["top", "-l", "1", "-n", "0"]
-                top_result = subprocess.run(top_cmd, capture_output=True, text=True)
-                if top_result.returncode == 0:
-                    for line in top_result.stdout.splitlines():
-                        if line.startswith("CPU usage:"):
-                            parts = line.split(":")
-                            if len(parts) > 1:
-                                usage_parts = parts[1].split(",")
-                                if len(usage_parts) >= 3:
-                                    self.cpu_user = float(usage_parts[0].strip().rstrip("% user"))
-                                    self.cpu_system = float(usage_parts[1].strip().rstrip("% sys"))
-                                    self.cpu_idle = float(usage_parts[2].strip().rstrip("% idle"))
-                                    break
-            except:
-                pass
+            # CPU 사용률은 psutil로 충분하므로 top 명령 제거
+            # 이미 아래에서 psutil로 정보를 가져옴
                 
-            # 메모리 상세 정보 (wired, active, inactive 등)
-            try:
-                vm_stat_cmd = ["vm_stat"]
-                vm_stat_result = subprocess.run(vm_stat_cmd, capture_output=True, text=True)
-                if vm_stat_result.returncode == 0:
-                    vm_stat_output = vm_stat_result.stdout
-                    
-                    # 페이지 크기 추출
-                    page_size = 4096  # 기본값
-                    page_size_match = re.search(r'page size of (\d+) bytes', vm_stat_output)
-                    if page_size_match:
-                        page_size = int(page_size_match.group(1))
-                        
-                    # 페이지 수 추출
-                    pages_free = 0
-                    pages_active = 0
-                    pages_inactive = 0
-                    pages_wired = 0
-                    
-                    for line in vm_stat_output.splitlines():
-                        if "Pages free:" in line:
-                            pages_free = int(line.split(':')[1].strip().replace('.', ''))
-                        elif "Pages active:" in line:
-                            pages_active = int(line.split(':')[1].strip().replace('.', ''))
-                        elif "Pages inactive:" in line:
-                            pages_inactive = int(line.split(':')[1].strip().replace('.', ''))
-                        elif "Pages wired down:" in line:
-                            pages_wired = int(line.split(':')[1].strip().replace('.', ''))
-                    
-                    # 바이트 단위로 변환
-                    self.memory_wired = pages_wired * page_size
-                    self.memory_active = pages_active * page_size
-                    self.memory_inactive = pages_inactive * page_size
-                    self.memory_free = pages_free * page_size
-            except:
-                pass
+            # vm_stat도 시간이 오래 걸리므로 제거
+            # 메모리 정보는 psutil로 충분함
         else:
             # macOS가 아니거나 Docker 환경인 경우 기본 정보만 수집하고
             # 환경변수에서 가져오지 못한 정보 설정
@@ -685,8 +636,8 @@ class SystemInfo:
                 self.cpu_cores_eff = 0
         
         # psutil로 CPU 정보 수집
-        # cpu_times_percent()로 각 항목별 CPU 사용률 가져오기
-        cpu_times = psutil.cpu_times_percent(interval=0.1)
+        # interval=0 으로 즉시 현재 값 가져오기 (대기 없음)
+        cpu_times = psutil.cpu_times_percent(interval=0)
         self.cpu_user = cpu_times.user
         self.cpu_system = cpu_times.system  
         self.cpu_idle = cpu_times.idle
@@ -694,15 +645,6 @@ class SystemInfo:
         
         logger.debug(f"psutil CPU 정보: 전체={self.cpu_usage:.1f}% (user={self.cpu_user:.1f}%, system={self.cpu_system:.1f}%, idle={self.cpu_idle:.1f}%)")
         host_stats_fetched = True
-        
-        
-        # CPU 사용률이 아직 구분되지 않은 경우 (이제는 거의 발생하지 않음)
-        if self.cpu_user == 0 and self.cpu_system == 0 and self.cpu_idle == 0:
-            # 다시 한 번 시도
-            cpu_times = psutil.cpu_times_percent(interval=0.5)
-            self.cpu_user = cpu_times.user
-            self.cpu_system = cpu_times.system
-            self.cpu_idle = cpu_times.idle
             self.cpu_usage = 100.0 - self.cpu_idle
         
         # Docker 메모리 정보 (컨테이너 내부에서 실행 중)
