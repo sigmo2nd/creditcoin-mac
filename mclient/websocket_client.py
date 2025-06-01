@@ -377,30 +377,14 @@ class WebSocketClient:
             
             await self.ws.send(message_json)
             
-            # ACK를 기다리기 위한 Future 생성
-            ack_future = asyncio.Future()
-            self.pending_ack[self.sequence_number] = ack_future
+            # 전송 자체는 성공으로 간주 (recv 충돌 방지를 위해)
+            logger.debug(f"통계 데이터 전송 완료 (시퀀스: {self.sequence_number})")
+            self.last_success_time = time.time()
             
-            # ACK 응답 대기 (5초 타임아웃)
-            try:
-                await asyncio.wait_for(ack_future, timeout=5.0)
-                logger.debug(f"통계 데이터 전송 성공 (시퀀스: {self.sequence_number})")
-                self.last_success_time = time.time()
-                return True
-            except asyncio.TimeoutError:
-                # 타임아웃 발생 시 pending_ack에서 제거
-                if self.sequence_number in self.pending_ack:
-                    del self.pending_ack[self.sequence_number]
-                logger.warning("stats_ack 응답 타임아웃")
-                # 연결이 살아있는지 확인
-                if self.ws and not self.ws.closed:
-                    # 연결은 유지되고 있으므로 성공으로 간주
-                    logger.info("ACK 타임아웃이지만 연결은 유지됨")
-                    return True
-                else:
-                    self.connected = False
-                    await self.reconnect()
-                    return False
+            # 나중에 _receive_messages에서 stats_ack를 받으면 로그 출력
+            self.pending_ack[self.sequence_number] = True
+            
+            return True
                 
         except websockets.exceptions.ConnectionClosed as e:
             logger.warning(f"연결이 종료되었습니다: {e}")
@@ -572,7 +556,7 @@ class WebSocketClient:
                 # 통계 전송 확인
                 self._handle_stats_ack(data)
             else:
-                logger.warning(f"알 수 없는 메시지 타입: {msg_type}")
+                logger.debug(f"알 수 없는 메시지 타입: {msg_type}")
                 
         except json.JSONDecodeError as e:
             logger.error(f"메시지 파싱 오류: {e}")
@@ -606,14 +590,22 @@ class WebSocketClient:
     
     def _handle_stats_ack(self, data: Dict[str, Any]):
         """통계 전송 확인 처리"""
-        seq = data.get('data', {}).get('sequence')
+        # 다양한 응답 형식 처리
+        seq = None
+        
+        # data.data.sequence 형식
+        if 'data' in data and isinstance(data['data'], dict):
+            seq = data['data'].get('sequence')
+        
+        # data.sequence 형식
+        if seq is None and 'sequence' in data:
+            seq = data.get('sequence')
+            
         if seq in self.pending_ack:
-            # Future를 완료 상태로 설정
-            future = self.pending_ack[seq]
-            if not future.done():
-                future.set_result(True)
             del self.pending_ack[seq]
-            logger.debug(f"통계 전송 확인: 시퀀스 {seq}")
+            logger.debug(f"통계 전송 ACK 수신 확인: 시퀀스 {seq}")
+        else:
+            logger.debug(f"이미 처리되었거나 알 수 없는 시퀀스: {seq}")
     
     async def send_message(self, message: Dict[str, Any]) -> bool:
         """일반 메시지 전송"""
