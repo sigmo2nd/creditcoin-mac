@@ -235,8 +235,11 @@ class DockerStatsClient:
                     is_syncing = health.get("isSyncing", False)
                     peers = health.get("peers", 0)
                     
-                    # 블록 정보 가져오기
-                    block_info = await self.get_block_info(container_name, rpc_port)
+                    # 블록 정보와 동기화 상태 정보를 병렬로 가져오기
+                    block_info_task = asyncio.create_task(self.get_block_info(container_name, rpc_port))
+                    sync_state_task = asyncio.create_task(self.get_sync_state(container_name, rpc_port))
+                    
+                    block_info, sync_info = await asyncio.gather(block_info_task, sync_state_task)
                     
                     return {
                         "is_syncing": is_syncing,
@@ -245,6 +248,8 @@ class DockerStatsClient:
                         "current_block": block_info.get("current_block", 0),
                         "best_block": block_info.get("best_block", 0),
                         "finalized_block": block_info.get("finalized_block", 0),
+                        "target_block": sync_info.get("highest_block", 0),
+                        "starting_block": sync_info.get("starting_block", 0),
                         "sync_state": self._determine_sync_state(is_syncing, peers, block_info)
                     }
         except Exception as e:
@@ -340,6 +345,45 @@ class DockerStatsClient:
             logger.error(f"Finalized 블록 정보 가져오기 실패: {e}")
         
         return 0
+    
+    async def get_sync_state(self, container_name: str, rpc_port: int) -> Dict[str, Any]:
+        """노드의 동기화 상태 정보를 가져옴"""
+        try:
+            cmd = [
+                "docker", "exec", container_name,
+                "curl", "-s", "-H", "Content-Type: application/json",
+                "-d", '{"id":1, "jsonrpc":"2.0", "method": "system_syncState", "params":[]}',
+                f"http://localhost:{rpc_port}/"
+            ]
+            
+            result = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await result.communicate()
+            
+            if result.returncode == 0 and stdout:
+                try:
+                    response = json.loads(stdout.decode())
+                    if "result" in response and response["result"] is not None:
+                        sync_state = response["result"]
+                        return {
+                            "starting_block": sync_state.get("startingBlock", 0),
+                            "current_block": sync_state.get("currentBlock", 0),
+                            "highest_block": sync_state.get("highestBlock", 0)
+                        }
+                except json.JSONDecodeError:
+                    pass
+        except Exception as e:
+            # 동기화 중이 아닐 때는 에러가 발생할 수 있으므로 debug 레벨로 로깅
+            logger.debug(f"동기화 상태 정보 가져오기 실패 (정상일 수 있음): {e}")
+        
+        return {
+            "starting_block": 0,
+            "current_block": 0,
+            "highest_block": 0
+        }
     
     def _determine_sync_state(self, is_syncing: bool, peers: int, block_info: Dict) -> str:
         """노드의 동기화 상태를 판단"""
@@ -648,6 +692,8 @@ class DockerStatsClient:
                                             processed_stats["blockchain"] = {
                                                 "current_block": health_info.get("current_block", 0),
                                                 "finalized_block": health_info.get("finalized_block", 0),
+                                                "target_block": health_info.get("target_block", 0),
+                                                "starting_block": health_info.get("starting_block", 0),
                                                 "peers": health_info.get("peers", 0)
                                             }
                                         else:
@@ -656,6 +702,8 @@ class DockerStatsClient:
                                             processed_stats["blockchain"] = {
                                                 "current_block": 0,
                                                 "finalized_block": 0,
+                                                "target_block": 0,
+                                                "starting_block": 0,
                                                 "peers": 0
                                             }
                                     
