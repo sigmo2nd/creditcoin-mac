@@ -255,6 +255,16 @@ class DockerStatsClient:
         except Exception as e:
             logger.error(f"노드 {container_name} 건강 상태 체크 실패: {e}")
         
+        # 헬스체크 실패 시 이전 상태 유지
+        previous_state = self.container_status_cache.get(container_name, {}).get("sync_state", "unknown")
+        # initializing 상태였으면 유지
+        if previous_state == "initializing":
+            return {
+                "is_syncing": None,
+                "peers": 0,
+                "sync_state": "initializing"
+            }
+        
         return {
             "is_syncing": None,
             "peers": 0,
