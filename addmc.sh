@@ -790,6 +790,8 @@ fi
 if [ ! -f "docker-compose-mclient.yml" ]; then
   echo -e "${BLUE}docker-compose-mclient.yml 파일을 생성합니다...${NC}"
   cat > docker-compose-mclient.yml << 'EOF'
+name: creditcoin-mclient
+
 services:
   mclient:
     image: mclient:${MCLIENT_VERSION:-1.0.0}
