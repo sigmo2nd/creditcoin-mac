@@ -71,26 +71,43 @@ detect_nodes() {
 get_server_id() {
   echo -e "${BLUE}서버 ID 생성 중...${NC}" >&2
   
-  # MAC 주소 가져오기
-  local mac_address=""
+  # 시스템 UUID 가져오기 (머신 고유 ID)
+  local machine_id=""
   
-  # en0 인터페이스에서 MAC 주소 추출
-  mac_address=$(ifconfig en0 2>/dev/null | grep ether | awk '{print $2}' | tr -d ':' | tr '[:lower:]' '[:upper:]')
+  # macOS에서 시스템 UUID 추출
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    machine_id=$(ioreg -rd1 -c IOPlatformExpertDevice | awk '/IOPlatformUUID/ { print $3; }' | tr -d '"')
+  fi
   
-  # en0에서 찾지 못한 경우 다른 인터페이스 시도
-  if [ -z "$mac_address" ]; then
-    mac_address=$(ifconfig 2>/dev/null | grep -o -E '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -n 1 | tr -d ':' | tr '[:lower:]' '[:upper:]')
+  # Linux에서 시스템 UUID 추출
+  if [ -z "$machine_id" ] && [ -f "/etc/machine-id" ]; then
+    machine_id=$(cat /etc/machine-id)
+  fi
+  
+  # UUID를 찾지 못한 경우 MAC 주소 사용
+  if [ -z "$machine_id" ]; then
+    # en0 인터페이스에서 MAC 주소 추출
+    local mac_address=$(ifconfig en0 2>/dev/null | grep ether | awk '{print $2}' | tr -d ':' | tr '[:lower:]' '[:upper:]')
+    
+    # en0에서 찾지 못한 경우 다른 인터페이스 시도
+    if [ -z "$mac_address" ]; then
+      mac_address=$(ifconfig 2>/dev/null | grep -o -E '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -n 1 | tr -d ':' | tr '[:lower:]' '[:upper:]')
+    fi
+    
+    if [ -n "$mac_address" ]; then
+      machine_id="MAC-${mac_address}"
+    fi
   fi
   
   # 그래도 찾지 못하면 기본값 사용
-  if [ -z "$mac_address" ]; then
-    mac_address="DEFAULT$(date +%s)"
-    echo -e "${YELLOW}MAC 주소를 찾을 수 없습니다. 타임스탬프 기반 ID를 사용합니다: ${mac_address}${NC}" >&2
+  if [ -z "$machine_id" ]; then
+    machine_id="DEFAULT-$(date +%s)"
+    echo -e "${YELLOW}시스템 고유 ID를 찾을 수 없습니다. 타임스탬프 기반 ID를 사용합니다: ${machine_id}${NC}" >&2
   else
-    echo -e "${GREEN}MAC 주소 기반 서버 ID: ${mac_address}${NC}" >&2
+    echo -e "${GREEN}시스템 고유 ID: ${machine_id}${NC}" >&2
   fi
   
-  echo "$mac_address"
+  echo "$machine_id"
 }
 
 # 시스템 정보 수집
@@ -874,11 +891,11 @@ if [ $? -eq 0 ]; then
   
   echo ""
   echo -e "${YELLOW}mclient 관리 명령어:${NC}"
-  echo -e "${GREEN}mcstatus${NC}    - mclient 상태 확인"
-  echo -e "${GREEN}mclog${NC}       - mclient 로그 확인"
-  echo -e "${GREEN}mcdown${NC}      - mclient 중지"
-  echo -e "${GREEN}mcup${NC}        - mclient 시작"
-  echo -e "${GREEN}mcrestart${NC}   - mclient 재시작"
+  echo -e "${GREEN}mstatus${NC}     - mclient 상태 확인"
+  echo -e "${GREEN}mlog${NC}        - mclient 로그 확인"
+  echo -e "${GREEN}mdown${NC}       - mclient 중지"
+  echo -e "${GREEN}mup${NC}         - mclient 시작"
+  echo -e "${GREEN}mrestart${NC}    - mclient 재시작"
   echo ""
   echo -e "${YELLOW}인증 관리:${NC}"
   echo -e "${GREEN}mauth${NC}       - 인증 다시 실행"
