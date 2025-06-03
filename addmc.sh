@@ -74,14 +74,14 @@ get_server_id() {
   # 시스템 UUID 가져오기 (머신 고유 ID)
   local machine_id=""
   
-  # macOS에서 시스템 UUID 추출
+  # macOS에서 시스템 UUID 추출 (하이픈 제거하고 앞 12자리만 사용)
   if [[ "$OSTYPE" == "darwin"* ]]; then
-    machine_id=$(ioreg -rd1 -c IOPlatformExpertDevice | awk '/IOPlatformUUID/ { print $3; }' | tr -d '"')
+    machine_id=$(ioreg -rd1 -c IOPlatformExpertDevice | awk '/IOPlatformUUID/ { print $3; }' | tr -d '"' | tr -d '-' | cut -c1-12)
   fi
   
-  # Linux에서 시스템 UUID 추출
+  # Linux에서 시스템 UUID 추출 (앞 12자리만 사용)
   if [ -z "$machine_id" ] && [ -f "/etc/machine-id" ]; then
-    machine_id=$(cat /etc/machine-id)
+    machine_id=$(cat /etc/machine-id | cut -c1-12)
   fi
   
   # UUID를 찾지 못한 경우 MAC 주소 사용
