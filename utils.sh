@@ -1743,10 +1743,11 @@ ZSH_THEME_GIT_PROMPT_DIRTY="%{$fg[blue]%}) %{$fg[yellow]%}✗"
 ZSH_THEME_GIT_PROMPT_CLEAN="%{$fg[blue]%})"
 
 # 프롬프트 설정 - 원격지에서는 호스트명을 노란색으로
+setopt PROMPT_SUBST
 if [ -n "$SSH_CONNECTION" ]; then
-  PROMPT="%{$fg_bold[yellow]%}%m%{$reset_color%} > %{$fg_bold[cyan]%}%c%{$reset_color%} $(git_prompt_info)"
+  PROMPT='%{$fg_bold[yellow]%}%m%{$reset_color%} > %{$fg_bold[cyan]%}%c%{$reset_color%} $(git_prompt_info)'
 else
-  PROMPT="%{$fg_bold[green]%}%m%{$reset_color%} > %{$fg_bold[cyan]%}%c%{$reset_color%} $(git_prompt_info)"
+  PROMPT='%{$fg_bold[green]%}%m%{$reset_color%} > %{$fg_bold[cyan]%}%c%{$reset_color%} $(git_prompt_info)'
 fi
 
 # LS 색상 설정
