@@ -776,8 +776,25 @@ dkill() {
       # 백업 파일 생성
       cp docker-compose.yml docker-compose.yml.bak
       
-      # 노드 설정 블록 제거 (macOS 호환 방식)
-      awk -v node="$node:" 'BEGIN {p=1} /^  '$node':/,/^  [^[:space:]]+:/ {if (/^  [^[:space:]]+:/ && !/^  '$node':/) p=1; else p=0} p' docker-compose.yml > docker-compose.yml.tmp
+      # 노드 설정 블록 제거 (개선된 방식)
+      # 1. networks 섹션 백업
+      local networks_section=$(awk '/^networks:/{p=1} p' docker-compose.yml)
+      
+      # 2. 노드 블록 제거 (networks 섹션 전까지만)
+      awk -v node="$node:" '
+        BEGIN {p=1; in_node=0} 
+        /^  '$node':/ {in_node=1; next}
+        /^  [^[:space:]]+:/ && in_node {in_node=0}
+        /^networks:/ {in_node=0}
+        !in_node {print}
+      ' docker-compose.yml > docker-compose.yml.tmp
+      
+      # 3. networks 섹션이 없어졌다면 다시 추가
+      if ! grep -q "^networks:" docker-compose.yml.tmp; then
+        echo "" >> docker-compose.yml.tmp
+        echo "$networks_section" >> docker-compose.yml.tmp
+      fi
+      
       mv docker-compose.yml.tmp docker-compose.yml
       
       echo -e "${GREEN}docker-compose.yml 파일이 수정되었습니다. 백업: docker-compose.yml.bak${NC}"
@@ -797,8 +814,25 @@ dkill() {
       # 백업 파일 생성
       cp docker-compose-legacy.yml docker-compose-legacy.yml.bak
       
-      # 노드 설정 블록 제거 (macOS 호환 방식)
-      awk -v node="$node:" 'BEGIN {p=1} /^  '$node':/,/^  [^[:space:]]+:/ {if (/^  [^[:space:]]+:/ && !/^  '$node':/) p=1; else p=0} p' docker-compose-legacy.yml > docker-compose-legacy.yml.tmp
+      # 노드 설정 블록 제거 (개선된 방식)
+      # 1. networks 섹션 백업
+      local networks_section=$(awk '/^networks:/{p=1} p' docker-compose-legacy.yml)
+      
+      # 2. 노드 블록 제거 (networks 섹션 전까지만)
+      awk -v node="$node:" '
+        BEGIN {p=1; in_node=0} 
+        /^  '$node':/ {in_node=1; next}
+        /^  [^[:space:]]+:/ && in_node {in_node=0}
+        /^networks:/ {in_node=0}
+        !in_node {print}
+      ' docker-compose-legacy.yml > docker-compose-legacy.yml.tmp
+      
+      # 3. networks 섹션이 없어졌다면 다시 추가
+      if ! grep -q "^networks:" docker-compose-legacy.yml.tmp; then
+        echo "" >> docker-compose-legacy.yml.tmp
+        echo "$networks_section" >> docker-compose-legacy.yml.tmp
+      fi
+      
       mv docker-compose-legacy.yml.tmp docker-compose-legacy.yml
       
       echo -e "${GREEN}docker-compose-legacy.yml 파일이 수정되었습니다. 백업: docker-compose-legacy.yml.bak${NC}"
