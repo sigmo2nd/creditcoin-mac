@@ -1717,49 +1717,7 @@ mtick() {
 # 프롬프트 설정 관련
 # =================================================
 
-# ZSH 프롬프트 설정 내용
-_PROMPT_CONFIG='
-# =================================================
-# 커스텀 프롬프트 설정 (by setupomz)
-# =================================================
-
-# Oh My Zsh 기본 설정
-export ZSH="$HOME/.oh-my-zsh"
-
-# 테마 설정 (커스텀 프롬프트를 위해 비활성화)
-ZSH_THEME=""
-
-# 플러그인 설정
-plugins=(git)
-
-# Oh My Zsh 로드
-source $ZSH/oh-my-zsh.sh
-
-# 커스텀 프롬프트 설정
-# Git 프롬프트 설정
-ZSH_THEME_GIT_PROMPT_PREFIX="%{$fg_bold[blue]%}git:(%{$fg[red]%}"
-ZSH_THEME_GIT_PROMPT_SUFFIX="%{$reset_color%} "
-ZSH_THEME_GIT_PROMPT_DIRTY="%{$fg[blue]%}) %{$fg[yellow]%}✗"
-ZSH_THEME_GIT_PROMPT_CLEAN="%{$fg[blue]%})"
-
-# 프롬프트 설정 - 원격지에서는 호스트명을 노란색으로
-setopt PROMPT_SUBST
-if [ -n "$SSH_CONNECTION" ]; then
-  PROMPT='%{$fg_bold[yellow]%}%m%{$reset_color%} > %{$fg_bold[cyan]%}%c%{$reset_color%} $(git_prompt_info)'
-else
-  PROMPT='%{$fg_bold[green]%}%m%{$reset_color%} > %{$fg_bold[cyan]%}%c%{$reset_color%} $(git_prompt_info)'
-fi
-
-# LS 색상 설정
-export LS_COLORS="di=1;36:ln=1;35:so=1;32:pi=1;33:ex=31:bd=34;46:cd=34;43:su=30;41:sg=30;46:tw=30;42:ow=34;43"
-
-# 별칭 설정
-alias ls="ls -G"
-alias ll="ls -alF"  
-alias la="ls -A"
-alias l="ls -CF"
-alias grep="grep --color=auto"
-'
+# ZSH 프롬프트 설정을 위한 함수들
 
 
 # =================================================
@@ -1832,7 +1790,49 @@ setupomz() {
     
     # 프롬프트 설정 추가
     echo -e "${BLUE}프롬프트 설정을 추가합니다...${NC}"
-    echo "$_PROMPT_CONFIG" >> "$HOME/.zshrc"
+    cat >> "$HOME/.zshrc" << 'EOF'
+
+# =================================================
+# 커스텀 프롬프트 설정 (by setupomz)
+# =================================================
+
+# Oh My Zsh 기본 설정
+export ZSH="$HOME/.oh-my-zsh"
+
+# 테마 설정 (커스텀 프롬프트를 위해 비활성화)
+ZSH_THEME=""
+
+# 플러그인 설정
+plugins=(git)
+
+# Oh My Zsh 로드
+source $ZSH/oh-my-zsh.sh
+
+# 커스텀 프롬프트 설정
+# Git 프롬프트 설정
+ZSH_THEME_GIT_PROMPT_PREFIX="%{$fg_bold[blue]%}git:(%{$fg[red]%}"
+ZSH_THEME_GIT_PROMPT_SUFFIX="%{$reset_color%} "
+ZSH_THEME_GIT_PROMPT_DIRTY="%{$fg[blue]%}) %{$fg[yellow]%}✗"
+ZSH_THEME_GIT_PROMPT_CLEAN="%{$fg[blue]%})"
+
+# 프롬프트 설정 - 원격지에서는 호스트명을 노란색으로
+setopt PROMPT_SUBST
+if [ -n "$SSH_CONNECTION" ]; then
+  PROMPT='%{$fg_bold[yellow]%}%m%{$reset_color%} > %{$fg_bold[cyan]%}%c%{$reset_color%} $(git_prompt_info)'
+else
+  PROMPT='%{$fg_bold[green]%}%m%{$reset_color%} > %{$fg_bold[cyan]%}%c%{$reset_color%} $(git_prompt_info)'
+fi
+
+# LS 색상 설정
+export LS_COLORS="di=1;36:ln=1;35:so=1;32:pi=1;33:ex=31:bd=34;46:cd=34;43:su=30;41:sg=30;46:tw=30;42:ow=34;43"
+
+# 별칭 설정
+alias ls="ls -G"
+alias ll="ls -alF"  
+alias la="ls -A"
+alias l="ls -CF"
+alias grep="grep --color=auto"
+EOF
     
     # 호스트명 설정 옵션
     echo ""
