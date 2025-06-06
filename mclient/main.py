@@ -802,6 +802,22 @@ class TransmissionStats:
         self.container_count = 0
         self.processing_times = []  # 처리 시간 기록
         self.max_times_stored = 100  # 최대 처리 시간 저장 개수
+        
+        # 60회 데이터 버퍼링을 위한 필드 추가
+        self.sixty_point_buffer = {
+            'system_cpu': [],
+            'system_cpu_user': [],
+            'system_cpu_system': [],
+            'system_memory_percent': [],
+            'system_memory_used': [],
+            'disk_percent': [],
+            'container_stats': {},  # {container_name: {'cpu': [], 'memory': [], 'memory_percent': []}}
+            'node_states': {},  # {node_name: [states]}
+            'data_sizes': [],
+            'processing_times_60': [],
+            'transmission_results': []  # True/False
+        }
+        self.sixty_point_count = 0
     
     def success_rate(self):
         if self.total_sent == 0:
@@ -823,6 +839,127 @@ class TransmissionStats:
         self.processing_times.append(time_value)
         if len(self.processing_times) > self.max_times_stored:
             self.processing_times.pop(0)
+    
+    def add_sixty_point_data(self, sys_metrics, containers, data_size, processing_time, success, configured_nodes=None):
+        """60회 버퍼에 데이터 추가"""
+        # 첫 번째 데이터인 경우 기본 정보 보관
+        if self.sixty_point_count == 0:
+            self.sixty_point_buffer['first_system'] = sys_metrics.copy()
+            self.sixty_point_buffer['first_containers'] = {c['name']: c.copy() for c in containers}
+            if configured_nodes:
+                self.sixty_point_buffer['configured_nodes'] = configured_nodes
+        
+        # 시스템 메트릭 추가 (평균 계산용)
+        self.sixty_point_buffer['system_cpu'].append(sys_metrics.get('cpu_usage', 0))
+        self.sixty_point_buffer['system_cpu_user'].append(sys_metrics.get('cpu_user', 0))
+        self.sixty_point_buffer['system_cpu_system'].append(sys_metrics.get('cpu_system', 0))
+        self.sixty_point_buffer['system_memory_percent'].append(sys_metrics.get('docker_memory_percent', 0))
+        self.sixty_point_buffer['system_memory_used'].append(sys_metrics.get('docker_memory_used', 0))
+        self.sixty_point_buffer['disk_percent'].append(sys_metrics.get('disk_percent', 0))
+        
+        # 컨테이너별 메트릭 추가
+        for container in containers:
+            name = container.get('name', 'unknown')
+            if name not in self.sixty_point_buffer['container_stats']:
+                self.sixty_point_buffer['container_stats'][name] = {
+                    'cpu': [],
+                    'memory': [],
+                    'memory_percent': [],
+                    'state': []
+                }
+            
+            self.sixty_point_buffer['container_stats'][name]['cpu'].append(container.get('cpu', {}).get('percent', 0))
+            self.sixty_point_buffer['container_stats'][name]['memory'].append(container.get('memory', {}).get('usage', 0))
+            self.sixty_point_buffer['container_stats'][name]['memory_percent'].append(container.get('memory', {}).get('percent', 0))
+            self.sixty_point_buffer['container_stats'][name]['state'].append(container.get('status', 'unknown'))
+        
+        # 기타 메트릭
+        self.sixty_point_buffer['data_sizes'].append(data_size)
+        self.sixty_point_buffer['processing_times_60'].append(processing_time)
+        self.sixty_point_buffer['transmission_results'].append(success)
+        
+        self.sixty_point_count += 1
+    
+    def should_send_summary(self):
+        """60회 데이터가 모였는지 확인"""
+        return self.sixty_point_count >= 60
+    
+    def calculate_sixty_point_summary(self, monitor_interval):
+        """60회 데이터의 평균 통계 계산"""
+        if self.sixty_point_count == 0:
+            return None
+        
+        # 실제 경과 시간 계산 (초 단위)
+        elapsed_seconds = self.sixty_point_count * monitor_interval
+        
+        # 첫 번째 데이터에서 기본 정보 가져오기
+        first_system = self.sixty_point_buffer.get('first_system', {})
+        first_containers = self.sixty_point_buffer.get('first_containers', {})
+        
+        # 시스템 평균값 계산 (원본 구조 유지)
+        system_data = first_system.copy()
+        
+        # 평균값으로 업데이트
+        system_data['cpu_usage'] = sum(self.sixty_point_buffer['system_cpu']) / len(self.sixty_point_buffer['system_cpu']) if self.sixty_point_buffer['system_cpu'] else 0
+        system_data['cpu_user'] = sum(self.sixty_point_buffer['system_cpu_user']) / len(self.sixty_point_buffer['system_cpu_user']) if self.sixty_point_buffer['system_cpu_user'] else 0
+        system_data['cpu_system'] = sum(self.sixty_point_buffer['system_cpu_system']) / len(self.sixty_point_buffer['system_cpu_system']) if self.sixty_point_buffer['system_cpu_system'] else 0
+        system_data['cpu_idle'] = 100.0 - system_data['cpu_usage']
+        system_data['docker_memory_used'] = int(sum(self.sixty_point_buffer['system_memory_used']) / len(self.sixty_point_buffer['system_memory_used'])) if self.sixty_point_buffer['system_memory_used'] else 0
+        system_data['docker_memory_percent'] = sum(self.sixty_point_buffer['system_memory_percent']) / len(self.sixty_point_buffer['system_memory_percent']) if self.sixty_point_buffer['system_memory_percent'] else 0
+        system_data['disk_percent'] = sum(self.sixty_point_buffer['disk_percent']) / len(self.sixty_point_buffer['disk_percent']) if self.sixty_point_buffer['disk_percent'] else 0
+        
+        # 컨테이너 평균값 계산 (배열 형태로)
+        containers_data = []
+        
+        for container_name, stats in self.sixty_point_buffer['container_stats'].items():
+            if stats['cpu'] and len(stats['cpu']) > 0 and container_name in first_containers:
+                # 첫 번째 컨테이너 데이터 복사
+                container_avg = first_containers[container_name].copy()
+                
+                # 노드 상태 빈도 계산
+                state_counts = {}
+                for state in stats['state']:
+                    state_counts[state] = state_counts.get(state, 0) + 1
+                
+                # 가장 많이 나타난 상태를 현재 상태로
+                most_common_state = max(state_counts.items(), key=lambda x: x[1])[0] if state_counts else 'unknown'
+                container_avg['status'] = most_common_state
+                
+                # 평균값으로 업데이트
+                container_avg['cpu']['percent'] = sum(stats['cpu']) / len(stats['cpu'])
+                container_avg['memory']['usage'] = int(sum(stats['memory']) / len(stats['memory']))
+                container_avg['memory']['percent'] = sum(stats['memory_percent']) / len(stats['memory_percent'])
+                
+                # 타임스탬프 업데이트
+                container_avg['timestamp'] = int(time.time() * 1000)
+                
+                containers_data.append(container_avg)
+        
+        # 원래 포맷과 동일한 구조로 반환
+        summary = {
+            'system': system_data,
+            'containers': containers_data,
+            'configured_nodes': self.sixty_point_buffer.get('configured_nodes', [])
+        }
+        
+        return summary
+    
+    def reset_sixty_point_buffer(self):
+        """60회 버퍼 초기화"""
+        self.sixty_point_buffer = {
+            'system_cpu': [],
+            'system_cpu_user': [],
+            'system_cpu_system': [],
+            'system_memory_percent': [],
+            'system_memory_used': [],
+            'disk_percent': [],
+            'container_stats': {},
+            'node_states': {},
+            'data_sizes': [],
+            'processing_times_60': [],
+            'transmission_results': []
+        }
+        self.sixty_point_count = 0
 
 #################################################
 # 유틸리티 함수
@@ -1303,15 +1440,48 @@ async def run_websocket_mode(settings, node_names: List[str]):
                 processing_time = loop_end_time - loop_start_time
                 stats.add_processing_time(processing_time)
                 
+                # 60회 데이터 버퍼에 추가
+                stats.add_sixty_point_data(
+                    sys_metrics, 
+                    container_list, 
+                    len(json_str), 
+                    processing_time, 
+                    True,  # success
+                    configured_nodes=node_names  # configured_nodes 전달
+                )
+                
                 # 터미널에 출력만 하고 로그 출력은 제거
                 print_transmission_status(stats)
                 
                 # 10회마다 누적 통계 로그 출력
                 if stats.total_sent % 10 == 0:
                     logger.info(f"누적 통계 #{stats.total_sent}: 성공률 {stats.success_rate():.1f}%")
+                
+                # 60회마다 평균 통계 전송
+                if stats.should_send_summary():
+                    summary_data = stats.calculate_sixty_point_summary(settings.MONITOR_INTERVAL)
+                    if summary_data:
+                        logger.info(f"60회 평균 통계 계산 완료. 서버로 전송 중...")
+                        summary_sent = await websocket_client.send_summary(summary_data)
+                        if summary_sent:
+                            logger.info(f"60회 평균 통계 전송 성공")
+                            # 버퍼 초기화
+                            stats.reset_sixty_point_buffer()
+                        else:
+                            logger.error("60회 평균 통계 전송 실패")
             else:
                 stats.error_count += 1
                 logger.error("데이터 전송 실패")
+                
+                # 실패한 경우에도 60회 데이터 버퍼에 추가
+                stats.add_sixty_point_data(
+                    sys_metrics, 
+                    container_list, 
+                    len(json_str), 
+                    0,  # processing_time (실패 시 0)
+                    False,  # success
+                    configured_nodes=node_names  # configured_nodes 전달
+                )
             
             # 실행 시간 계산
             loop_end_time = time.time()

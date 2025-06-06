@@ -8,6 +8,7 @@ import time
 import websockets
 import random
 import os
+import aiohttp
 from typing import Dict, List, Any, Optional
 from command_handler import CommandHandler
 
@@ -118,7 +119,7 @@ class WebSocketClient:
             register_message = {
                 "type": "register",
                 "serverId": self.server_id,
-                "version": "1.0.0",
+                "version": "1.1.0",
                 "timestamp": int(time.time() * 1000)
             }
             
@@ -618,4 +619,132 @@ class WebSocketClient:
             return True
         except Exception as e:
             logger.error(f"메시지 전송 중 오류: {e}")
+            return False
+    
+    async def send_summary(self, summary_data: Dict[str, Any]) -> bool:
+        """60회 평균 통계 데이터 전송 (WebSocket + HTTP POST)"""
+        # 재연결 중이면 바로 False 반환
+        if self.reconnecting:
+            logger.debug("재연결 진행 중... Summary 전송 건너뜀")
+            return False
+            
+        if not self.connected or not self.ws:
+            logger.warning("WebSocket 연결이 없습니다. Summary 전송 실패")
+            return False
+        
+        ws_success = False
+        http_success = False
+        
+        try:
+            # 시퀀스 번호 증가
+            self.sequence_number += 1
+            
+            # Summary 메시지 생성
+            message = {
+                "type": "summary",
+                "serverId": self.server_id,
+                "timestamp": int(time.time() * 1000),
+                "sequence": self.sequence_number,
+                "data": summary_data
+            }
+            
+            # 메시지 전송
+            message_json = json.dumps(message)
+            
+            # 디버그 로깅
+            logger.info(f"60회 평균 통계 전송: 기간={summary_data.get('period_seconds')}초, "
+                       f"데이터포인트={summary_data.get('data_points')}개")
+            
+            # 디버그 파일에 Summary 데이터 기록
+            try:
+                with open('/tmp/mclient_last_summary.json', 'w') as f:
+                    json.dump(message, f, indent=2)
+            except Exception as e:
+                logger.debug(f"Summary 디버그 파일 쓰기 실패: {e}")
+            
+            # 1. WebSocket으로 전송
+            await self.ws.send(message_json)
+            ws_success = True
+            logger.info(f"60회 평균 통계 WebSocket 전송 완료 (시퀀스: {self.sequence_number})")
+            
+            # 2. HTTP POST로도 전송 (비동기로 동시 실행)
+            http_task = asyncio.create_task(self._send_summary_http(summary_data))
+            
+            # HTTP 전송 완료 대기 (최대 5초)
+            try:
+                http_success = await asyncio.wait_for(http_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("HTTP POST 전송 타임아웃 (5초)")
+                http_success = False
+            
+            return ws_success  # WebSocket 전송이 성공하면 성공으로 간주
+                
+        except websockets.exceptions.ConnectionClosed as e:
+            logger.warning(f"Summary 전송 중 연결 종료: {e}")
+            self.connected = False
+            await self.reconnect()
+            return False
+        
+        except Exception as e:
+            logger.error(f"Summary 전송 중 오류 발생: {str(e)}")
+            self.connected = False
+            await self.reconnect()
+            return False
+    
+    async def _send_summary_http(self, summary_data: Dict[str, Any]) -> bool:
+        """HTTP POST로 summary 데이터 전송"""
+        try:
+            # HTTP API URL 구성
+            # WebSocket URL에서 HTTP URL 유추
+            if hasattr(self, 'url_or_mode') and isinstance(self.url_or_mode, str):
+                if self.url_or_mode.startswith('wss://'):
+                    api_base_url = self.url_or_mode.replace('wss://', 'https://').replace('/ws/monitoring/', '')
+                elif self.url_or_mode.startswith('ws://'):
+                    api_base_url = self.url_or_mode.replace('ws://', 'http://').replace('/ws/monitoring/', '')
+                else:
+                    # 기본 URL 사용
+                    api_base_url = f"https://{self.server_host}"
+            else:
+                api_base_url = f"https://{self.server_host}"
+            
+            api_url = f"{api_base_url}/api/server-logs/save/"
+            
+            # 인증 헤더 준비
+            headers = {}
+            if self.auth_token:
+                headers["Authorization"] = f"Token {self.auth_token}"
+            headers["Content-Type"] = "application/json"
+            
+            # SSL 설정
+            ssl_verify = self.ssl_verify
+            connector = None
+            if api_url.startswith('https') and not ssl_verify:
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+                connector = aiohttp.TCPConnector(ssl=ssl_context)
+            
+            # HTTP POST 요청
+            async with aiohttp.ClientSession(connector=connector) as session:
+                # API 형식에 맞게 데이터 변환
+                post_data = {
+                    "server_id": self.server_id,
+                    "timestamp": int(time.time() * 1000),
+                    "summary_data": summary_data,
+                    "period_seconds": summary_data.get('period_seconds', 60),
+                    "data_points": summary_data.get('data_points', 60)
+                }
+                
+                async with session.post(api_url, json=post_data, headers=headers) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        logger.info(f"60회 평균 통계 HTTP POST 전송 성공: {api_url}")
+                        return True
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"HTTP POST 전송 실패 ({response.status}): {error_text}")
+                        return False
+                        
+        except Exception as e:
+            logger.error(f"HTTP POST 전송 중 오류: {str(e)}")
             return False
