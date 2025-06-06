@@ -1499,6 +1499,11 @@ async def run_websocket_mode(settings, node_names: List[str]):
             if wait_time == 0:
                 logger.debug(f"실행 시간({execution_time:.2f}초)이 설정 간격({settings.MONITOR_INTERVAL}초)을 초과")
             
+            # 재연결 필요 체크
+            if websocket_client.needs_reconnect and not websocket_client.reconnecting:
+                logger.info("WebSocket 재연결이 필요합니다.")
+                asyncio.create_task(websocket_client.reconnect())
+            
             # 재연결 중이면 추가 대기
             if websocket_client.reconnecting and wait_time < 5.0:
                 wait_time = 5.0

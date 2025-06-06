@@ -50,6 +50,8 @@ class WebSocketClient:
         self.heartbeat_task = None
         self.command_handler = CommandHandler()  # 명령어 핸들러 추가
         self.receive_task = None  # 메시지 수신 태스크
+        self.reconnect_lock = asyncio.Lock()  # 재연결 동시성 제어
+        self.needs_reconnect = False  # 재연결 필요 플래그
         
         # 환경 변수에서 직접 서버 호스트 가져오기
         self.server_host = os.environ.get("WS_SERVER_HOST", "localhost")
@@ -193,15 +195,15 @@ class WebSocketClient:
                     except Exception as e:
                         logger.warning(f"Ping 실패: {str(e)}")
                         self.connected = False
-                        await self.reconnect()
+                        self.needs_reconnect = True
                         break
         except asyncio.CancelledError:
             # 태스크가 취소됨
-            pass
+            logger.debug("Ping 루프가 취소되었습니다")
         except Exception as e:
             logger.error(f"Ping 루프 오류: {str(e)}")
             self.connected = False
-            await self.reconnect()
+            self.needs_reconnect = True
     
     async def _heartbeat_loop(self):
         """정기적인 하트비트 메시지 전송"""
@@ -222,15 +224,15 @@ class WebSocketClient:
                     except Exception as e:
                         logger.warning(f"하트비트 전송 실패: {str(e)}")
                         self.connected = False
-                        await self.reconnect()
+                        self.needs_reconnect = True
                         break
         except asyncio.CancelledError:
             # 태스크가 취소됨
-            pass
+            logger.debug("하트비트 루프가 취소되었습니다")
         except Exception as e:
             logger.error(f"하트비트 루프 오류: {str(e)}")
             self.connected = False
-            await self.reconnect()
+            self.needs_reconnect = True
     
     async def connect(self) -> bool:
         """WebSocket 서버에 연결"""
@@ -427,66 +429,76 @@ class WebSocketClient:
     
     async def reconnect(self) -> bool:
         """연결 재시도 (지수 백오프 적용 및 개선된 재시도 전략)"""
-        if self.connected:
-            return True
-        
-        # 이미 재연결 중이면 리턴
-        if self.reconnecting:
-            logger.debug("이미 재연결 진행 중...")
-            return False
-        
-        self.reconnecting = True
-        
-        # 타스크 취소
-        if self.ping_task:
-            self.ping_task.cancel()
-            self.ping_task = None
-        
-        if self.heartbeat_task:
-            self.heartbeat_task.cancel()
-            self.heartbeat_task = None
-        
-        # WebSocket 연결 닫기
-        if self.ws and not self.ws.closed:
-            await self.ws.close()
-        
-        self.reconnect_attempts += 1
-        
-        # 지수 백오프: 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024
-        max_backoff = 1024  # 최대 1024초 지연
-        if self.reconnect_attempts == 1:
-            base_delay = 1
-        else:
-            base_delay = min(max_backoff, 2 ** (self.reconnect_attempts - 1))
-        
-        # 지터는 제거하여 정확한 지수 백오프 구현
-        backoff = base_delay
-        
-        # 연결 시도 로깅 - 마이크로초 단위의 타임스탬프 포함
-        if backoff >= 60:
-            minutes = int(backoff // 60)
-            seconds = int(backoff % 60)
-            time_str = f"{minutes}분 {seconds}초" if seconds > 0 else f"{minutes}분"
-        else:
-            time_str = f"{int(backoff)}초"
-        logger.info(f"WebSocket 재연결 시도 ({self.reconnect_attempts}번째): {time_str} 후 시도 (타임스탬프: {time.time():.6f})")
-        await asyncio.sleep(backoff)
-        
-        # 재연결 시도
-        connected = await self.connect()
-        
-        if connected:
-            self.reconnect_attempts = 0
-            logger.info(f"WebSocket 재연결 성공 (타임스탬프: {time.time():.6f})")
+        async with self.reconnect_lock:
+            if self.connected:
+                return True
             
-            # 큐에 있는 메시지 전송
-            await self._flush_message_queue()
-        else:
-            # 5분 지났다고 리셋하지 않음 - 계속 백오프 유지
-            pass
-        
-        self.reconnecting = False  # 재연결 플래그 해제
-        return connected
+            # 이미 재연결 중이면 리턴
+            if self.reconnecting:
+                logger.debug("이미 재연결 진행 중...")
+                return False
+            
+            self.reconnecting = True
+            try:
+                # 타스크 취소
+                if self.ping_task:
+                    self.ping_task.cancel()
+                    self.ping_task = None
+                
+                if self.heartbeat_task:
+                    self.heartbeat_task.cancel()
+                    self.heartbeat_task = None
+                
+                if self.receive_task:
+                    self.receive_task.cancel()
+                    self.receive_task = None
+                
+                # WebSocket 연결 닫기
+                if self.ws and not self.ws.closed:
+                    try:
+                        await self.ws.close()
+                    except Exception as e:
+                        logger.debug(f"WebSocket 닫기 중 오류: {e}")
+                
+                self.reconnect_attempts += 1
+                
+                # 지수 백오프: 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024
+                max_backoff = 1024  # 최대 1024초 지연
+                if self.reconnect_attempts == 1:
+                    base_delay = 1
+                else:
+                    base_delay = min(max_backoff, 2 ** (self.reconnect_attempts - 1))
+                
+                # 지터는 제거하여 정확한 지수 백오프 구현
+                backoff = base_delay
+                
+                # 연결 시도 로깅 - 마이크로초 단위의 타임스탬프 포함
+                if backoff >= 60:
+                    minutes = int(backoff // 60)
+                    seconds = int(backoff % 60)
+                    time_str = f"{minutes}분 {seconds}초" if seconds > 0 else f"{minutes}분"
+                else:
+                    time_str = f"{int(backoff)}초"
+                logger.info(f"WebSocket 재연결 시도 ({self.reconnect_attempts}번째): {time_str} 후 시도 (타임스탬프: {time.time():.6f})")
+                await asyncio.sleep(backoff)
+                
+                # 재연결 시도
+                connected = await self.connect()
+                
+                if connected:
+                    self.reconnect_attempts = 0
+                    logger.info(f"WebSocket 재연결 성공 (타임스탬프: {time.time():.6f})")
+                    
+                    # 큐에 있는 메시지 전송
+                    await self._flush_message_queue()
+                else:
+                    # 5분 지났다고 리셋하지 않음 - 계속 백오프 유지
+                    pass
+                
+                self.needs_reconnect = False
+                return connected
+            finally:
+                self.reconnecting = False  # 반드시 플래그 해제
     
     async def disconnect(self) -> None:
         """WebSocket 연결 종료"""
@@ -556,8 +568,19 @@ class WebSocketClient:
             elif msg_type == 'stats_ack':
                 # 통계 전송 확인
                 self._handle_stats_ack(data)
+            elif msg_type == 'summary_ack':
+                # Summary 전송 확인
+                seq = data.get('sequence') or (data.get('data', {}).get('sequence'))
+                logger.info(f"Summary 전송 ACK 수신: 시퀀스 {seq}")
+            elif msg_type == 'error':
+                # 에러 메시지 처리
+                error_msg = data.get('message', '알 수 없는 에러')
+                error_detail = data.get('detail', '')
+                logger.error(f"서버 에러: {error_msg} - {error_detail}")
+                logger.debug(f"에러 전체 데이터: {data}")
             else:
                 logger.debug(f"알 수 없는 메시지 타입: {msg_type}")
+                logger.debug(f"메시지 전체 데이터: {data}")
                 
         except json.JSONDecodeError as e:
             logger.error(f"메시지 파싱 오류: {e}")
@@ -713,7 +736,12 @@ class WebSocketClient:
             headers = {}
             if self.auth_token:
                 headers["Authorization"] = f"Token {self.auth_token}"
+                logger.debug(f"HTTP POST 인증 토큰 사용: Token {self.auth_token[:20]}...")
+            else:
+                logger.warning("HTTP POST에 인증 토큰이 없습니다")
             headers["Content-Type"] = "application/json"
+            
+            logger.debug(f"HTTP POST URL: {api_url}")
             
             # SSL 설정
             ssl_verify = self.ssl_verify
@@ -735,11 +763,15 @@ class WebSocketClient:
                     "data_points": summary_data.get('data_points', 60)
                 }
                 
-                async with session.post(api_url, json=post_data, headers=headers) as response:
+                async with session.post(api_url, json=post_data, headers=headers, allow_redirects=False) as response:
                     if response.status == 200:
                         result = await response.json()
                         logger.info(f"60회 평균 통계 HTTP POST 전송 성공: {api_url}")
                         return True
+                    elif response.status == 302:
+                        location = response.headers.get('Location', '')
+                        logger.warning(f"HTTP POST 302 리다이렉트: {location} - 인증 토큰이 유효하지 않을 수 있습니다")
+                        return False
                     else:
                         error_text = await response.text()
                         logger.error(f"HTTP POST 전송 실패 ({response.status}): {error_text}")
