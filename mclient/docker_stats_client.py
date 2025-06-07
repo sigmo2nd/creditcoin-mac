@@ -239,7 +239,12 @@ class DockerStatsClient:
                     block_info_task = asyncio.create_task(self.get_block_info(container_name, rpc_port))
                     sync_state_task = asyncio.create_task(self.get_sync_state(container_name, rpc_port))
                     
-                    block_info, sync_info = await asyncio.gather(block_info_task, sync_state_task)
+                    # return_exceptions=True로 개별 실패를 처리
+                    results = await asyncio.gather(block_info_task, sync_state_task, return_exceptions=True)
+                    
+                    # 결과 처리
+                    block_info = results[0] if not isinstance(results[0], Exception) else {"current_block": 0, "best_block": 0, "finalized_block": 0}
+                    sync_info = results[1] if not isinstance(results[1], Exception) else {"highest_block": 0, "starting_block": 0}
                     
                     return {
                         "is_syncing": is_syncing,
@@ -274,6 +279,19 @@ class DockerStatsClient:
     async def get_block_info(self, container_name: str, rpc_port: int) -> Dict[str, Any]:
         """노드의 블록 정보를 가져옴"""
         try:
+            # 컨테이너 실행 상태 확인
+            check_cmd = ["docker", "inspect", "-f", "{{.State.Running}}", container_name]
+            check_result = await asyncio.create_subprocess_exec(
+                *check_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await check_result.communicate()
+            
+            if check_result.returncode != 0 or stdout.decode().strip() != "true":
+                logger.debug(f"컨테이너 {container_name}가 실행 중이 아님 - 블록 정보 건너뜀")
+                return {"current_block": 0, "best_block": 0, "finalized_block": 0}
+            
             # 현재 블록 번호 가져오기
             cmd = [
                 "docker", "exec", container_name,
@@ -359,6 +377,18 @@ class DockerStatsClient:
     async def get_sync_state(self, container_name: str, rpc_port: int) -> Dict[str, Any]:
         """노드의 동기화 상태 정보를 가져옴"""
         try:
+            # 컨테이너 실행 상태 확인
+            check_cmd = ["docker", "inspect", "-f", "{{.State.Running}}", container_name]
+            check_result = await asyncio.create_subprocess_exec(
+                *check_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await check_result.communicate()
+            
+            if check_result.returncode != 0 or stdout.decode().strip() != "true":
+                logger.debug(f"컨테이너 {container_name}가 실행 중이 아님 - 동기화 상태 건너뜀")
+                return {"highest_block": 0, "starting_block": 0}
             cmd = [
                 "docker", "exec", container_name,
                 "curl", "-s", "-H", "Content-Type: application/json",
@@ -504,14 +534,43 @@ class DockerStatsClient:
     async def _health_check_stream(self, container_name: str, rpc_port: int):
         """노드 헬스체크를 주기적으로 실행하는 스트림"""
         logger.info(f"헬스체크 스트림 시작: {container_name} (RPC: {rpc_port})")
+        consecutive_failures = 0
         
         while self.running:
             try:
+                # 컨테이너가 실행 중인지 먼저 확인
+                cmd = ["docker", "inspect", "-f", "{{.State.Running}}", container_name]
+                result = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await result.communicate()
+                
+                if result.returncode != 0 or stdout.decode().strip() != "true":
+                    logger.warning(f"컨테이너 {container_name}가 실행 중이 아닙니다. 헬스체크 건너뜀")
+                    # 오프라인 상태로 캐시 업데이트
+                    self.container_status_cache[container_name] = {
+                        "is_syncing": False,
+                        "peers": 0,
+                        "should_have_peers": True,
+                        "current_block": 0,
+                        "best_block": 0,
+                        "finalized_block": 0,
+                        "target_block": 0,
+                        "starting_block": 0,
+                        "sync_state": "offline"
+                    }
+                    # 오프라인 컨테이너는 더 긴 간격으로 체크
+                    await asyncio.sleep(self.health_check_interval * 5)
+                    continue
+                
                 # 헬스 정보 수집
                 health_info = await self.check_node_health(container_name, rpc_port)
                 
                 # 캐시에 저장
                 self.container_status_cache[container_name] = health_info
+                consecutive_failures = 0
                 
                 # 대기
                 await asyncio.sleep(self.health_check_interval)
@@ -520,9 +579,11 @@ class DockerStatsClient:
                 logger.info(f"헬스체크 스트림 취소됨: {container_name}")
                 break
             except Exception as e:
+                consecutive_failures += 1
                 logger.error(f"헬스체크 스트림 오류 ({container_name}): {e}")
-                # 오류 시 더 긴 대기
-                await asyncio.sleep(self.health_check_interval * 2)
+                # 백오프: 실패할수록 대기 시간 증가 (최대 60초)
+                wait_time = min(60, self.health_check_interval * (2 ** consecutive_failures))
+                await asyncio.sleep(wait_time)
     
     async def start_stats_monitoring(self, node_patterns: List[str]=None):
         """스트림 모드로 Docker stats 모니터링 시작"""

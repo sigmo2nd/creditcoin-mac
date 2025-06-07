@@ -213,7 +213,10 @@ async def verify_token(auth_api_url: str, token: str) -> bool:
         async with aiohttp.ClientSession(connector=connector) as session:
             headers = {'Authorization': f'Token {token}'}
             async with session.get(verify_url, headers=headers) as response:
-                return response.status == 200
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get('valid', False)
+                return False
     except Exception as e:
         logger.debug(f"토큰 검증 중 오류: {e}")
         return False
