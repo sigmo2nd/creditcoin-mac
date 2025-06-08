@@ -166,7 +166,249 @@ async def command_interface():
             print(f"오류: {e}")
 ```
 
-## 3. rotate_keys 개선 사항
+## 3. 명령어 상세 설명
+
+### 3.1 지원 명령어 및 파라미터
+
+#### `start` - Docker 컨테이너 시작
+```json
+{
+  "type": "command",
+  "data": {
+    "id": "cmd_12345",
+    "command": "start",
+    "target": "3node0",  // 또는 "all"
+    "params": {}
+  }
+}
+```
+- `target`: 컨테이너 이름 (3node0, node1 등) 또는 "all"
+- 결과: 시작된 컨테이너 목록
+
+#### `stop` - Docker 컨테이너 중지
+```json
+{
+  "type": "command",
+  "data": {
+    "id": "cmd_12346",
+    "command": "stop",
+    "target": "3node0",  // 또는 "all"
+    "params": {}
+  }
+}
+```
+- `target`: 컨테이너 이름 또는 "all"
+- 결과: 중지된 컨테이너 목록
+
+#### `restart` - 컨테이너 재시작
+```json
+{
+  "type": "command",
+  "data": {
+    "id": "cmd_12347",
+    "command": "restart",
+    "target": "3node0",
+    "params": {}
+  }
+}
+```
+- `target`: 컨테이너 이름
+- 결과: 재시작 완료 메시지
+
+#### `logs` - 컨테이너 로그 조회
+```json
+{
+  "type": "command",
+  "data": {
+    "id": "cmd_12348",
+    "command": "logs",
+    "target": "3node0",
+    "params": {
+      "lines": 100,      // 기본값: 50
+      "follow": false    // 실시간 로그 (미구현)
+    }
+  }
+}
+```
+- `target`: 컨테이너 이름
+- `params.lines`: 조회할 로그 줄 수
+- 결과: 로그 텍스트
+
+#### `status` - 컨테이너 상태 확인
+```json
+{
+  "type": "command",
+  "data": {
+    "id": "cmd_12349",
+    "command": "status",
+    "target": "3node0",  // 또는 "all"
+    "params": {}
+  }
+}
+```
+- `target`: 컨테이너 이름 또는 "all"
+- 결과: 컨테이너 상태 테이블
+
+#### `exec` - 컨테이너 내 명령 실행
+```json
+{
+  "type": "command",
+  "data": {
+    "id": "cmd_12350",
+    "command": "exec",
+    "target": "3node0",
+    "params": {
+      "command": "ls -la /root/data"
+    }
+  }
+}
+```
+- `target`: 컨테이너 이름
+- `params.command`: 실행할 명령어
+- 결과: 명령 실행 결과
+
+#### `backup_keys` - 노드 키 백업
+```json
+{
+  "type": "command",
+  "data": {
+    "id": "cmd_12351",
+    "command": "backup_keys",
+    "target": "3node0",
+    "params": {}
+  }
+}
+```
+- `target`: 컨테이너 이름
+- 동작:
+  1. 노드 중지
+  2. keystore와 network 디렉토리 tar.gz 백업
+  3. 노드 재시작
+- 결과: 백업 파일명 (예: "3node0-keys-20250108-1430.tar.gz")
+
+#### `payout` - 지급 스크립트 실행
+```json
+{
+  "type": "command",
+  "data": {
+    "id": "cmd_12352",
+    "command": "payout",
+    "target": "3node0",
+    "params": {}
+  }
+}
+```
+- `target`: 컨테이너 이름
+- 결과: 페이아웃 실행 결과 (현재 미구현)
+
+#### `rotate_keys` - 세션 키 교체
+```json
+{
+  "type": "command",
+  "data": {
+    "id": "cmd_12353",
+    "command": "rotate_keys",
+    "target": "3node0",
+    "params": {}
+  }
+}
+```
+- `target`: 컨테이너 이름
+- 동작:
+  1. RPC로 새 세션 키 생성
+  2. 서버로 새 키 전송 (key_update 메시지)
+- 결과: 새로운 세션 키
+
+#### `check_keys` - 세션 키 상태 종합 체크
+```json
+{
+  "type": "command",
+  "data": {
+    "id": "cmd_12354",
+    "command": "check_keys",
+    "target": "3node0",
+    "params": {
+      "rotate_to_check": false,  // true면 rotate해서 키 확인 (주의!)
+      "public_keys": {           // 선택사항
+        "aura": "0x...",
+        "gran": "0x..."
+      }
+    }
+  }
+}
+```
+- `target`: 컨테이너 이름
+- `params.rotate_to_check`: true면 키를 회전시켜 확인 (기존 키 덮어씀!)
+- `params.public_keys`: 각 키 타입별 public key (선택)
+- 결과: 세션 키 존재 여부, 각 키 타입별 상태
+
+#### `has_session_keys` - 세션 키 존재 확인
+```json
+{
+  "type": "command",
+  "data": {
+    "id": "cmd_12355",
+    "command": "has_session_keys",
+    "target": "3node0",
+    "params": {
+      "session_keys": ""  // 빈 문자열이면 현재 키 확인
+    }
+  }
+}
+```
+- `target`: 컨테이너 이름
+- `params.session_keys`: 확인할 세션 키 (빈 문자열 = 현재 키)
+- 결과: true/false
+
+#### `has_key` - 특정 키 타입 확인
+```json
+{
+  "type": "command",
+  "data": {
+    "id": "cmd_12356",
+    "command": "has_key",
+    "target": "3node0",
+    "params": {
+      "public_key": "0xabc123...",
+      "key_type": "aura"  // aura, gran, babe, imon, beefy
+    }
+  }
+}
+```
+- `target`: 컨테이너 이름
+- `params.public_key`: 확인할 public key (필수)
+- `params.key_type`: 키 타입 (기본값: aura)
+- 결과: true/false
+
+### 3.2 명령 응답 형식
+
+성공 응답:
+```json
+{
+  "type": "command_response",
+  "data": {
+    "command_id": "cmd_12345",
+    "status": "completed",
+    "result": "3node0 시작됨",
+    "timestamp": 1704715200
+  }
+}
+```
+
+실패 응답:
+```json
+{
+  "type": "command_response",
+  "data": {
+    "command_id": "cmd_12345",
+    "status": "failed",
+    "error": "컨테이너를 찾을 수 없습니다",
+    "timestamp": 1704715200
+  }
+}
+```
+
+## 4. rotate_keys 개선 사항
 
 ### 3.1 문제점
 - 기존 rotate_keys는 새로운 세션 키를 생성하지만 서버에 전달하지 않음
@@ -369,7 +611,67 @@ send client123 logs 100 # 로그 100줄 조회
 broadcast status        # 모든 클라이언트 상태 확인
 ```
 
-## 6. 보안 고려사항
+## 6. 키 관리 및 세션 키 이해
+
+### 6.1 세션 키의 특성
+- **읽기 불가**: 보안상 세션 키는 생성 시점에만 반환되며 이후 읽을 수 없음
+- **RPC 메서드**:
+  - `author_rotateKeys`: 새 키 생성 (기존 키 덮어씀)
+  - `author_hasSessionKeys`: 키 존재 여부만 확인
+  - `author_hasKey`: 특정 키 타입 존재 여부 확인
+
+### 6.2 키 백업과 복원
+```bash
+# 키스토어 위치
+# Creditcoin 3.0: /root/data/chains/creditcoin3/keystore/
+# Creditcoin 2.0: /root/data/chains/creditcoin/keystore/
+
+# 백업 프로세스 (노드 중지 필요)
+docker stop 3node0
+docker run --rm -v 3node0_data:/data:ro -v /backup:/backup alpine \
+  tar -czf /backup/3node0-keys-$(date +%Y%m%d).tar.gz \
+  -C /data chains/creditcoin3/keystore chains/creditcoin3/network
+docker start 3node0
+
+# 복원 프로세스 (노드 중지 필요)
+docker stop 3node0
+docker run --rm -v 3node0_data:/data -v /backup:/backup alpine \
+  tar -xzf /backup/3node0-keys-20250108.tar.gz -C /data
+docker start 3node0
+```
+
+### 6.3 중요 주의사항
+- ⚠️ **동일 키 중복 사용 금지**: 같은 세션 키로 여러 노드 동시 운영 시 슬래싱 위험
+- ⚠️ **노드 중지 필수**: 키 파일 조작 시 반드시 노드 중지
+- ⚠️ **키 노출 방지**: 세션 키가 노출되면 네트워크 보안 위협
+
+## 7. 페이아웃 체크 기능
+
+### 7.1 자동 페이아웃 체크
+- **주기**: 60초마다 (60회 데이터 수집 시)
+- **동작**: 동기화된 노드를 통해 네트워크 전체 페이아웃 확인
+- **특징**: 누구나 페이아웃 실행 가능 (가스비는 실행자 부담)
+
+### 7.2 페이아웃 정보 메시지
+```json
+{
+  "type": "summary",
+  "data": {
+    "payout_info": {
+      "payout_checks": {
+        "3node0": {
+          "current_era": 1234,
+          "unclaimed_payouts": 5,
+          "synced": true
+        }
+      },
+      "timestamp": "2025-01-08T14:30:00.000Z"
+    }
+  }
+}
+```
+
+## 8. 보안 고려사항
 
 1. **인증**: 토큰 기반 인증 구현
 2. **암호화**: SSL/TLS 사용

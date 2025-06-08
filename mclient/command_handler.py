@@ -56,6 +56,12 @@ class CommandHandler:
                 result = await self._run_payout(target)
             elif command_type == 'rotate_keys':
                 result = await self._rotate_keys(target)
+            elif command_type == 'check_keys':
+                result = await self._check_keys(target, params)
+            elif command_type == 'has_session_keys':
+                result = await self._has_session_keys(target, params)
+            elif command_type == 'has_key':
+                result = await self._has_key(target, params)
             else:
                 raise ValueError(f"지원되지 않는 명령어: {command_type}")
             
@@ -263,3 +269,117 @@ class CommandHandler:
         containers = output.strip().split('\n') if output else []
         # mclient, mserver 등 제외
         return [c for c in containers if c and ('node' in c) and ('mclient' not in c)]
+    
+    async def _check_keys(self, container: str, params: Dict) -> Dict:
+        """세션 키 전체 상태 체크"""
+        result = {
+            "container": container,
+            "has_session_keys": False,
+            "key_types": {},
+            "session_keys_hex": None
+        }
+        
+        try:
+            # 세션 키 존재 여부 확인
+            has_keys = await self._has_session_keys(container, {})
+            result["has_session_keys"] = has_keys.get("has_keys", False)
+            
+            # 세션 키가 있으면 rotate해서 현재 키 확인 (주의: 기존 키 덮어씀)
+            if params.get("rotate_to_check", False) and result["has_session_keys"]:
+                rotate_result = await self._rotate_keys(container)
+                if isinstance(rotate_result, dict) and "session_key" in rotate_result:
+                    result["session_keys_hex"] = rotate_result["session_key"]
+                    result["warning"] = "기존 세션 키가 새로운 키로 교체되었습니다!"
+            
+            # 각 키 타입 존재 여부 (public key가 있을 때만)
+            if params.get("public_keys"):
+                for key_type in ['aura', 'gran', 'babe', 'imon', 'beefy']:
+                    public_key = params["public_keys"].get(key_type)
+                    if public_key:
+                        has_key_result = await self._has_key(container, {
+                            "public_key": public_key,
+                            "key_type": key_type
+                        })
+                        result["key_types"][key_type] = has_key_result.get("has_key", False)
+            
+            return result
+            
+        except Exception as e:
+            return {"error": str(e), "container": container}
+    
+    async def _has_session_keys(self, container: str, params: Dict) -> Dict:
+        """hasSessionKeys RPC 호출"""
+        try:
+            # 포트 결정
+            if container.startswith('3node'):
+                port = 33980 + int(container.replace('3node', ''))
+            else:
+                port = 33880 + int(container.replace('node', ''))
+            
+            # 세션 키 파라미터 (빈 문자열이면 현재 키 확인)
+            session_keys = params.get("session_keys", "")
+            
+            cmd = [
+                'docker', 'exec', container,
+                'curl', '-s', '-H', 'Content-Type: application/json',
+                '-d', json.dumps({
+                    "jsonrpc": "2.0",
+                    "method": "author_hasSessionKeys",
+                    "params": [session_keys],
+                    "id": 1
+                }),
+                f'http://localhost:{port}/'
+            ]
+            
+            output = await self._run_command(cmd)
+            response = json.loads(output)
+            
+            return {
+                "has_keys": response.get("result", False),
+                "container": container,
+                "checked_keys": session_keys if session_keys else "current"
+            }
+            
+        except Exception as e:
+            return {"error": str(e), "has_keys": False}
+    
+    async def _has_key(self, container: str, params: Dict) -> Dict:
+        """hasKey RPC 호출 - 특정 키 타입 확인"""
+        try:
+            # 필수 파라미터 확인
+            public_key = params.get("public_key")
+            key_type = params.get("key_type", "aura")
+            
+            if not public_key:
+                return {"error": "public_key 파라미터가 필요합니다"}
+            
+            # 포트 결정
+            if container.startswith('3node'):
+                port = 33980 + int(container.replace('3node', ''))
+            else:
+                port = 33880 + int(container.replace('node', ''))
+            
+            cmd = [
+                'docker', 'exec', container,
+                'curl', '-s', '-H', 'Content-Type: application/json',
+                '-d', json.dumps({
+                    "jsonrpc": "2.0",
+                    "method": "author_hasKey",
+                    "params": [public_key, key_type],
+                    "id": 1
+                }),
+                f'http://localhost:{port}/'
+            ]
+            
+            output = await self._run_command(cmd)
+            response = json.loads(output)
+            
+            return {
+                "has_key": response.get("result", False),
+                "container": container,
+                "key_type": key_type,
+                "public_key": public_key[:16] + "..." if len(public_key) > 20 else public_key
+            }
+            
+        except Exception as e:
+            return {"error": str(e), "has_key": False}
