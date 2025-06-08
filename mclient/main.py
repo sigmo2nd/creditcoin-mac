@@ -23,6 +23,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# PayoutChecker import
+try:
+    from payout_checker import PayoutChecker
+except ImportError:
+    logger.warning("PayoutChecker not available")
+    PayoutChecker = None
+
 # WebSocket 라이브러리 로깅 레벨 상향 조정 (DEBUG -> WARNING)
 logging.getLogger('websockets').setLevel(logging.WARNING)
 logging.getLogger('websockets.client').setLevel(logging.WARNING)
@@ -1319,6 +1326,15 @@ async def run_websocket_mode(settings, node_names: List[str]):
     # 전송 통계
     stats = TransmissionStats()
     
+    # PayoutChecker 초기화
+    payout_checker = None
+    if PayoutChecker:
+        try:
+            payout_checker = PayoutChecker()
+            logger.info("PayoutChecker 초기화 완료")
+        except Exception as e:
+            logger.warning(f"PayoutChecker 초기화 실패: {e}")
+    
     # WebSocket 연결 (재시도 로직 포함)
     connected = False
     retry_count = 0
@@ -1461,6 +1477,18 @@ async def run_websocket_mode(settings, node_names: List[str]):
                 if stats.should_send_summary():
                     summary_data = stats.calculate_sixty_point_summary(settings.MONITOR_INTERVAL)
                     if summary_data:
+                        # 페이아웃 체크 추가
+                        if payout_checker and container_list:
+                            try:
+                                # 현재 실행 중인 컨테이너 이름 목록
+                                container_names = [c.get('name') for c in container_list if c.get('name')]
+                                payout_info = await payout_checker.check_all_payouts(container_names)
+                                summary_data['payout_info'] = payout_info
+                                logger.info(f"페이아웃 체크 완료: {payout_info.get('total_containers', 0)}개 컨테이너")
+                            except Exception as e:
+                                logger.error(f"페이아웃 체크 실패: {e}")
+                                summary_data['payout_info'] = {"error": str(e)}
+                        
                         logger.info(f"60회 평균 통계 계산 완료. 서버로 전송 중...")
                         summary_sent = await websocket_client.send_summary(summary_data)
                         if summary_sent:
