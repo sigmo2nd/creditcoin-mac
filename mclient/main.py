@@ -1320,7 +1320,7 @@ async def run_websocket_mode(settings, node_names: List[str]):
             logger.error(f"Docker 클라이언트 초기화 중 오류: {e}")
     
     # WebSocket 클라이언트 초기화 (SSL 검증 옵션 및 토큰 적용)
-    websocket_client = WebSocketClient(ws_url_or_mode, server_id, ssl_verify=settings.SSL_VERIFY, auth_token=auth_token)
+    websocket_client = WebSocketClient(ws_url_or_mode, server_id, ssl_verify=settings.SSL_VERIFY, auth_token=auth_token, monitor_interval=settings.MONITOR_INTERVAL)
     websocket_client_instance = websocket_client  # 전역 변수에 할당하여 종료 시 접근 가능
     
     # 전송 통계

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class WebSocketClient:
     """WebSocket 클라이언트 클래스"""
     
-    def __init__(self, url_or_mode: str, server_id: str, ssl_verify: bool = True, auth_token: Optional[str] = None):
+    def __init__(self, url_or_mode: str, server_id: str, ssl_verify: bool = True, auth_token: Optional[str] = None, monitor_interval: int = 1):
         """WebSocket 클라이언트 초기화
         
         Args:
@@ -30,11 +30,13 @@ class WebSocketClient:
             server_id: 서버 식별자
             ssl_verify: SSL 인증서 검증 여부
             auth_token: 인증 토큰 (선택사항)
+            monitor_interval: 모니터링 인터벌 (초)
         """
         self.url_or_mode = url_or_mode
         self.server_id = server_id
         self.ssl_verify = ssl_verify
         self.auth_token = auth_token
+        self.monitor_interval = monitor_interval
         self.ws = None
         self.connected = False
         self.reconnect_attempts = 0
@@ -332,6 +334,7 @@ class WebSocketClient:
                 "serverId": self.server_id,
                 "timestamp": int(time.time() * 1000),
                 "sequence": self.sequence_number,
+                "interval": self.monitor_interval,
                 "data": stats
             }
             
@@ -668,6 +671,7 @@ class WebSocketClient:
                 "serverId": self.server_id,
                 "timestamp": int(time.time() * 1000),
                 "sequence": self.sequence_number,
+                "interval": self.monitor_interval,
                 "data": summary_data
             }
             
