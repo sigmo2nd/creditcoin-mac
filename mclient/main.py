@@ -30,6 +30,13 @@ except ImportError:
     logger.warning("PayoutChecker not available")
     PayoutChecker = None
 
+# EraMonitor import
+try:
+    from era_monitor import EraMonitor
+except ImportError:
+    logger.warning("EraMonitor not available")
+    EraMonitor = None
+
 # WebSocket 라이브러리 로깅 레벨 상향 조정 (DEBUG -> WARNING)
 logging.getLogger('websockets').setLevel(logging.WARNING)
 logging.getLogger('websockets.client').setLevel(logging.WARNING)
@@ -1335,6 +1342,15 @@ async def run_websocket_mode(settings, node_names: List[str]):
         except Exception as e:
             logger.warning(f"PayoutChecker 초기화 실패: {e}")
     
+    # EraMonitor 초기화
+    era_monitor = None
+    if EraMonitor:
+        try:
+            era_monitor = EraMonitor(websocket_client)
+            logger.info("EraMonitor 초기화 완료")
+        except Exception as e:
+            logger.warning(f"EraMonitor 초기화 실패: {e}")
+    
     # WebSocket 연결 (재시도 로직 포함)
     connected = False
     retry_count = 0
@@ -1485,6 +1501,16 @@ async def run_websocket_mode(settings, node_names: List[str]):
                                 payout_info = await payout_checker.check_all_payouts(container_names)
                                 summary_data['payout_info'] = payout_info
                                 logger.info(f"페이아웃 체크 완료: {payout_info.get('total_containers', 0)}개 컨테이너")
+                                
+                                # Era 전환 체크
+                                if era_monitor and payout_info:
+                                    try:
+                                        transitions = await era_monitor.check_era_transition(payout_info)
+                                        if transitions:
+                                            summary_data['era_transitions'] = transitions
+                                            logger.info(f"Era 전환 감지: {list(transitions.keys())}")
+                                    except Exception as e:
+                                        logger.error(f"Era 전환 체크 실패: {e}")
                             except Exception as e:
                                 logger.error(f"페이아웃 체크 실패: {e}")
                                 summary_data['payout_info'] = {"error": str(e)}

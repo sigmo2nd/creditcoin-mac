@@ -50,17 +50,18 @@ class WebSocketClient:
         self.ping_interval = 30  # 30초마다 핑
         self.ping_task = None
         self.heartbeat_task = None
-        self.command_handler = CommandHandler()  # 명령어 핸들러 추가
+        self.command_handler = None  # 나중에 설정
+        self.era_monitor = None  # 나중에 설정
         self.receive_task = None  # 메시지 수신 태스크
         self.reconnect_lock = asyncio.Lock()  # 재연결 동시성 제어
         self.needs_reconnect = False  # 재연결 필요 플래그
         
         # 환경 변수에서 직접 서버 호스트 가져오기
         self.server_host = os.environ.get("WS_SERVER_HOST", "localhost")
-        ws_port_ws = os.environ.get("WS_PORT_WS", "8080")
-        ws_port_wss = os.environ.get("WS_PORT_WSS", "4443")
         
         # WS_SERVER_PORT가 설정된 경우 모드에 따라 적절한 포트 사용
+        ws_port_ws = os.environ.get("WS_PORT_WS", "8080")
+        ws_port_wss = os.environ.get("WS_PORT_WSS", "4443")
         ws_server_port = os.environ.get("WS_SERVER_PORT")
         ws_mode = os.environ.get("WS_MODE", "auto")
         if ws_server_port:
@@ -80,6 +81,14 @@ class WebSocketClient:
         logger.info(f"WebSocket 클라이언트 초기화: 모드={url_or_mode}, 서버ID={server_id}")
         logger.info(f"WebSocket 호스트: {self.server_host}")
         logger.info(f"WebSocket 기본 URL: ws={self.base_urls['ws']}, wss={self.base_urls['wss']}")
+    
+    def set_era_monitor(self, era_monitor):
+        """EraMonitor 설정"""
+        self.era_monitor = era_monitor
+        if not self.command_handler:
+            self.command_handler = CommandHandler(era_monitor)
+        else:
+            self.command_handler.era_monitor = era_monitor
     
     async def try_connect(self, url: str, ssl_context: Optional[ssl.SSLContext] = None) -> bool:
         """특정 URL로 연결 시도"""

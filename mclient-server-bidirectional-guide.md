@@ -699,6 +699,58 @@ docker start 3node0
 }
 ```
 
+## 8. Era 전환 및 검증인 모니터링
+
+### 8.1 자동 Era 전환 감지
+- **동작**: 60초마다 Era 정보 수집 중 변경 감지
+- **Era 변경 시**: 모든 노드의 검증인 상태 자동 체크
+- **부하**: Era는 6시간마다 변경되므로 매우 가벼움
+
+### 8.2 검증인 상태 알림
+Era 전환 시 다음 이벤트가 서버로 전송됩니다:
+
+#### 검증인 활성화
+```json
+{
+  "type": "validator_activated",
+  "data": {
+    "node": "3node1",
+    "era": 1235,
+    "validator_account": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+    "is_authority": true,
+    "timestamp": 1704715200000
+  }
+}
+```
+
+#### 검증인 변경
+```json
+{
+  "type": "validator_changed",
+  "data": {
+    "node": "3node1",
+    "era": 1235,
+    "validator_account": "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty",
+    "previous_validator": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+    "is_authority": true,
+    "timestamp": 1704715200000
+  }
+}
+```
+
+#### 검증인 비활성화
+```json
+{
+  "type": "validator_deactivated",
+  "data": {
+    "node": "3node1",
+    "era": 1235,
+    "previous_validator": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+    "timestamp": 1704715200000
+  }
+}
+```
+
 ## 8. 보안 고려사항
 
 1. **인증**: 토큰 기반 인증 구현

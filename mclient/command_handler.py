@@ -13,8 +13,9 @@ logger = logging.getLogger(__name__)
 class CommandHandler:
     """웹소켓으로 받은 명령어를 처리하는 핸들러"""
     
-    def __init__(self):
+    def __init__(self, era_monitor=None):
         self.running_commands = {}  # 실행 중인 명령어 추적
+        self.era_monitor = era_monitor
         
     async def handle_command(self, command_data: Dict[str, Any]) -> Dict[str, Any]:
         """명령어 실행 및 응답 생성"""
@@ -600,3 +601,4 @@ class CommandHandler:
             
         except Exception as e:
             return {"error": str(e), "container": container, "method": "simple"}
+    
