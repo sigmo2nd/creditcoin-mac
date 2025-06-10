@@ -37,6 +37,7 @@ class WebSocketClient:
         self.ssl_verify = ssl_verify
         self.auth_token = auth_token
         self.monitor_interval = monitor_interval
+        logger.info(f"WebSocketClient monitor_interval 설정: {self.monitor_interval}")
         self.ws = None
         self.connected = False
         self.reconnect_attempts = 0
@@ -338,6 +339,7 @@ class WebSocketClient:
             self.sequence_number += 1
             
             # 메시지 생성
+            logger.debug(f"send_stats: monitor_interval = {self.monitor_interval}")
             message = {
                 "type": "stats",
                 "serverId": self.server_id,
@@ -370,6 +372,7 @@ class WebSocketClient:
                 "serverId": self.server_id,
                 "timestamp": int(time.time() * 1000),
                 "sequence": self.sequence_number,
+                "interval": self.monitor_interval,
                 "data": stats
             }
             
@@ -412,6 +415,7 @@ class WebSocketClient:
                     "serverId": self.server_id,
                     "timestamp": int(time.time() * 1000),
                     "sequence": self.sequence_number,
+                    "interval": self.monitor_interval,
                     "data": stats
                 }
                 self.message_queue.append(message)
