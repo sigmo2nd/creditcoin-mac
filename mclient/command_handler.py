@@ -6,6 +6,7 @@ import logging
 import uuid
 from typing import Dict, Any, Optional
 from datetime import datetime
+from substrate_utils import extract_validator_from_storage_key
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,14 @@ class CommandHandler:
                 result = await self._has_session_keys(target, params)
             elif command_type == 'has_key':
                 result = await self._has_key(target, params)
+            elif command_type == 'find_validator':
+                # 먼저 간단한 방법 시도
+                simple_result = await self._find_validator_simple(target, params)
+                if simple_result.get("validator_account") or not params.get("deep_search", True):
+                    result = simple_result
+                else:
+                    # 깊은 검색 수행
+                    result = await self._find_validator_account(target, params)
             else:
                 raise ValueError(f"지원되지 않는 명령어: {command_type}")
             
@@ -383,3 +392,211 @@ class CommandHandler:
             
         except Exception as e:
             return {"error": str(e), "has_key": False}
+    
+    async def _find_validator_account(self, container: str, params: Dict) -> Dict:
+        """노드와 연결된 검증인 계정 찾기"""
+        try:
+            # 포트 결정
+            if container.startswith('3node'):
+                port = 33980 + int(container.replace('3node', ''))
+            else:
+                port = 33880 + int(container.replace('node', ''))
+            
+            # 1. 세션 키 파라미터 확인
+            session_keys = params.get("session_keys")
+            
+            if not session_keys:
+                # 세션 키가 제공되지 않은 경우, 체인에서 검색은 불가능
+                return {
+                    "error": "세션 키가 제공되지 않았습니다. 체인 스토리지 검색을 위해서는 세션 키가 필요합니다.",
+                    "container": container,
+                    "suggestion": "세션 키를 제공하거나, deep_search: false로 로그 검색을 사용하세요."
+                }
+            
+            # 2. 현재 활성 검증인 목록 가져오기
+            validators_cmd = [
+                'docker', 'exec', container,
+                'curl', '-s', '-H', 'Content-Type: application/json',
+                '-d', json.dumps({
+                    "jsonrpc": "2.0",
+                    "method": "state_getStorage",
+                    "params": ["0x5f3e4907f716ac89b6347d15ececedca9c6a637f62ae2af1c7e31eed7e96be04"],  # staking.validators
+                    "id": 1
+                }),
+                f'http://localhost:{port}/'
+            ]
+            
+            validators_output = await self._run_command(validators_cmd)
+            validators_response = json.loads(validators_output)
+            
+            if 'error' in validators_response:
+                # 대체 방법: RPC 메타데이터 사용
+                validators_cmd = [
+                    'docker', 'exec', container,
+                    'curl', '-s', '-H', 'Content-Type: application/json',
+                    '-d', json.dumps({
+                        "jsonrpc": "2.0",
+                        "method": "state_call",
+                        "params": ["StakingApi_validators", "0x"],
+                        "id": 1
+                    }),
+                    f'http://localhost:{port}/'
+                ]
+                validators_output = await self._run_command(validators_cmd)
+                validators_response = json.loads(validators_output)
+            
+            # 3. 각 검증인의 세션 키 확인
+            matched_validator = None
+            validators_checked = 0
+            session_keys_found = []
+            
+            if 'result' in validators_response and validators_response['result']:
+                # 검증인 목록 디코딩 (hex -> addresses)
+                validators_hex = validators_response['result']
+                
+                # 세션 키 정규화 (0x 제거)
+                target_session_keys = session_keys.replace('0x', '').lower()
+                
+                # 각 검증인의 nextKeys 확인
+                # Session.nextKeys storage key = twox_128("Session") + twox_128("NextKeys") + blake2_128_concat(validator)
+                session_prefix = "0x2099d7f109d6e535fb000bba623fd4409f99a2ce711f3a31b2fc05604c93f179"
+                
+                # 페이지네이션으로 모든 키 가져오기
+                all_keys_cmd = [
+                    'docker', 'exec', container,
+                    'curl', '-s', '-H', 'Content-Type: application/json',
+                    '-d', json.dumps({
+                        "jsonrpc": "2.0",
+                        "method": "state_getPairs",
+                        "params": [session_prefix],
+                        "id": 1
+                    }),
+                    f'http://localhost:{port}/'
+                ]
+                
+                all_keys_output = await self._run_command(all_keys_cmd)
+                all_keys_response = json.loads(all_keys_output)
+                
+                if 'result' in all_keys_response:
+                    for key_value_pair in all_keys_response['result']:
+                        storage_key = key_value_pair[0]
+                        storage_value = key_value_pair[1]
+                        
+                        # 스토리지 값에서 세션 키 추출 (hex 형식)
+                        stored_session_keys = storage_value.replace('0x', '').lower()
+                        
+                        # 매칭 확인
+                        if target_session_keys in stored_session_keys or stored_session_keys in target_session_keys:
+                            # 스토리지 키에서 검증인 주소 추출
+                            # 키 구조: prefix(64) + blake2_128_concat_hash(32) + validator_address(64)
+                            validator_hex = storage_key[96:]  # prefix와 hash 제거
+                            
+                            # SS58 주소로 변환 (간단한 예시, 실제로는 더 복잡)
+                            matched_validator = f"0x{validator_hex}"
+                            break
+                        
+                        validators_checked += 1
+                        session_keys_found.append(stored_session_keys[:16] + "...")
+            
+            # 4. 결과 반환
+            result = {
+                "container": container,
+                "session_keys": session_keys[:32] + "..." if len(session_keys) > 36 else session_keys,
+                "validator_account": matched_validator,
+                "validators_checked": validators_checked,
+                "session_keys_found": session_keys_found[:5]  # 처음 5개만
+            }
+            
+            if matched_validator:
+                result["status"] = "success"
+                result["message"] = f"노드가 검증인 계정 {matched_validator[:16]}...와 연결되어 있습니다"
+            else:
+                result["status"] = "not_found"
+                result["message"] = "매칭되는 검증인 계정을 찾을 수 없습니다"
+            
+            return result
+            
+        except Exception as e:
+            return {"error": str(e), "container": container}
+    
+    async def _find_validator_simple(self, container: str, params: Dict) -> Dict:
+        """간단한 방법으로 검증인 찾기 - 로그에서 추출"""
+        try:
+            # 포트 결정
+            if container.startswith('3node'):
+                port = 33980 + int(container.replace('3node', ''))
+            else:
+                port = 33880 + int(container.replace('node', ''))
+            
+            # 1. 노드 로그에서 검증인 정보 찾기
+            log_cmd = ['docker', 'logs', container, '--tail', '1000']
+            logs = await self._run_command(log_cmd)
+            
+            validator_info = {
+                "container": container,
+                "method": "log_parsing",
+                "validator_account": None,
+                "session_keys": None
+            }
+            
+            # 로그에서 패턴 찾기
+            import re
+            
+            # "Validator node" 또는 validator 관련 로그 찾기
+            validator_pattern = r'validator.*account.*([15][a-zA-Z0-9]{47})'
+            session_key_pattern = r'Session keys.*0x([a-fA-F0-9]+)'
+            
+            validator_match = re.search(validator_pattern, logs, re.IGNORECASE)
+            if validator_match:
+                validator_info["validator_account"] = validator_match.group(1)
+            
+            session_match = re.search(session_key_pattern, logs, re.IGNORECASE)
+            if session_match:
+                validator_info["session_keys"] = "0x" + session_match.group(1)
+            
+            # 2. RPC로 노드 역할 확인
+            node_roles_cmd = [
+                'docker', 'exec', container,
+                'curl', '-s', '-H', 'Content-Type: application/json',
+                '-d', json.dumps({
+                    "jsonrpc": "2.0",
+                    "method": "system_nodeRoles",
+                    "params": [],
+                    "id": 1
+                }),
+                f'http://localhost:{port}/'
+            ]
+            
+            roles_output = await self._run_command(node_roles_cmd)
+            roles_response = json.loads(roles_output)
+            
+            if 'result' in roles_response:
+                validator_info["node_roles"] = roles_response['result']
+                validator_info["is_authority"] = "Authority" in roles_response['result']
+            
+            # 3. 현재 세션에서 활성 검증인인지 확인
+            if validator_info["validator_account"]:
+                # 현재 검증인 세트 확인
+                current_validators_cmd = [
+                    'docker', 'exec', container,
+                    'curl', '-s', '-H', 'Content-Type: application/json',
+                    '-d', json.dumps({
+                        "jsonrpc": "2.0",
+                        "method": "state_call",
+                        "params": ["SessionApi_validators", "0x"],
+                        "id": 1
+                    }),
+                    f'http://localhost:{port}/'
+                ]
+                
+                validators_output = await self._run_command(current_validators_cmd)
+                validators_response = json.loads(validators_output)
+                
+                if 'result' in validators_response:
+                    # 결과에 검증인 주소가 포함되어 있는지 확인
+                    validator_info["is_active_validator"] = validator_info["validator_account"] in validators_response.get('result', '')
+            
+            return validator_info
+            
+        except Exception as e:
+            return {"error": str(e), "container": container, "method": "simple"}

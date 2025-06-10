@@ -380,6 +380,34 @@ async def command_interface():
 - `params.key_type`: 키 타입 (기본값: aura)
 - 결과: true/false
 
+#### `find_validator` - 노드와 연결된 검증인 계정 찾기
+```json
+{
+  "type": "command",
+  "data": {
+    "id": "cmd_12357",
+    "command": "find_validator",
+    "target": "3node0",
+    "params": {
+      "session_keys": "0x...",       // 선택사항
+      "deep_search": true            // false면 로그 파싱만 사용
+    }
+  }
+}
+```
+- `target`: 컨테이너 이름
+- `params.session_keys`: 확인할 세션 키 (선택사항)
+- `params.deep_search`: true면 체인 스토리지 검색, false면 로그 파싱만
+- 동작:
+  1. 먼저 노드 로그에서 검증인 정보 찾기 (빠름)
+  2. 못 찾으면 체인 스토리지에서 세션 키 매칭 (느림)
+  3. 노드 역할(Authority) 확인
+- 결과: 
+  - `validator_account`: 검증인 계정 주소
+  - `session_keys`: 노드의 세션 키
+  - `is_authority`: Authority 노드 여부
+  - `is_active_validator`: 현재 활성 검증인 여부
+
 ### 3.2 명령 응답 형식
 
 성공 응답:
