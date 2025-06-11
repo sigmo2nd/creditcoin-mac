@@ -48,34 +48,28 @@ class EraMonitor:
         try:
             logger.info(f"{node_name}: Era {current_era} - 검증인 상태 확인 중...")
             
-            # find_validator 명령 실행 (로그에서 먼저 빠르게 확인)
+            # find_validator 명령 실행
             command_data = {
                 'command': 'find_validator',
                 'target': node_name,
-                'params': {
-                    'deep_search': False  # 로그만 확인 (빠름)
-                }
+                'params': {}
             }
             
             result = await self.command_handler.handle_command(command_data)
             
             if result['data']['status'] == 'completed':
                 validator_data = result['data']['result']
-                validator_account = validator_data.get('validator_account')
+                is_validator = validator_data.get('is_validator', False)
                 
-                # 새로운 검증인 발견
-                if validator_account and validator_account != self.known_validators.get(node_name):
-                    previous_validator = self.known_validators.get(node_name)
-                    
-                    if previous_validator:
-                        logger.info(f"{node_name}: 검증인 변경 감지! {previous_validator} → {validator_account}")
-                        event_type = "validator_changed"
-                    else:
-                        logger.info(f"{node_name}: 새 검증인 활성화! Account: {validator_account}")
-                        event_type = "validator_activated"
-                    
-                    # 알려진 검증인 목록 업데이트
-                    self.known_validators[node_name] = validator_account
+                # 이전 상태와 비교
+                was_validator = self.known_validators.get(node_name, False)
+                
+                # 상태 변경 감지
+                if is_validator and not was_validator:
+                    # 새로운 검증인 활성화
+                    logger.info(f"{node_name}: 새 검증인 활성화!")
+                    event_type = "validator_activated"
+                    self.known_validators[node_name] = True
                     
                     # 서버에 알림 전송
                     if self.websocket_client:
@@ -84,23 +78,23 @@ class EraMonitor:
                             "data": {
                                 "node": node_name,
                                 "era": current_era,
-                                "validator_account": validator_account,
-                                "previous_validator": previous_validator,
-                                "is_authority": validator_data.get('is_authority', False),
+                                "is_validator": True,
+                                "status": validator_data.get('status', 'active'),
+                                "message": validator_data.get('message', ''),
                                 "timestamp": int(time.time() * 1000)
                             }
                         }
                         
                         try:
                             await self.websocket_client.send_message(notification)
-                            logger.info(f"검증인 상태 알림 전송 완료: {node_name}")
+                            logger.info(f"검증인 활성화 알림 전송 완료: {node_name}")
                         except Exception as e:
-                            logger.error(f"검증인 상태 알림 전송 실패: {e}")
+                            logger.error(f"검증인 활성화 알림 전송 실패: {e}")
                 
-                # 검증인이 없어진 경우
-                elif not validator_account and node_name in self.known_validators:
+                elif not is_validator and was_validator:
+                    # 검증인 비활성화
                     logger.info(f"{node_name}: 검증인 비활성화 감지")
-                    previous_validator = self.known_validators.pop(node_name)
+                    self.known_validators[node_name] = False
                     
                     if self.websocket_client:
                         notification = {
@@ -108,13 +102,16 @@ class EraMonitor:
                             "data": {
                                 "node": node_name,
                                 "era": current_era,
-                                "previous_validator": previous_validator,
+                                "is_validator": False,
+                                "status": validator_data.get('status', 'not_validator'),
+                                "message": validator_data.get('message', ''),
                                 "timestamp": int(time.time() * 1000)
                             }
                         }
                         
                         try:
                             await self.websocket_client.send_message(notification)
+                            logger.info(f"검증인 비활성화 알림 전송 완료: {node_name}")
                         except Exception as e:
                             logger.error(f"검증인 비활성화 알림 전송 실패: {e}")
                             

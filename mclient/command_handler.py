@@ -516,107 +516,53 @@ class CommandHandler:
             return {"error": str(e), "container": container}
     
     async def _find_validator_simple(self, container: str, params: Dict) -> Dict:
-        """간단한 방법으로 검증인 찾기 - 로그에서 추출"""
+        """BABE epochAuthorship으로 검증인 상태 확인"""
         try:
             # 포트 결정
             if container.startswith('3node'):
                 port = 33980 + int(container.replace('3node', ''))
             else:
                 port = 33880 + int(container.replace('node', ''))
-            
-            # 1. 노드 로그에서 검증인 정보 찾기
-            log_cmd = ['docker', 'logs', container, '--tail', '1000']
-            logs = await self._run_command(log_cmd)
-            
-            validator_info = {
-                "container": container,
-                "method": "log_parsing",
-                "validator_account": None,
-                "session_keys": None
-            }
-            
-            # 로그에서 패턴 찾기
-            import re
-            
-            # 검증인 활동 패턴 찾기
-            # 1. 블록 생성 패턴
-            block_production_patterns = [
-                r'🎁\s*Prepared block for proposing',
-                r'Starting consensus session on top of parent',
-                r'Pre-sealed block for proposal',
-                r'👶\s*New epoch',
-                r'🙌\s*Starting consensus session'
+
+            # BABE epochAuthorship 호출
+            babe_cmd = [
+                'docker', 'exec', container,
+                'curl', '-s', '-H', 'Content-Type: application/json',
+                '-d', json.dumps({
+                    "jsonrpc": "2.0",
+                    "method": "babe_epochAuthorship",
+                    "id": 1
+                }),
+                f'http://localhost:{port}/'
             ]
-            
-            for pattern in block_production_patterns:
-                if re.search(pattern, logs):
-                    validator_info["is_producing_blocks"] = True
-                    logger.info(f"{container}: 블록 생성 활동 감지")
-                    break
-            
-            # 2. 기존 패턴도 확인
-            validator_pattern = r'validator.*account.*([15][a-zA-Z0-9]{47})'
-            session_key_pattern = r'Session keys.*0x([a-fA-F0-9]+)'
-            
-            validator_match = re.search(validator_pattern, logs, re.IGNORECASE)
-            if validator_match:
-                validator_info["validator_account"] = validator_match.group(1)
-            
-            session_match = re.search(session_key_pattern, logs, re.IGNORECASE)
-            if session_match:
-                validator_info["session_keys"] = "0x" + session_match.group(1)
-            
-            # 3. hasSessionKeys로 세션키 확인 (가장 간단한 방법)
-            try:
-                has_keys_cmd = [
-                    'docker', 'exec', container,
-                    'curl', '-s', '-H', 'Content-Type: application/json',
-                    '-d', json.dumps({
-                        "jsonrpc": "2.0",
-                        "method": "author_hasSessionKeys",
-                        "params": [""],  # 빈 문자열 = 현재 키 확인
-                        "id": 1
-                    }),
-                    f'http://localhost:{port}/'
-                ]
-                
-                has_keys_output = await self._run_command(has_keys_cmd)
-                has_keys_response = json.loads(has_keys_output)
-                
-                if has_keys_response.get('result', False):
-                    validator_info["has_session_keys"] = True
-                    # 세션 키가 있고 블록 생성 패턴이 보이면 검증인
-                    if validator_info.get("is_producing_blocks", False):
-                        validator_info["validator_account"] = "ACTIVE_VALIDATOR"
-                        validator_info["is_authority"] = True
-                        logger.info(f"{container}: 활성 검증인으로 확인됨!")
-            except Exception as e:
-                logger.error(f"세션 키 확인 중 오류: {e}")
-            
-            # 3. 현재 세션에서 활성 검증인인지 확인
-            if validator_info["validator_account"]:
-                # 현재 검증인 세트 확인
-                current_validators_cmd = [
-                    'docker', 'exec', container,
-                    'curl', '-s', '-H', 'Content-Type: application/json',
-                    '-d', json.dumps({
-                        "jsonrpc": "2.0",
-                        "method": "state_call",
-                        "params": ["SessionApi_validators", "0x"],
-                        "id": 1
-                    }),
-                    f'http://localhost:{port}/'
-                ]
-                
-                validators_output = await self._run_command(current_validators_cmd)
-                validators_response = json.loads(validators_output)
-                
-                if 'result' in validators_response:
-                    # 결과에 검증인 주소가 포함되어 있는지 확인
-                    validator_info["is_active_validator"] = validator_info["validator_account"] in validators_response.get('result', '')
-            
-            return validator_info
-            
+
+            babe_output = await self._run_command(babe_cmd)
+            babe_response = json.loads(babe_output)
+
+            # 결과 확인 - 비어있지 않으면 검증인
+            if 'result' in babe_response and babe_response['result']:
+                return {
+                    "container": container,
+                    "is_validator": True,
+                    "status": "active",
+                    "message": "노드가 활성 검증인으로 작동 중입니다.",
+                    "epoch_slots": len(babe_response['result'])  # 할당된 슬롯 수
+                }
+            else:
+                return {
+                    "container": container,
+                    "is_validator": False,
+                    "status": "not_validator",
+                    "message": "노드가 검증인으로 활동하지 않습니다."
+                }
+
         except Exception as e:
-            return {"error": str(e), "container": container, "method": "simple"}
+            logger.error(f"{container}: BABE epochAuthorship 호출 실패: {e}")
+            return {
+                "container": container,
+                "is_validator": False,
+                "status": "error",
+                "error": str(e),
+                "message": f"검증인 상태 확인 중 오류 발생: {str(e)}"
+            }
     
