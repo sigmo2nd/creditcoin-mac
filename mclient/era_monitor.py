@@ -1,6 +1,5 @@
 # era_monitor.py
 import logging
-import json
 import time
 from typing import Dict, Any, Optional
 from command_handler import CommandHandler
@@ -93,7 +92,7 @@ class EraMonitor:
                         }
                         
                         try:
-                            await self.websocket_client.send_message(json.dumps(notification))
+                            await self.websocket_client.send_message(notification)
                             logger.info(f"검증인 상태 알림 전송 완료: {node_name}")
                         except Exception as e:
                             logger.error(f"검증인 상태 알림 전송 실패: {e}")
@@ -115,7 +114,7 @@ class EraMonitor:
                         }
                         
                         try:
-                            await self.websocket_client.send_message(json.dumps(notification))
+                            await self.websocket_client.send_message(notification)
                         except Exception as e:
                             logger.error(f"검증인 비활성화 알림 전송 실패: {e}")
                             
