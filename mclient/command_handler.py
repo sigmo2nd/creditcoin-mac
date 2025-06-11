@@ -294,13 +294,8 @@ class CommandHandler:
             has_keys = await self._has_session_keys(container, {})
             result["has_session_keys"] = has_keys.get("has_keys", False)
             
-            # 세션 키가 있으면 rotate해서 현재 키 확인 (주의: 기존 키 덮어씀)
-            if params.get("rotate_to_check", False) and result["has_session_keys"]:
-                rotate_result = await self._rotate_keys(container)
-                if isinstance(rotate_result, dict) and "session_key" in rotate_result:
-                    result["session_keys_hex"] = rotate_result["session_key"]
-                    result["warning"] = "기존 세션 키가 새로운 키로 교체되었습니다!"
-            
+            # rotateKeys는 절대 사용하지 않음 - 키가 바뀌면 검증인 자격 상실
+            # 세션 키 확인이 필요한 경우 다른 방법 사용
             # 각 키 타입 존재 여부 (public key가 있을 때만)
             if params.get("public_keys"):
                 for key_type in ['aura', 'gran', 'babe', 'imon', 'beefy']:
@@ -543,7 +538,23 @@ class CommandHandler:
             # 로그에서 패턴 찾기
             import re
             
-            # "Validator node" 또는 validator 관련 로그 찾기
+            # 검증인 활동 패턴 찾기
+            # 1. 블록 생성 패턴
+            block_production_patterns = [
+                r'🎁\s*Prepared block for proposing',
+                r'Starting consensus session on top of parent',
+                r'Pre-sealed block for proposal',
+                r'👶\s*New epoch',
+                r'🙌\s*Starting consensus session'
+            ]
+            
+            for pattern in block_production_patterns:
+                if re.search(pattern, logs):
+                    validator_info["is_producing_blocks"] = True
+                    logger.info(f"{container}: 블록 생성 활동 감지")
+                    break
+            
+            # 2. 기존 패턴도 확인
             validator_pattern = r'validator.*account.*([15][a-zA-Z0-9]{47})'
             session_key_pattern = r'Session keys.*0x([a-fA-F0-9]+)'
             
@@ -555,25 +566,32 @@ class CommandHandler:
             if session_match:
                 validator_info["session_keys"] = "0x" + session_match.group(1)
             
-            # 2. RPC로 노드 역할 확인
-            node_roles_cmd = [
-                'docker', 'exec', container,
-                'curl', '-s', '-H', 'Content-Type: application/json',
-                '-d', json.dumps({
-                    "jsonrpc": "2.0",
-                    "method": "system_nodeRoles",
-                    "params": [],
-                    "id": 1
-                }),
-                f'http://localhost:{port}/'
-            ]
-            
-            roles_output = await self._run_command(node_roles_cmd)
-            roles_response = json.loads(roles_output)
-            
-            if 'result' in roles_response:
-                validator_info["node_roles"] = roles_response['result']
-                validator_info["is_authority"] = "Authority" in roles_response['result']
+            # 3. hasSessionKeys로 세션키 확인 (가장 간단한 방법)
+            try:
+                has_keys_cmd = [
+                    'docker', 'exec', container,
+                    'curl', '-s', '-H', 'Content-Type: application/json',
+                    '-d', json.dumps({
+                        "jsonrpc": "2.0",
+                        "method": "author_hasSessionKeys",
+                        "params": [""],  # 빈 문자열 = 현재 키 확인
+                        "id": 1
+                    }),
+                    f'http://localhost:{port}/'
+                ]
+                
+                has_keys_output = await self._run_command(has_keys_cmd)
+                has_keys_response = json.loads(has_keys_output)
+                
+                if has_keys_response.get('result', False):
+                    validator_info["has_session_keys"] = True
+                    # 세션 키가 있고 블록 생성 패턴이 보이면 검증인
+                    if validator_info.get("is_producing_blocks", False):
+                        validator_info["validator_account"] = "ACTIVE_VALIDATOR"
+                        validator_info["is_authority"] = True
+                        logger.info(f"{container}: 활성 검증인으로 확인됨!")
+            except Exception as e:
+                logger.error(f"세션 키 확인 중 오류: {e}")
             
             # 3. 현재 세션에서 활성 검증인인지 확인
             if validator_info["validator_account"]:
