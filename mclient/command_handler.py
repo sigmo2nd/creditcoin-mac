@@ -67,7 +67,7 @@ class CommandHandler:
             elif command_type == 'find_validator':
                 # 먼저 간단한 방법 시도
                 simple_result = await self._find_validator_simple(target, params)
-                if simple_result.get("validator_account") or not params.get("deep_search", True):
+                if simple_result.get("is_validator") or not params.get("deep_search", True):
                     result = simple_result
                 else:
                     # 깊은 검색 수행
