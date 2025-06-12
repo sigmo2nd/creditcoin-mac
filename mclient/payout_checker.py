@@ -157,8 +157,11 @@ class PayoutChecker:
         """모든 컨테이너를 통해 페이아웃 체크"""
         results = {}
         
+        logger.debug(f"PayoutChecker received containers: {containers}")
+        
         # 노드 컨테이너만 필터링
         node_containers = [c for c in containers if c.startswith(('node', '3node'))]
+        logger.debug(f"Filtered node containers: {node_containers}")
         
         # 병렬로 체크 (하지만 첫 번째 동기화된 노드만 사용해도 충분)
         for container in node_containers:

@@ -1495,16 +1495,31 @@ async def run_websocket_mode(settings, node_names: List[str]):
                     summary_data = stats.calculate_sixty_point_summary(settings.MONITOR_INTERVAL)
                     if summary_data:
                         # 페이아웃 체크 추가
-                        if payout_checker and summary_data.get('containers'):
+                        if payout_checker:
                             try:
                                 # summary_data에서 컨테이너 이름 목록 추출
-                                container_names = [c.get('name') for c in summary_data.get('containers', []) if c.get('name') and c.get('name').startswith(('node', '3node'))]
-                                payout_info = await payout_checker.check_all_payouts(container_names)
-                                summary_data['payout_info'] = payout_info
-                                logger.info(f"페이아웃 체크 완료: {payout_info.get('total_containers', 0)}개 컨테이너")
+                                containers = summary_data.get('containers', [])
+                                logger.debug(f"Summary data keys: {summary_data.keys()}")
+                                logger.debug(f"Total containers in summary: {len(containers)}")
+                                logger.debug(f"Container names in summary: {[c.get('name') for c in containers]}")
+                                
+                                container_names = [c.get('name') for c in containers if c.get('name') and c.get('name').startswith(('node', '3node'))]
+                                logger.debug(f"Filtered node container names: {container_names}")
+                                
+                                # 컨테이너 목록이 비어있으면 configured_nodes 사용
+                                if not container_names and summary_data.get('configured_nodes'):
+                                    container_names = summary_data.get('configured_nodes', [])
+                                    logger.info(f"Using configured_nodes as fallback: {container_names}")
+                                
+                                if container_names:
+                                    payout_info = await payout_checker.check_all_payouts(container_names)
+                                    summary_data['payout_info'] = payout_info
+                                    logger.info(f"페이아웃 체크 완료: {len(container_names)}개 컨테이너")
+                                else:
+                                    logger.warning("No container names found for payout check")
                                 
                                 # Era 전환 체크
-                                if era_monitor and payout_info:
+                                if era_monitor and 'payout_info' in locals():
                                     try:
                                         transitions = await era_monitor.check_era_transition(payout_info)
                                         if transitions:
