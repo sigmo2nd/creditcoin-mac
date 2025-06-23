@@ -25,8 +25,18 @@ class EraMonitor:
             if current_era is None:
                 continue
                 
-            # 이전 Era와 비교
-            if node_name in self.previous_era:
+            # 첫 실행이거나 Era가 변경된 경우
+            if node_name not in self.previous_era:
+                # 첫 실행 시: 즉시 검증인 상태 체크
+                logger.info(f"{node_name}: 첫 실행 - Era {current_era} 검증인 상태 확인")
+                await self._check_validator_status(node_name, current_era)
+                transitions[node_name] = {
+                    'previous_era': None,
+                    'current_era': current_era,
+                    'first_run': True
+                }
+            else:
+                # 이전 Era와 비교
                 previous = self.previous_era[node_name]
                 if current_era > previous:
                     logger.info(f"{node_name}: Era 전환 감지 {previous} → {current_era}")
@@ -34,8 +44,7 @@ class EraMonitor:
                         'previous_era': previous,
                         'current_era': current_era
                     }
-                    
-                    # Era 변경 시 모든 노드의 검증인 상태 체크
+                    # Era 변경 시 검증인 상태 체크
                     await self._check_validator_status(node_name, current_era)
             
             # Era 업데이트

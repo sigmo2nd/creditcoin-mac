@@ -588,6 +588,14 @@ class WebSocketClient:
                 # Summary 전송 확인
                 seq = data.get('sequence') or (data.get('data', {}).get('sequence'))
                 logger.info(f"Summary 전송 ACK 수신: 시퀀스 {seq}")
+            elif msg_type == 'register_ack':
+                # 등록 확인 메시지 처리 및 Era 정보 추출
+                last_era_info = data.get('last_era_info', {})
+                if last_era_info and self.era_monitor:
+                    logger.info(f"서버로부터 Era 정보 수신: {last_era_info}")
+                    # EraMonitor에 이전 Era 정보 설정
+                    self.era_monitor.previous_era = last_era_info
+                    logger.info("Era 정보로 EraMonitor 초기화 완료")
             elif msg_type == 'error':
                 # 에러 메시지 처리
                 error_msg = data.get('message', '알 수 없는 에러')
