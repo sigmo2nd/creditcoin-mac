@@ -4,9 +4,10 @@ This project is a collection of scripts for easily setting up and managing Credi
 
 ## Key Features
 
-- Creditcoin 3.0 node setup and management (`add3node.sh`)
-- Creditcoin 2.0 legacy node setup and management (`add2node.sh`)
-- Node cleanup and removal (`cleanup2.sh`, `cleanup3.sh`)
+- Creditcoin 3.x node setup and management with unified `addnode.sh`
+- Creditcoin 2.x legacy node support
+- **In-place node upgrade with session key preservation** (NEW!)
+- Node cleanup and removal
 - Various options support: telemetry activation/deactivation, custom node names, pruning settings, etc.
 
 ## Installation
@@ -41,38 +42,63 @@ source ~/.bash_profile
 
 ## Usage
 
-### Creditcoin 3.0 Node Creation
+### Node Creation and Management
 
 ```bash
-./add3node.sh <node_number> [options]
+./addnode.sh <node_number> [options]
 
 # Options:
-#   -v, --version      Node version (default: 3.39.0-mainnet)
+#   -v, --version      Node version (default: 3.52.0-mainnet)
+#   -l, --legacy       Use Creditcoin 2.x legacy version
 #   -t, --telemetry    Enable telemetry (default: disabled)
 #   -n, --name         Node name (default: 3Node<number>)
 #   -p, --pruning      Pruning value setting (default: 0, no option added if 0)
+#   --upgrade          Upgrade existing node (preserves session keys)
 
-# Usage examples:
-./add3node.sh 0                      # Create node with default settings
-./add3node.sh 1 -v 3.32.0-mainnet    # Create node with stable version
-./add3node.sh 2 -t                   # Create node with telemetry enabled
-./add3node.sh 3 -n ValidatorA        # Create node with specified name
-./add3node.sh 4 -p 1000              # Create node with pruning value 1000
+# Creation examples:
+./addnode.sh 0                        # Create 3node0 with default settings
+./addnode.sh 1 -v 3.32.0-mainnet      # Create with specific version
+./addnode.sh 2 -t                     # Create with telemetry enabled
+./addnode.sh 3 -n ValidatorA          # Create with custom name
+./addnode.sh 4 -p 1000                # Create with pruning value 1000
+
+# Upgrade examples:
+./addnode.sh 0 --upgrade               # Upgrade 3node0 to latest version
+./addnode.sh 1 --upgrade -v 3.52.0-mainnet  # Upgrade to specific version
 ```
 
-### Creditcoin 2.0 Legacy Node Creation
+### Legacy Node Support (Creditcoin 2.x)
 
 ```bash
-./add2node.sh <node_number> [options]
+# Create legacy node
+./addnode.sh <node_number> -l [options]
 
-# Options:
-#   -v, --version      Node version (default: 2.230.2-mainnet)
-#   -t, --telemetry    Enable telemetry (default: disabled)
-#   -n, --name         Node name (default: Node<number>)
+# Examples:
+./addnode.sh 0 -l                      # Create node0 with Creditcoin 2.x
+./addnode.sh 1 -l -v 2.230.2-mainnet   # Specific legacy version
 
-# Usage examples:
-./add2node.sh 0                        # Create node with default settings
-./add2node.sh 1 -t -n ValidatorLegacy  # Create node with telemetry enabled and name
+# Upgrade legacy node
+./addnode.sh 0 -l --upgrade            # Upgrade to latest 2.x version
+```
+
+### Node Upgrade
+
+The `--upgrade` flag allows in-place upgrades while preserving:
+- Session keys (validator credentials)
+- Chain data
+- Node configuration
+
+```bash
+# Upgrade single node
+./addnode.sh 0 --upgrade               # Upgrade to default version
+./addnode.sh 1 --upgrade -v 3.52.0-mainnet  # Upgrade to specific version
+
+# Upgrade process:
+1. Automatically backs up session keys
+2. Updates docker-compose.yml
+3. Pulls new Docker image
+4. Restarts node with new version
+5. Verifies session key preservation
 ```
 
 ### Node Cleanup
