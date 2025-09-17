@@ -932,7 +932,10 @@ if [ "$UPDATE_FINAL_STAGE" = true ]; then
 
   # 노드 재시작
   echo -e "${GREEN}노드 재시작 중...${NC}"
-  docker-compose -f ${DOCKER_COMPOSE_FILE} down ${NODE_NAME}
+  # 컨테이너 확실하게 정리
+  docker stop ${NODE_NAME} 2>/dev/null || true
+  docker rm ${NODE_NAME} 2>/dev/null || true
+  # 새로 시작
   docker-compose -f ${DOCKER_COMPOSE_FILE} up -d ${NODE_NAME}
 
   # 세션 키 확인 (있었던 경우)
