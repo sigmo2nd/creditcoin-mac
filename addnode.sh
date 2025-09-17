@@ -918,9 +918,10 @@ if [ "$UPDATE_FINAL_STAGE" = true ]; then
   }" ${DOCKER_COMPOSE_FILE}
 
   # chainspecs 경로 업데이트
-  sed -i "/${NODE_NAME}:/,/^  [a-z]/{
+  sed -i.bak2 "/${NODE_NAME}:/,/^  [a-z]/{
     s|./data/[^/]*/chainspecs|./data/${GIT_TAG}/chainspecs|
   }" ${DOCKER_COMPOSE_FILE}
+  rm -f ${DOCKER_COMPOSE_FILE}.bak2
 
   rm -f ${DOCKER_COMPOSE_FILE}.bak
 
