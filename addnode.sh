@@ -943,9 +943,16 @@ if [ "$UPDATE_FINAL_STAGE" = true ]; then
     echo -e "${GREEN}세션 키 확인 중...${NC}"
     sleep 5
     if [ -d "$KEYSTORE_PATH" ] && [ "$(ls -A $KEYSTORE_PATH 2>/dev/null)" ]; then
-      # MD5 체크섬 비교
-      ORIGINAL_MD5=$(find "$BACKUP_NAME" -type f -exec md5sum {} \; | sort | md5sum | cut -d' ' -f1)
-      CURRENT_MD5=$(find "$KEYSTORE_PATH" -type f -exec md5sum {} \; | sort | md5sum | cut -d' ' -f1)
+      # MD5 체크섬 비교 (OS별 처리)
+      if command -v md5sum &> /dev/null; then
+        # Linux
+        ORIGINAL_MD5=$(find "$BACKUP_NAME" -type f -exec md5sum {} \; | sort | md5sum | cut -d' ' -f1)
+        CURRENT_MD5=$(find "$KEYSTORE_PATH" -type f -exec md5sum {} \; | sort | md5sum | cut -d' ' -f1)
+      else
+        # macOS
+        ORIGINAL_MD5=$(find "$BACKUP_NAME" -type f -exec md5 -q {} \; | sort | md5 -q)
+        CURRENT_MD5=$(find "$KEYSTORE_PATH" -type f -exec md5 -q {} \; | sort | md5 -q)
+      fi
 
       if [ "$ORIGINAL_MD5" = "$CURRENT_MD5" ]; then
         echo -e "${GREEN}✓ 세션 키가 성공적으로 보존되었습니다${NC}"
