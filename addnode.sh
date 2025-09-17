@@ -64,13 +64,14 @@ show_help() {
   echo "옵션:"
   echo "  -l, --legacy       Creditcoin 2.x 레거시 버전 사용 (기본값: 3.x)"
   echo "  -v, --version      노드 버전"
-  echo "                     - 3.x: 3.39.0-mainnet (기본값)"
+  echo "                     - 3.x: 3.52.0-mainnet (기본값)"
   echo "                     - 2.x: 2.230.2-mainnet (기본값)"
   echo "  -t, --telemetry    텔레메트리 활성화 (기본값: 비활성화)"
   echo "  -n, --name         노드 이름"
   echo "                     - 3.x: 3Node<번호> (기본값)"
   echo "                     - 2.x: Node<번호> (기본값)"
   echo "  -p, --pruning      프루닝 값 설정 (3.x만 지원, 기본값: 0)"
+  echo "  --upgrade          기존 노드 업그레이드 (세션키 보존)"
   echo ""
   echo "사용 예시:"
   echo "  ./addnode.sh 0                          # 3.x 버전으로 3node0 생성"
@@ -80,10 +81,12 @@ show_help() {
   echo "  ./addnode.sh 2 -t                       # 텔레메트리 활성화하여 생성"
   echo "  ./addnode.sh 3 -n ValidatorA             # 지정한 이름으로 생성"
   echo "  ./addnode.sh 4 -p 1000                  # 프루닝 값 1000으로 설정 (3.x만)"
+  echo "  ./addnode.sh 0 --upgrade                # 3node0을 최신 버전으로 업그레이드"
+  echo "  ./addnode.sh 1 --upgrade -v 3.52.0-mainnet # 특정 버전으로 업그레이드"
   echo ""
   echo "버전 정보:"
   echo "  3.x 버전 (기본값):"
-  echo "    - 3.39.0-mainnet: 최신 메인넷 버전"
+  echo "    - 3.52.0-mainnet: 최신 메인넷 버전"
   echo "    - 3.32.0-mainnet: 안정 메인넷 버전"
   echo "  2.x 버전 (레거시):"
   echo "    - 2.230.2-mainnet: 레거시 메인넷 버전"
@@ -102,7 +105,8 @@ shift
 
 # 버전별 기본값 설정
 LEGACY_MODE=false
-VERSION_3X="3.39.0-mainnet"
+UPDATE_MODE=false
+VERSION_3X="3.52.0-mainnet"
 VERSION_2X="2.230.2-mainnet"
 TELEMETRY_ENABLED="false"
 PRUNING="0"
@@ -129,6 +133,10 @@ while [ $# -gt 0 ]; do
     -p|--pruning)
       PRUNING="$2"
       shift 2
+      ;;
+    --upgrade)
+      UPDATE_MODE=true
+      shift
       ;;
     --help|-h)
       show_help
@@ -206,6 +214,80 @@ fi
 
 # 현재 작업 디렉토리 저장
 CURRENT_DIR=$(pwd)
+
+# UPDATE_MODE일 때 처리
+if [ "$UPDATE_MODE" = true ]; then
+  echo -e "${BLUE}=== 노드 업그레이드 모드 ===${NC}"
+  echo -e "${GREEN}대상: ${NODE_NAME}${NC}"
+  echo -e "${GREEN}버전: ${GIT_TAG}${NC}"
+
+  # 노드 존재 확인
+  if [ ! -d "${NODE_NAME}" ]; then
+    echo -e "${RED}오류: ${NODE_NAME} 디렉토리가 존재하지 않습니다.${NC}"
+    echo -e "${YELLOW}먼저 노드를 생성하세요: ./addnode.sh ${NODE_NUM}${NC}"
+    exit 1
+  fi
+
+  # 세션 키 백업 (있는 경우)
+  KEYSTORE_PATH="${NODE_NAME}/data/chains/creditcoin3/keystore"
+  if [ "$LEGACY_MODE" = true ]; then
+    KEYSTORE_PATH="${NODE_NAME}/data/chains/creditcoin/keystore"
+  fi
+
+  if [ -d "$KEYSTORE_PATH" ] && [ "$(ls -A $KEYSTORE_PATH 2>/dev/null)" ]; then
+    echo -e "${GREEN}세션 키 발견. 백업 중...${NC}"
+    BACKUP_NAME="${NODE_NAME}_keystore_backup_$(date +%Y%m%d_%H%M%S)"
+    cp -r "$KEYSTORE_PATH" "$BACKUP_NAME"
+    echo -e "${GREEN}백업 완료: $BACKUP_NAME${NC}"
+  fi
+
+  # 이미지 준비
+  echo -e "${GREEN}Docker 이미지 준비 중...${NC}"
+  if docker pull gluwa/creditcoin:${GIT_TAG} 2>/dev/null; then
+    docker tag gluwa/creditcoin:${GIT_TAG} ${IMAGE_NAME}
+    echo -e "${GREEN}이미지 준비 완료${NC}"
+  else
+    echo -e "${YELLOW}공식 이미지를 찾을 수 없습니다. 로컬 빌드를 시도합니다.${NC}"
+  fi
+
+  # docker-compose.yml 업데이트
+  echo -e "${GREEN}docker-compose.yml 업데이트 중...${NC}"
+
+  # 백업
+  cp ${DOCKER_COMPOSE_FILE} ${DOCKER_COMPOSE_FILE}.backup_upgrade
+
+  # 해당 노드 섹션만 업데이트
+  sed -i.bak "/${NODE_NAME}:/,/^  [a-z]/{
+    s|image: creditcoin[23]:[^[:space:]]*|image: ${IMAGE_NAME}|
+    s|GIT_TAG=[^[:space:]]*|GIT_TAG=${GIT_TAG}|
+  }" ${DOCKER_COMPOSE_FILE}
+
+  # chainspecs 경로 업데이트
+  sed -i "/${NODE_NAME}:/,/^  [a-z]/{
+    s|./data/[^/]*/chainspecs|./data/${GIT_TAG}/chainspecs|
+  }" ${DOCKER_COMPOSE_FILE}
+
+  rm -f ${DOCKER_COMPOSE_FILE}.bak
+
+  # 노드 재시작
+  echo -e "${GREEN}노드 재시작 중...${NC}"
+  docker-compose stop ${NODE_NAME}
+  sleep 5
+  docker-compose rm -f ${NODE_NAME}
+  docker-compose up -d ${NODE_NAME}
+
+  echo -e "${GREEN}업그레이드 완료!${NC}"
+  echo ""
+  echo "확인 명령어:"
+  echo "  docker logs ${NODE_NAME} --tail 20"
+  echo "  curl -s http://localhost:${RPC_PORT}/ -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"system_version\",\"params\":[],\"id\":1}'"
+  echo ""
+  echo "롤백이 필요한 경우:"
+  echo "  cp ${DOCKER_COMPOSE_FILE}.backup_upgrade ${DOCKER_COMPOSE_FILE}"
+  echo "  docker-compose up -d ${NODE_NAME}"
+
+  exit 0
+fi
 
 # 기존 노드 존재 확인 및 처리
 if [ -d "./${NODE_PREFIX}${NODE_NUM}" ]; then
