@@ -241,56 +241,19 @@ if [ "$UPDATE_MODE" = true ]; then
     echo -e "${GREEN}백업 완료: $BACKUP_NAME${NC}"
   fi
 
-  # 이미지 준비
-  echo -e "${GREEN}Docker 이미지 준비 중...${NC}"
-  if docker pull gluwa/creditcoin:${GIT_TAG} 2>/dev/null; then
-    docker tag gluwa/creditcoin:${GIT_TAG} ${IMAGE_NAME}
-    echo -e "${GREEN}이미지 준비 완료${NC}"
-  else
-    echo -e "${YELLOW}공식 이미지를 찾을 수 없습니다. 로컬 빌드를 시도합니다.${NC}"
-  fi
+fi
 
-  # docker-compose.yml 업데이트
-  echo -e "${GREEN}docker-compose.yml 업데이트 중...${NC}"
-
-  # 백업
-  cp ${DOCKER_COMPOSE_FILE} ${DOCKER_COMPOSE_FILE}.backup_upgrade
-
-  # 해당 노드 섹션만 업데이트
-  sed -i.bak "/${NODE_NAME}:/,/^  [a-z]/{
-    s|image: creditcoin[23]:[^[:space:]]*|image: ${IMAGE_NAME}|
-    s|GIT_TAG=[^[:space:]]*|GIT_TAG=${GIT_TAG}|
-  }" ${DOCKER_COMPOSE_FILE}
-
-  # chainspecs 경로 업데이트
-  sed -i "/${NODE_NAME}:/,/^  [a-z]/{
-    s|./data/[^/]*/chainspecs|./data/${GIT_TAG}/chainspecs|
-  }" ${DOCKER_COMPOSE_FILE}
-
-  rm -f ${DOCKER_COMPOSE_FILE}.bak
-
-  # 노드 재시작
-  echo -e "${GREEN}노드 재시작 중...${NC}"
-  docker-compose stop ${NODE_NAME}
-  sleep 5
-  docker-compose rm -f ${NODE_NAME}
-  docker-compose up -d ${NODE_NAME}
-
-  echo -e "${GREEN}업그레이드 완료!${NC}"
-  echo ""
-  echo "확인 명령어:"
-  echo "  docker logs ${NODE_NAME} --tail 20"
-  echo "  curl -s http://localhost:${RPC_PORT}/ -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"system_version\",\"params\":[],\"id\":1}'"
-  echo ""
-  echo "롤백이 필요한 경우:"
-  echo "  cp ${DOCKER_COMPOSE_FILE}.backup_upgrade ${DOCKER_COMPOSE_FILE}"
-  echo "  docker-compose up -d ${NODE_NAME}"
-
-  exit 0
+# 업그레이드 모드 최종 처리 플래그
+UPDATE_FINAL_STAGE=false
+PRESERVE_DATA=false
+if [ "$UPDATE_MODE" = true ]; then
+  UPDATE_FINAL_STAGE=true
+  UPDATE_MODE=false  # 생성 모드와 동일한 처리를 위해 일시적으로 false로 설정
+  PRESERVE_DATA=true  # 업그레이드 시 데이터 보존
 fi
 
 # 기존 노드 존재 확인 및 처리
-if [ -d "./${NODE_PREFIX}${NODE_NUM}" ]; then
+if [ -d "./${NODE_PREFIX}${NODE_NUM}" ] && [ "$UPDATE_FINAL_STAGE" = false ]; then
   echo -e "${YELLOW}경고: ${NODE_PREFIX}${NODE_NUM}이 이미 존재합니다.${NC}"
   
   # 기존 노드의 버전 정보 확인
@@ -939,10 +902,62 @@ else
 fi
 echo ""
 
-if [ "$UPDATE_MODE" = true ]; then
-  echo -e "${YELLOW}업데이트 완료! 다음 단계:${NC}"
-  echo -e "${GREEN}변경된 설정을 적용하려면 컨테이너를 재시작하세요:${NC}"
-  echo -e "${BLUE}docker compose -p creditcoin$([ "$LEGACY_MODE" = true ] && echo "2" || echo "3") restart ${NODE_PREFIX}${NODE_NUM}${NC}"
+if [ "$UPDATE_FINAL_STAGE" = true ]; then
+  echo -e "${GREEN}=== 업그레이드 최종 처리 ===${NC}"
+
+  # docker-compose.yml 업데이트
+  echo -e "${GREEN}docker-compose.yml 업데이트 중...${NC}"
+
+  # 백업
+  cp ${DOCKER_COMPOSE_FILE} ${DOCKER_COMPOSE_FILE}.backup_upgrade
+
+  # 해당 노드 섹션만 업데이트
+  sed -i.bak "/${NODE_NAME}:/,/^  [a-z]/{
+    s|image: creditcoin[23]:[^[:space:]]*|image: ${IMAGE_NAME}|
+    s|GIT_TAG=[^[:space:]]*|GIT_TAG=${GIT_TAG}|
+  }" ${DOCKER_COMPOSE_FILE}
+
+  # chainspecs 경로 업데이트
+  sed -i "/${NODE_NAME}:/,/^  [a-z]/{
+    s|./data/[^/]*/chainspecs|./data/${GIT_TAG}/chainspecs|
+  }" ${DOCKER_COMPOSE_FILE}
+
+  rm -f ${DOCKER_COMPOSE_FILE}.bak
+
+  echo -e "${GREEN}설정 업데이트 완료${NC}"
+
+  # 환경변수 업데이트
+  echo -e "${GREEN}환경변수 업데이트 중...${NC}"
+  sed -i.bak "s/^GIT_TAG=.*/GIT_TAG=${GIT_TAG}/" "$ENV_FILE" 2>/dev/null || echo "GIT_TAG=${GIT_TAG}" >> "$ENV_FILE"
+
+  # 노드 재시작
+  echo -e "${GREEN}노드 재시작 중...${NC}"
+  docker-compose -f ${DOCKER_COMPOSE_FILE} down ${NODE_NAME}
+  docker-compose -f ${DOCKER_COMPOSE_FILE} up -d ${NODE_NAME}
+
+  # 세션 키 확인 (있었던 경우)
+  if [ -n "${BACKUP_NAME}" ]; then
+    echo -e "${GREEN}세션 키 확인 중...${NC}"
+    sleep 5
+    if [ -d "$KEYSTORE_PATH" ] && [ "$(ls -A $KEYSTORE_PATH 2>/dev/null)" ]; then
+      # MD5 체크섬 비교
+      ORIGINAL_MD5=$(find "$BACKUP_NAME" -type f -exec md5sum {} \; | sort | md5sum | cut -d' ' -f1)
+      CURRENT_MD5=$(find "$KEYSTORE_PATH" -type f -exec md5sum {} \; | sort | md5sum | cut -d' ' -f1)
+
+      if [ "$ORIGINAL_MD5" = "$CURRENT_MD5" ]; then
+        echo -e "${GREEN}✓ 세션 키가 성공적으로 보존되었습니다${NC}"
+        rm -rf "$BACKUP_NAME"
+      else
+        echo -e "${YELLOW}⚠ 세션 키가 변경되었습니다. 백업을 유지합니다: $BACKUP_NAME${NC}"
+      fi
+    else
+      echo -e "${YELLOW}⚠ 세션 키가 사라졌습니다. 백업에서 복구하세요: $BACKUP_NAME${NC}"
+    fi
+  fi
+
+  echo -e "${GREEN}=== 업그레이드 완료 ===${NC}"
+  echo -e "${GREEN}노드: ${NODE_NAME}${NC}"
+  echo -e "${GREEN}버전: ${GIT_TAG}${NC}"
 else
   echo -e "${YELLOW}다음 단계:${NC}"
   echo -e "${GREEN}1. Docker 이미지 빌드: 완료 ✅${NC}"
