@@ -932,9 +932,36 @@ if [ "$UPDATE_FINAL_STAGE" = true ]; then
 
   # 노드 재시작
   echo -e "${GREEN}노드 재시작 중...${NC}"
+
+  # 안전 체크: 동일한 세션 키를 가진 다른 노드가 실행 중인지 확인
+  if [ -d "$KEYSTORE_PATH" ] && [ "$(ls -A $KEYSTORE_PATH 2>/dev/null)" ]; then
+    # 세션 키 파일 이름 가져오기
+    KEY_FILES=$(ls $KEYSTORE_PATH 2>/dev/null | head -1)
+    if [ -n "$KEY_FILES" ]; then
+      echo -e "${YELLOW}세션 키 중복 실행 체크 중...${NC}"
+      # 다른 실행 중인 노드들 확인
+      for other_node in $(docker ps --format "{{.Names}}" | grep -E "^(3node|node)" | grep -v "^${NODE_NAME}$"); do
+        OTHER_KEYSTORE="${other_node}/data/chains/creditcoin3/keystore"
+        if [ "$LEGACY_MODE" = true ]; then
+          OTHER_KEYSTORE="${other_node}/data/chains/creditcoin/keystore"
+        fi
+        if [ -d "$OTHER_KEYSTORE" ]; then
+          if ls $OTHER_KEYSTORE/$KEY_FILES 2>/dev/null >/dev/null; then
+            echo -e "${RED}⚠️  경고: ${other_node}가 동일한 세션 키로 실행 중입니다!${NC}"
+            echo -e "${RED}슬래싱 위험! 업그레이드를 중단합니다.${NC}"
+            echo -e "${YELLOW}먼저 ${other_node}를 중지하세요: docker stop ${other_node}${NC}"
+            exit 1
+          fi
+        fi
+      done
+    fi
+  fi
+
   # 컨테이너 확실하게 정리
   docker stop ${NODE_NAME} 2>/dev/null || true
+  sleep 2  # 완전히 중지될 때까지 대기
   docker rm ${NODE_NAME} 2>/dev/null || true
+
   # 새로 시작
   docker-compose -f ${DOCKER_COMPOSE_FILE} up -d ${NODE_NAME}
 
