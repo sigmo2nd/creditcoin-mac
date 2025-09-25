@@ -602,10 +602,15 @@ if [ "$UPDATE_MODE" = false ]; then
   
   if ! docker images | grep -q "$IMAGE_CHECK_NAME" | grep -q "${GIT_TAG}"; then
     echo -e "${YELLOW}이미지 ${IMAGE_NAME}가 존재하지 않습니다. 새로 빌드합니다...${NC}"
-    
-    # Dockerfile 생성 (파일이 없는 경우)
-    if [ ! -f "$DOCKERFILE_NAME" ]; then
-      echo -e "${BLUE}${DOCKERFILE_NAME}이 없으므로 생성합니다...${NC}"
+
+    # Dockerfile 생성 (파일이 없거나 업그레이드 모드인 경우 재생성)
+    if [ ! -f "$DOCKERFILE_NAME" ] || [ "$UPDATE_FINAL_STAGE" = true ]; then
+      if [ "$UPDATE_FINAL_STAGE" = true ] && [ -f "$DOCKERFILE_NAME" ]; then
+        echo -e "${BLUE}업그레이드 모드: ${DOCKERFILE_NAME}을 재생성합니다...${NC}"
+        rm -f "$DOCKERFILE_NAME"
+      else
+        echo -e "${BLUE}${DOCKERFILE_NAME}이 없으므로 생성합니다...${NC}"
+      fi
       
       if [ "$LEGACY_MODE" = true ]; then
         # 2.x Dockerfile.legacy 생성
