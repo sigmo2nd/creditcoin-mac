@@ -86,7 +86,7 @@ show_help() {
   echo ""
   echo "버전 정보:"
   echo "  3.x 버전 (기본값):"
-  echo "    - 3.52.0-mainnet: 최신 메인넷 버전"
+  echo "    - 3.55.0-mainnet: 최신 메인넷 버전"
   echo "    - 3.32.0-mainnet: 안정 메인넷 버전"
   echo "  2.x 버전 (레거시):"
   echo "    - 2.230.2-mainnet: 레거시 메인넷 버전"
@@ -106,7 +106,7 @@ shift
 # 버전별 기본값 설정
 LEGACY_MODE=false
 UPDATE_MODE=false
-VERSION_3X="3.52.0-mainnet"
+VERSION_3X="3.55.0-mainnet"
 VERSION_2X="2.230.2-mainnet"
 TELEMETRY_ENABLED="false"
 PRUNING="0"
