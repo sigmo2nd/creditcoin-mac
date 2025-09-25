@@ -710,8 +710,8 @@ RUN git lfs install
 WORKDIR /root
 RUN git clone https://github.com/gluwa/creditcoin3
 WORKDIR /root/creditcoin3
-RUN git fetch --all --tags
 ARG GIT_TAG
+RUN git fetch --all --tags
 RUN git checkout ${GIT_TAG}
 RUN git lfs pull
 RUN cargo build --release
