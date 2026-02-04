@@ -974,7 +974,27 @@ if [ "$UPDATE_FINAL_STAGE" = true ]; then
   # 세션 키 확인 (있었던 경우)
   if [ -n "${BACKUP_NAME}" ]; then
     echo -e "${GREEN}세션 키 확인 중...${NC}"
-    sleep 5
+
+    # 1. 컨테이너 running 상태 확인
+    wait_timeout=30
+    while [ $wait_timeout -gt 0 ]; do
+      if docker inspect -f '{{.State.Running}}' ${NODE_NAME} 2>/dev/null | grep -q true; then
+        break
+      fi
+      sleep 1
+      ((wait_timeout--))
+    done
+
+    # 2. keystore 접근 가능 확인
+    wait_timeout=15
+    while [ $wait_timeout -gt 0 ]; do
+      if [ -d "$KEYSTORE_PATH" ] && ls "$KEYSTORE_PATH"/* >/dev/null 2>&1; then
+        break
+      fi
+      sleep 1
+      ((wait_timeout--))
+    done
+
     if [ -d "$KEYSTORE_PATH" ] && [ "$(ls -A $KEYSTORE_PATH 2>/dev/null)" ]; then
       # MD5 체크섬 비교 (OS별 처리)
       if command -v md5sum &> /dev/null; then
