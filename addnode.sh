@@ -916,14 +916,14 @@ if [ "$UPDATE_FINAL_STAGE" = true ]; then
   # 백업
   cp ${DOCKER_COMPOSE_FILE} ${DOCKER_COMPOSE_FILE}.backup_upgrade
 
-  # 해당 노드 섹션만 업데이트
-  sed -i.bak "/${NODE_NAME}:/,/^  [a-z]/{
+  # 해당 노드 섹션만 업데이트 (다음 서비스 시작 전까지)
+  sed -i.bak "/${NODE_NAME}:/,/^  [a-zA-Z0-9_]*:/{
     s|image: creditcoin[23]:[^[:space:]]*|image: ${IMAGE_NAME}|
     s|GIT_TAG=[^[:space:]]*|GIT_TAG=${GIT_TAG}|
   }" ${DOCKER_COMPOSE_FILE}
 
   # chainspecs 경로 업데이트
-  sed -i.bak2 "/${NODE_NAME}:/,/^  [a-z]/{
+  sed -i.bak2 "/${NODE_NAME}:/,/^  [a-zA-Z0-9_]*:/{
     s|./data/[^/]*/chainspecs|./data/${GIT_TAG}/chainspecs|
   }" ${DOCKER_COMPOSE_FILE}
   rm -f ${DOCKER_COMPOSE_FILE}.bak2
