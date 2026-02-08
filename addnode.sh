@@ -106,7 +106,7 @@ shift
 # 버전별 기본값 설정
 LEGACY_MODE=false
 UPDATE_MODE=false
-VERSION_3X="3.55.0-mainnet"
+VERSION_3X="3.61.0-mainnet"
 VERSION_2X="2.230.2-mainnet"
 TELEMETRY_ENABLED="false"
 PRUNING="0"
