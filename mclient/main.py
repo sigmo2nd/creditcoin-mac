@@ -115,23 +115,36 @@ async def handle_tty_authentication(auth_api_url: str, allow_http: bool = False)
                     print(f"{COLOR_GREEN}기존 토큰을 발견했습니다. 유효성을 확인합니다...{COLOR_RESET}")
                     if await verify_token(token, auth_api_url, allow_http):
                         print(f"{COLOR_GREEN}토큰이 유효합니다.{COLOR_RESET}")
-                        
+
                         # 유효한 토큰이 있으면 바로 사용
                         return token
                     else:
                         print(f"{COLOR_YELLOW}토큰이 만료되었거나 유효하지 않습니다.{COLOR_RESET}")
-                        print(f"{COLOR_YELLOW}새로운 로그인이 필요합니다.{COLOR_RESET}")
+                        # TTY가 없는 환경(Docker 등)에서는 서버가 올라올 때까지 재시도
+                        if not sys.stdin.isatty():
+                            print(f"{COLOR_YELLOW}TTY 없는 환경 — 서버 연결 대기 중 (30초 간격 재시도)...{COLOR_RESET}")
+                            retry_count = 0
+                            while True:
+                                retry_count += 1
+                                await asyncio.sleep(30)
+                                print(f"{COLOR_YELLOW}토큰 재검증 시도 #{retry_count}...{COLOR_RESET}")
+                                if await verify_token(token, auth_api_url, allow_http):
+                                    print(f"{COLOR_GREEN}토큰이 유효합니다! 연결을 계속합니다.{COLOR_RESET}")
+                                    return token
+                                print(f"{COLOR_YELLOW}아직 서버 응답 없음. 계속 대기...{COLOR_RESET}")
+                        else:
+                            print(f"{COLOR_YELLOW}새로운 로그인이 필요합니다.{COLOR_RESET}")
         except Exception as e:
             logger.error(f"토큰 파일 읽기 오류: {e}")
     else:
         print(f"{COLOR_YELLOW}저장된 토큰이 없습니다. 로그인이 필요합니다.{COLOR_RESET}")
-    
+
     # TTY가 없는 환경에서는 에러 발생
     if not sys.stdin.isatty():
         print(f"{COLOR_RED}TTY가 없는 환경에서는 인증 정보를 입력할 수 없습니다.{COLOR_RESET}")
         print(f"{COLOR_YELLOW}환경변수 AUTH_USER와 AUTH_PASS를 설정하거나 TTY 모드로 실행하세요.{COLOR_RESET}")
         raise RuntimeError("No TTY available for authentication input")
-    
+
     # 대화형 로그인 진행
     return await interactive_login(auth_api_url, allow_http)
 
@@ -169,18 +182,28 @@ async def authenticate_user(auth_api_url: str, allow_http: bool = False) -> Opti
     # 환경변수에 인증 정보가 있으면 자동 로그인 시도
     if env_username and env_password:
         print(f"{COLOR_BLUE}환경변수에서 인증 정보를 찾았습니다. 자동 로그인을 시도합니다...{COLOR_RESET}")
-        try:
-            token = await login_to_server(env_username, env_password, auth_api_url, allow_http)
-            if token:
-                save_token(token)
-                print(f"{COLOR_GREEN}자동 로그인 성공! 토큰이 발급되었습니다.{COLOR_RESET}")
-                print(f"{COLOR_GREEN}토큰이 안전하게 저장되었습니다.{COLOR_RESET}")
-                return token
+        retry_count = 0
+        while True:
+            try:
+                token = await login_to_server(env_username, env_password, auth_api_url, allow_http)
+                if token:
+                    save_token(token)
+                    print(f"{COLOR_GREEN}자동 로그인 성공! 토큰이 발급되었습니다.{COLOR_RESET}")
+                    print(f"{COLOR_GREEN}토큰이 안전하게 저장되었습니다.{COLOR_RESET}")
+                    return token
+                else:
+                    print(f"{COLOR_YELLOW}자동 로그인 실패.{COLOR_RESET}")
+            except Exception as e:
+                print(f"{COLOR_YELLOW}자동 로그인 중 오류: {e}{COLOR_RESET}")
+
+            # TTY가 없으면 재시도, 있으면 TTY 인증으로 전환
+            if not sys.stdin.isatty():
+                retry_count += 1
+                print(f"{COLOR_YELLOW}서버 연결 대기 중... (30초 후 재시도 #{retry_count}){COLOR_RESET}")
+                await asyncio.sleep(30)
             else:
-                print(f"{COLOR_YELLOW}자동 로그인 실패.{COLOR_RESET}")
-        except Exception as e:
-            print(f"{COLOR_YELLOW}자동 로그인 중 오류: {e}{COLOR_RESET}")
-    
+                break
+
     # TTY 인증으로 전환
     return await handle_tty_authentication(auth_api_url, allow_http)
 
