@@ -72,6 +72,9 @@ show_help() {
   echo "                     - 2.x: Node<번호> (기본값)"
   echo "  -p, --pruning      프루닝 값 설정 (3.x만 지원, 기본값: 0)"
   echo "  --upgrade          기존 노드 업그레이드 (세션키 보존)"
+  echo "  --external-rpc     외부 RPC 활성화 (--rpc-external --rpc-methods safe --rpc-cors all)"
+  echo "                     Docker 네트워크 내 다른 컨테이너에서 RPC 접근 가능"
+  echo "                     read-only 메소드만 노출되어 안전, 호스트 외부 노출 X"
   echo ""
   echo "사용 예시:"
   echo "  ./addnode.sh 0                          # 3.x 버전으로 3node0 생성"
@@ -83,6 +86,7 @@ show_help() {
   echo "  ./addnode.sh 4 -p 1000                  # 프루닝 값 1000으로 설정 (3.x만)"
   echo "  ./addnode.sh 0 --upgrade                # 3node0을 최신 버전으로 업그레이드"
   echo "  ./addnode.sh 1 --upgrade -v 3.52.0-mainnet # 특정 버전으로 업그레이드"
+  echo "  ./addnode.sh 0 --external-rpc           # 외부 RPC 활성화하여 생성"
   echo ""
   echo "버전 정보:"
   echo "  3.x 버전 (기본값):"
@@ -110,6 +114,7 @@ VERSION_3X="3.61.0-mainnet"
 VERSION_2X="2.230.2-mainnet"
 TELEMETRY_ENABLED="false"
 PRUNING="0"
+EXTERNAL_RPC="false"
 
 # 옵션 파싱
 while [ $# -gt 0 ]; do
@@ -136,6 +141,10 @@ while [ $# -gt 0 ]; do
       ;;
     --upgrade)
       UPDATE_MODE=true
+      shift
+      ;;
+    --external-rpc)
+      EXTERNAL_RPC="true"
       shift
       ;;
     --help|-h)
@@ -205,6 +214,7 @@ if [ -n "$TELEMETRY_NAME" ]; then
   echo -e "${GREEN}- 텔레메트리 이름: $TELEMETRY_NAME${NC}"
 fi
 echo -e "${GREEN}- 텔레메트리: $([ "$TELEMETRY_ENABLED" == "true" ] && echo "활성화" || echo "비활성화")${NC}"
+echo -e "${GREEN}- 외부 RPC: $([ "$EXTERNAL_RPC" == "true" ] && echo "활성화 (--rpc-external --rpc-methods safe)" || echo "비활성화")${NC}"
 echo -e "${GREEN}- 버전: $GIT_TAG${NC}"
 echo -e "${GREEN}- P2P 포트: $P2P_PORT${NC}"
 echo -e "${GREEN}- RPC 포트: $RPC_PORT${NC}"
@@ -565,6 +575,11 @@ if [ "$UPDATE_MODE" = true ]; then
     fi
     sed -i.bak "s/^TELEMETRY_${ENV_PREFIX}${NODE_NUM}=.*/TELEMETRY_${ENV_PREFIX}${NODE_NUM}=${TELEMETRY_ENABLED}/" "$ENV_FILE"
     sed -i.bak "s/^PRUNING_${ENV_PREFIX}${NODE_NUM}=.*/PRUNING_${ENV_PREFIX}${NODE_NUM}=${PRUNING}/" "$ENV_FILE"
+    if grep -q "^EXTERNAL_RPC_${ENV_PREFIX}${NODE_NUM}=" "$ENV_FILE"; then
+      sed -i.bak "s/^EXTERNAL_RPC_${ENV_PREFIX}${NODE_NUM}=.*/EXTERNAL_RPC_${ENV_PREFIX}${NODE_NUM}=${EXTERNAL_RPC}/" "$ENV_FILE"
+    else
+      echo "EXTERNAL_RPC_${ENV_PREFIX}${NODE_NUM}=${EXTERNAL_RPC}" >> "$ENV_FILE"
+    fi
   fi
   
   # 백업 파일 삭제
@@ -588,6 +603,7 @@ else
     fi
     grep -q "TELEMETRY_${ENV_PREFIX}${NODE_NUM}" "$ENV_FILE" 2>/dev/null || echo "TELEMETRY_${ENV_PREFIX}${NODE_NUM}=${TELEMETRY_ENABLED}" >> "$ENV_FILE"
     grep -q "PRUNING_${ENV_PREFIX}${NODE_NUM}" "$ENV_FILE" 2>/dev/null || echo "PRUNING_${ENV_PREFIX}${NODE_NUM}=${PRUNING}" >> "$ENV_FILE"
+    grep -q "EXTERNAL_RPC_${ENV_PREFIX}${NODE_NUM}" "$ENV_FILE" 2>/dev/null || echo "EXTERNAL_RPC_${ENV_PREFIX}${NODE_NUM}=${EXTERNAL_RPC}" >> "$ENV_FILE"
   fi
 fi
 
@@ -739,12 +755,20 @@ else \n\
   TELEMETRY_OPTS="--no-telemetry" \n\
 fi \n\
 \n\
+# 외부 RPC 설정 결정 \n\
+if [ "${EXTERNAL_RPC}" == "true" ]; then \n\
+  RPC_OPTS="--rpc-external --rpc-methods safe --rpc-cors all" \n\
+else \n\
+  RPC_OPTS="" \n\
+fi \n\
+\n\
 /root/creditcoin3/target/release/creditcoin3-node \
   --validator \
   ${TELEMETRY_NAME:+--name \"$TELEMETRY_NAME\"} \
   --prometheus-external \
   --telemetry-url "wss://telemetry.creditcoin.network/submit/ 0" \
   $TELEMETRY_OPTS \
+  $RPC_OPTS \
   --bootnodes "/dns4/cc3-bootnode.creditcoin.network/tcp/30333/p2p/12D3KooWLGyvbdQ3wTGjRAEueFsDnstZnV8fN3iyPTmHeyswSPGy" \
   --public-addr "/dns4/$PUBLIC_IP/tcp/${P2P_PORT}" \
   --chain /root/data/chainspecs/mainnetSpecRaw.json \
@@ -883,6 +907,7 @@ EOF
       - RPC_PORT=\${RPC_PORT_${ENV_PREFIX}${NODE_NUM}}
       - TELEMETRY_ENABLED=\${TELEMETRY_${ENV_PREFIX}${NODE_NUM}}
       - PRUNING=\${PRUNING_${ENV_PREFIX}${NODE_NUM}}
+      - EXTERNAL_RPC=\${EXTERNAL_RPC_${ENV_PREFIX}${NODE_NUM}:-false}
       - GIT_TAG=${GIT_TAG}
     networks:
       ${NETWORK_NAME}:
